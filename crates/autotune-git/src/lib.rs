@@ -46,7 +46,7 @@ pub fn repo_root(dir: &Path) -> Result<PathBuf, GitError> {
         &[OsStr::new("rev-parse"), OsStr::new("--show-toplevel")],
     )?;
     let _ = stderr;
-    Ok(PathBuf::from(stdout.trim()))
+    Ok(PathBuf::from(stdout.trim_end_matches(['\n', '\r'])))
 }
 
 /// Get the current HEAD commit SHA (short).

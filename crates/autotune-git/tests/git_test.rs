@@ -22,13 +22,17 @@ fn write_file(path: &Path, content: &str) {
 
 fn init_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    git(dir.path(), &["init", "-b", "main"]);
-    git(dir.path(), &["config", "user.email", "test@example.com"]);
-    git(dir.path(), &["config", "user.name", "Test User"]);
-    write_file(&dir.path().join("README.md"), "base\n");
-    git(dir.path(), &["add", "README.md"]);
-    git(dir.path(), &["commit", "-m", "initial"]);
+    init_repo_at(dir.path());
     dir
+}
+
+fn init_repo_at(path: &Path) {
+    git(path, &["init", "-b", "main"]);
+    git(path, &["config", "user.email", "test@example.com"]);
+    git(path, &["config", "user.name", "Test User"]);
+    write_file(&path.join("README.md"), "base\n");
+    git(path, &["add", "README.md"]);
+    git(path, &["commit", "-m", "initial"]);
 }
 
 #[test]
@@ -55,6 +59,19 @@ fn repo_root_rejects_non_repo() {
     let dir = tempfile::tempdir().unwrap();
     let err = repo_root(dir.path()).unwrap_err();
     assert!(matches!(err, GitError::CommandFailed { .. }));
+}
+
+#[test]
+fn repo_root_preserves_path_whitespace() {
+    let base = tempfile::tempdir().unwrap();
+    let repo_path = base.path().join(" repo with spaces ");
+    std::fs::create_dir(&repo_path).unwrap();
+    init_repo_at(&repo_path);
+
+    assert_eq!(
+        std::fs::canonicalize(repo_root(&repo_path).unwrap()).unwrap(),
+        std::fs::canonicalize(&repo_path).unwrap()
+    );
 }
 
 #[test]
