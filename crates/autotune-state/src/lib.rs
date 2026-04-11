@@ -269,8 +269,17 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), StateError> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(content.as_bytes())?;
+    tmp.as_file_mut().sync_all()?;
+    sync_directory(dir)?;
     tmp.persist(path).map_err(|error| StateError::Io {
         source: error.error,
     })?;
+    sync_directory(dir)?;
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<(), StateError> {
+    let dir = fs::File::open(path)?;
+    dir.sync_all()?;
     Ok(())
 }
