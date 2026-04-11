@@ -8,6 +8,7 @@ use std::process::Command;
 /// Result of running a git command.
 struct GitOutput {
     stdout: String,
+    stderr: String,
 }
 
 /// Run a git command in the given directory and return stdout.
@@ -22,26 +23,20 @@ fn git(dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
-        if args == ["rev-parse", "--show-toplevel"] {
-            return Err(GitError::NotARepo {
-                path: dir.display().to_string(),
-            });
-        }
         return Err(GitError::CommandFailed {
             command: format!("git {}", args.join(" ")),
             stderr,
         });
     }
 
-    let _ = stderr;
-
-    Ok(GitOutput { stdout })
+    Ok(GitOutput { stdout, stderr })
 }
 
 /// Find the root of the git repository containing `dir`.
 pub fn repo_root(dir: &Path) -> Result<PathBuf, GitError> {
-    let output = git(dir, &["rev-parse", "--show-toplevel"])?;
-    Ok(PathBuf::from(output.stdout.trim()))
+    let GitOutput { stdout, stderr } = git(dir, &["rev-parse", "--show-toplevel"])?;
+    let _ = stderr;
+    Ok(PathBuf::from(stdout.trim()))
 }
 
 /// Get the current HEAD commit SHA (short).

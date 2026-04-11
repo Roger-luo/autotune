@@ -50,7 +50,7 @@ fn repo_root_and_heads() {
 fn repo_root_rejects_non_repo() {
     let dir = tempfile::tempdir().unwrap();
     let err = repo_root(dir.path()).unwrap_err();
-    assert!(matches!(err, GitError::NotARepo { .. }));
+    assert!(matches!(err, GitError::CommandFailed { .. }));
 }
 
 #[test]
