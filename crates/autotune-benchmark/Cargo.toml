@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 autotune-config = { path = "../autotune-config" }
 autotune-adaptor = { path = "../autotune-adaptor" }
+libc = "0.2"
 serde_json = "1"
 thiserror = "2"
 

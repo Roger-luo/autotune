@@ -5,10 +5,14 @@ use autotune_config::{AdaptorConfig, BenchmarkConfig};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 /// Errors returned by benchmark execution and metric extraction.
 #[derive(Debug, Error)]
@@ -111,42 +115,58 @@ fn run_command_with_timeout(
     let program = &config.command[0];
     let args = &config.command[1..];
 
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(working_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| BenchmarkError::Io {
-            name: config.name.clone(),
-            source,
-        })?;
+        .stderr(Stdio::piped());
 
-    wait_for_child(config, &mut child)
+    #[cfg(unix)]
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+
+    let mut child = command.spawn().map_err(|source| BenchmarkError::Io {
+        name: config.name.clone(),
+        source,
+    })?;
+    let stdout_handle = spawn_stdout_reader(child.stdout.take());
+    let stderr_handle = spawn_stderr_reader(child.stderr.take());
+
+    match wait_for_child(config, &mut child) {
+        Ok(status) => collect_output(config, status, stdout_handle, stderr_handle),
+        Err(err) => {
+            let _ = join_reader(config, stdout_handle);
+            let _ = join_reader(config, stderr_handle);
+            Err(err)
+        }
+    }
 }
 
-fn wait_for_child(config: &BenchmarkConfig, child: &mut Child) -> Result<Output, BenchmarkError> {
+fn wait_for_child(
+    config: &BenchmarkConfig,
+    child: &mut Child,
+) -> Result<ExitStatus, BenchmarkError> {
     let deadline = Duration::from_secs(config.timeout);
     let started_at = Instant::now();
 
     loop {
-        if child
-            .try_wait()
-            .map_err(|source| BenchmarkError::Io {
-                name: config.name.clone(),
-                source,
-            })?
-            .is_some()
-        {
-            let status = child.wait().map_err(|source| BenchmarkError::Io {
-                name: config.name.clone(),
-                source,
-            })?;
-            return collect_output(config, child, status);
+        if let Some(status) = child.try_wait().map_err(|source| BenchmarkError::Io {
+            name: config.name.clone(),
+            source,
+        })? {
+            return Ok(status);
         }
 
         if started_at.elapsed() >= deadline {
-            let _ = child.kill();
+            terminate_child(child);
             let _ = child.wait();
             return Err(BenchmarkError::TimedOut {
                 name: config.name.clone(),
@@ -160,34 +180,80 @@ fn wait_for_child(config: &BenchmarkConfig, child: &mut Child) -> Result<Output,
 
 fn collect_output(
     config: &BenchmarkConfig,
-    child: &mut Child,
     status: ExitStatus,
+    stdout_handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
+    stderr_handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
 ) -> Result<Output, BenchmarkError> {
-    let mut stdout = Vec::new();
-    if let Some(mut stdout_pipe) = child.stdout.take() {
-        stdout_pipe
-            .read_to_end(&mut stdout)
-            .map_err(|source| BenchmarkError::Io {
-                name: config.name.clone(),
-                source,
-            })?;
-    }
-
-    let mut stderr = Vec::new();
-    if let Some(mut stderr_pipe) = child.stderr.take() {
-        stderr_pipe
-            .read_to_end(&mut stderr)
-            .map_err(|source| BenchmarkError::Io {
-                name: config.name.clone(),
-                source,
-            })?;
-    }
+    let stdout = join_reader(config, stdout_handle)?;
+    let stderr = join_reader(config, stderr_handle)?;
 
     Ok(Output {
         status,
         stdout,
         stderr,
     })
+}
+
+fn spawn_stdout_reader(
+    stdout: Option<ChildStdout>,
+) -> Option<JoinHandle<std::io::Result<Vec<u8>>>> {
+    stdout.map(spawn_pipe_reader)
+}
+
+fn spawn_stderr_reader(
+    stderr: Option<ChildStderr>,
+) -> Option<JoinHandle<std::io::Result<Vec<u8>>>> {
+    stderr.map(spawn_pipe_reader)
+}
+
+fn spawn_pipe_reader<R>(mut reader: R) -> JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut buffer = Vec::new();
+        reader.read_to_end(&mut buffer)?;
+        Ok(buffer)
+    })
+}
+
+fn join_reader(
+    config: &BenchmarkConfig,
+    handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
+) -> Result<Vec<u8>, BenchmarkError> {
+    let Some(handle) = handle else {
+        return Ok(Vec::new());
+    };
+
+    handle
+        .join()
+        .map_err(|_| BenchmarkError::Io {
+            name: config.name.clone(),
+            source: std::io::Error::other("benchmark output reader thread panicked"),
+        })?
+        .map_err(|source| BenchmarkError::Io {
+            name: config.name.clone(),
+            source,
+        })
+}
+
+#[cfg(unix)]
+fn terminate_child(child: &mut Child) {
+    let pgid = child.id() as i32;
+    // Benchmarks run in their own process group so timeout cleanup can reach descendants.
+    unsafe {
+        if libc::killpg(pgid, libc::SIGKILL) != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                let _ = child.kill();
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
 }
 
 struct ScriptAdaptorWithWorkingDir {

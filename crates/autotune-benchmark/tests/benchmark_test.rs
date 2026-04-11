@@ -2,6 +2,7 @@ use autotune_benchmark::{run_all_benchmarks, run_benchmark};
 use autotune_config::{AdaptorConfig, BenchmarkConfig, RegexPattern};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::time::Instant;
 
 fn make_regex_benchmark(name: &str, command_output: &str, metric_name: &str) -> BenchmarkConfig {
@@ -131,4 +132,79 @@ echo '{"cwd_metric": 7.0}'
 
     let metrics = run_benchmark(&config, workdir).unwrap();
     assert_eq!(metrics["cwd_metric"], 7.0);
+}
+
+#[test]
+fn benchmark_does_not_false_timeout_when_stdout_is_verbose() {
+    let config = BenchmarkConfig {
+        name: "verbose".to_string(),
+        command: vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "i=0; while [ \"$i\" -lt 20000 ]; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n'; i=$((i + 1)); done; echo 42.5".to_string(),
+        ],
+        timeout: 1,
+        adaptor: AdaptorConfig::Regex {
+            patterns: vec![RegexPattern {
+                name: "score".to_string(),
+                pattern: r"(42\.5)".to_string(),
+            }],
+        },
+    };
+
+    let metrics = run_benchmark(&config, Path::new(".")).unwrap();
+    assert_eq!(metrics["score"], 42.5);
+}
+
+#[test]
+fn benchmark_timeout_kills_background_descendants() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let pid_file = tempdir.path().join("bg.pid");
+    let config = BenchmarkConfig {
+        name: "timeout-tree".to_string(),
+        command: vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("sleep 30 & echo $! > {}; wait", shell_quote_path(&pid_file)),
+        ],
+        timeout: 1,
+        adaptor: AdaptorConfig::Regex { patterns: vec![] },
+    };
+
+    let err = run_benchmark(&config, Path::new(".")).unwrap_err();
+    assert!(err.to_string().contains("timed out"));
+
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let alive = process_exists(pid);
+    if alive {
+        kill_process(pid);
+    }
+    assert!(!alive, "background process {pid} survived timeout cleanup");
+}
+
+fn shell_quote_path(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+fn process_exists(pid: i32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn kill_process(pid: i32) {
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
