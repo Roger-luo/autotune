@@ -56,3 +56,24 @@ fn empty_test_list() {
     assert!(results.is_empty());
     assert!(all_passed(&results));
 }
+
+#[test]
+fn times_out_long_running_test() {
+    let config = TestConfig {
+        name: "timeout".to_string(),
+        command: ["sh", "-c", "sleep 2"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
+        timeout: 1,
+    };
+
+    let error = run_test(&config, std::path::Path::new(".")).unwrap_err();
+    match error {
+        autotune_test::TestError::Timeout { name, timeout } => {
+            assert_eq!(name, "timeout");
+            assert_eq!(timeout, 1);
+        }
+        other => panic!("expected timeout error, got {other:?}"),
+    }
+}
