@@ -1,13 +1,29 @@
 use crate::{Agent, AgentConfig, AgentError, AgentResponse, AgentSession, ToolPermission};
 use serde_json::Value;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
-pub struct ClaudeAgent;
+pub struct ClaudeAgent {
+    command: PathBuf,
+    sessions: Mutex<HashMap<String, SessionContext>>,
+}
+
+#[derive(Debug, Clone)]
+struct SessionContext {
+    allowed_tools: Vec<ToolPermission>,
+    working_directory: PathBuf,
+    model: Option<String>,
+    max_turns: Option<u64>,
+}
 
 impl ClaudeAgent {
     pub fn new() -> Self {
-        Self
+        Self {
+            command: PathBuf::from("claude"),
+            sessions: Mutex::new(HashMap::new()),
+        }
     }
 
     fn build_args(config: &AgentConfig, session_id: Option<&str>) -> Vec<String> {
@@ -53,26 +69,77 @@ impl ClaudeAgent {
         args
     }
 
-    fn extract_response(stdout: &str) -> AgentResponse {
-        let parsed = serde_json::from_str::<Value>(stdout).ok();
+    fn parse_response(stdout: &str) -> Result<AgentResponse, AgentError> {
+        let parsed =
+            serde_json::from_str::<Value>(stdout).map_err(|source| AgentError::ParseFailed {
+                message: format!("invalid claude JSON output: {source}"),
+            })?;
         let session_id = parsed
-            .as_ref()
-            .and_then(|value| value.get("session_id"))
+            .get("session_id")
             .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+            .ok_or_else(|| AgentError::ParseFailed {
+                message: "claude JSON missing string field 'session_id'".to_string(),
+            })?;
         let text = parsed
-            .as_ref()
-            .and_then(|value| value.get("result"))
+            .get("result")
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| stdout.to_string());
+            .ok_or_else(|| AgentError::ParseFailed {
+                message: "claude JSON missing string field 'result'".to_string(),
+            })?;
 
-        AgentResponse { text, session_id }
+        Ok(AgentResponse {
+            text: text.to_string(),
+            session_id: session_id.to_string(),
+        })
     }
 
-    fn run_claude(args: &[String], cwd: &Path) -> Result<AgentResponse, AgentError> {
-        let output = Command::new("claude")
+    fn remember_session(&self, session_id: &str, config: &AgentConfig) -> Result<(), AgentError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| AgentError::CommandFailed {
+                message: "claude session state unavailable".to_string(),
+            })?;
+        sessions.insert(
+            session_id.to_string(),
+            SessionContext {
+                allowed_tools: config.allowed_tools.clone(),
+                working_directory: config.working_directory.clone(),
+                model: config.model.clone(),
+                max_turns: config.max_turns,
+            },
+        );
+        Ok(())
+    }
+
+    fn config_for_session(
+        &self,
+        session_id: &str,
+        message: &str,
+    ) -> Result<AgentConfig, AgentError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| AgentError::CommandFailed {
+                message: "claude session state unavailable".to_string(),
+            })?;
+        let context = sessions
+            .get(session_id)
+            .ok_or_else(|| AgentError::CommandFailed {
+                message: format!("missing claude session context for '{session_id}'"),
+            })?;
+
+        Ok(AgentConfig {
+            prompt: message.to_string(),
+            allowed_tools: context.allowed_tools.clone(),
+            working_directory: context.working_directory.clone(),
+            model: context.model.clone(),
+            max_turns: context.max_turns,
+        })
+    }
+
+    fn run_claude(&self, args: &[String], cwd: &Path) -> Result<AgentResponse, AgentError> {
+        let output = Command::new(&self.command)
             .args(args)
             .current_dir(cwd)
             .output()
@@ -86,7 +153,7 @@ impl ClaudeAgent {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(Self::extract_response(&stdout))
+        Self::parse_response(&stdout)
     }
 }
 
@@ -99,19 +166,17 @@ impl Default for ClaudeAgent {
 impl Agent for ClaudeAgent {
     fn spawn(&self, config: &AgentConfig) -> Result<AgentResponse, AgentError> {
         let args = Self::build_args(config, None);
-        Self::run_claude(&args, &config.working_directory)
+        let response = self.run_claude(&args, &config.working_directory)?;
+        self.remember_session(&response.session_id, config)?;
+        Ok(response)
     }
 
     fn send(&self, session: &AgentSession, message: &str) -> Result<AgentResponse, AgentError> {
-        let config = AgentConfig {
-            prompt: message.to_string(),
-            allowed_tools: vec![],
-            working_directory: std::path::PathBuf::from("."),
-            model: None,
-            max_turns: None,
-        };
+        let config = self.config_for_session(&session.session_id, message)?;
         let args = Self::build_args(&config, Some(&session.session_id));
-        Self::run_claude(&args, &config.working_directory)
+        let response = self.run_claude(&args, &config.working_directory)?;
+        self.remember_session(&response.session_id, &config)?;
+        Ok(response)
     }
 
     fn backend_name(&self) -> &str {
