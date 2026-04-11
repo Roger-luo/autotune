@@ -84,6 +84,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "autotune-plan"
+version = "0.1.0"
+dependencies = [
+ "autotune-agent",
+ "autotune-state",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "autotune-score"
 version = "0.1.0"
 dependencies = [

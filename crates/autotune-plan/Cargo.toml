@@ -1,0 +1,15 @@
+[package]
+name = "autotune-plan"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+autotune-agent = { path = "../autotune-agent" }
+autotune-state = { path = "../autotune-state" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+chrono = "0.4"
