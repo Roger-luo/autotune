@@ -1,6 +1,5 @@
 pub mod claude;
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -22,14 +21,14 @@ pub enum AgentError {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ToolPermission {
     Allow(String),
     AllowScoped(String, String),
     Deny(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AgentConfig {
     pub prompt: String,
     pub allowed_tools: Vec<ToolPermission>,
@@ -38,13 +37,13 @@ pub struct AgentConfig {
     pub max_turns: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AgentSession {
     pub session_id: String,
     pub backend: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct AgentResponse {
     pub text: String,
     pub session_id: String,
