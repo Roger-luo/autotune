@@ -67,8 +67,8 @@ pub fn run_test(config: &TestConfig, working_dir: &Path) -> Result<TestResult, T
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = collect_output(stdout_reader, &config.name);
-            let _ = collect_output(stderr_reader, &config.name);
+            drop(stdout_reader);
+            drop(stderr_reader);
             return Err(TestError::Timeout {
                 name: config.name.clone(),
                 timeout: config.timeout,

@@ -1,5 +1,7 @@
 use autotune_config::TestConfig;
 use autotune_test::{all_passed, run_all_tests, run_test};
+use std::sync::mpsc;
+use std::time::Duration;
 
 fn make_test_config(name: &str, command: &[&str]) -> TestConfig {
     TestConfig {
@@ -72,6 +74,37 @@ fn times_out_long_running_test() {
     match error {
         autotune_test::TestError::Timeout { name, timeout } => {
             assert_eq!(name, "timeout");
+            assert_eq!(timeout, 1);
+        }
+        other => panic!("expected timeout error, got {other:?}"),
+    }
+}
+
+#[test]
+fn timeout_returns_even_if_descendant_keeps_pipes_open() {
+    let config = TestConfig {
+        name: "orphaned-pipes".to_string(),
+        command: ["sh", "-c", "sleep 5 & wait"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
+        timeout: 1,
+    };
+
+    let (tx, rx) = mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let result = run_test(&config, std::path::Path::new("."));
+        let _ = tx.send(result);
+    });
+
+    let error = rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("run_test should return promptly after timeout");
+    handle.join().unwrap();
+
+    match error.unwrap_err() {
+        autotune_test::TestError::Timeout { name, timeout } => {
+            assert_eq!(name, "orphaned-pipes");
             assert_eq!(timeout, 1);
         }
         other => panic!("expected timeout error, got {other:?}"),
