@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::Command;
 use thiserror::Error;
 
+/// Errors returned by benchmark execution and metric extraction.
 #[derive(Debug, Error)]
 pub enum BenchmarkError {
     #[error("benchmark '{name}' command failed (exit code {code}): {stderr}")]
@@ -30,6 +31,7 @@ pub enum BenchmarkError {
     },
 }
 
+/// Run a single benchmark command and extract metrics.
 pub fn run_benchmark(
     config: &BenchmarkConfig,
     working_dir: &Path,
@@ -68,6 +70,7 @@ pub fn run_benchmark(
         })
 }
 
+/// Run all configured benchmarks and merge their metrics.
 pub fn run_all_benchmarks(
     configs: &[BenchmarkConfig],
     working_dir: &Path,
@@ -82,10 +85,11 @@ pub fn run_all_benchmarks(
     Ok(all_metrics)
 }
 
+/// Build a MetricAdaptor from config.
 fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn MetricAdaptor> {
     match config {
         AdaptorConfig::Regex { patterns } => {
-            let configs = patterns
+            let configs: Vec<RegexPatternConfig> = patterns
                 .iter()
                 .map(|pattern| RegexPatternConfig {
                     name: pattern.name.clone(),
