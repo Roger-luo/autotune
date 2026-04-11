@@ -13,7 +13,7 @@ pub enum StateError {
     #[error("experiment not found: {name}")]
     NotFound { name: String },
 
-    #[error("invalid phase transition: {from} -> {to}")]
+    #[error("invalid phase transition: {from} → {to}")]
     InvalidTransition { from: String, to: String },
 
     #[error("IO error: {source}")]
@@ -265,7 +265,7 @@ impl ExperimentStore {
     }
 }
 
-pub fn atomic_write(path: &Path, content: &str) -> Result<(), StateError> {
+fn atomic_write(path: &Path, content: &str) -> Result<(), StateError> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(content.as_bytes())?;
