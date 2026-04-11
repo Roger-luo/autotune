@@ -40,6 +40,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "autotune-git"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "autotune-score"
 version = "0.1.0"
 dependencies = [
