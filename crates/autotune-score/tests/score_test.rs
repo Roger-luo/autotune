@@ -121,20 +121,90 @@ fn weighted_sum_guardrail_passes() {
 }
 
 #[test]
-fn weighted_sum_zero_baseline() {
+fn weighted_sum_zero_best_improvement_is_not_neutral() {
+    let scorer = WeightedSumScorer::new(
+        vec![PrimaryMetricDef {
+            name: "m".to_string(),
+            direction: Direction::Maximize,
+            weight: 1.0,
+        }],
+        vec![],
+    );
+
+    let input = make_input(&[("m", 100.0)], &[("m", 1.0)]);
+    let input = ScoreInput {
+        baseline: input.baseline,
+        candidate: input.candidate,
+        best: [("m", 0.0)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    };
+    let result = scorer.calculate(&input).unwrap();
+
+    assert_eq!(result.decision, "keep");
+    assert!(result.rank > 0.0);
+}
+
+#[test]
+fn weighted_sum_zero_best_guardrail_blocks() {
     let scorer = WeightedSumScorer::new(
         vec![PrimaryMetricDef {
             name: "m".to_string(),
             direction: Direction::Minimize,
             weight: 1.0,
         }],
+        vec![GuardrailMetricDef {
+            name: "m".to_string(),
+            direction: Direction::Minimize,
+            max_regression: 0.01,
+        }],
+    );
+
+    let input = make_input(&[("m", 10.0)], &[("m", 1.0)]);
+    let input = ScoreInput {
+        baseline: input.baseline,
+        candidate: input.candidate,
+        best: [("m", 0.0)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    };
+    let result = scorer.calculate(&input).unwrap();
+
+    assert_eq!(result.decision, "discard");
+    assert!(result.reason.contains("guardrail"));
+}
+
+#[test]
+fn weighted_sum_uses_best_not_baseline() {
+    let scorer = WeightedSumScorer::new(
+        vec![PrimaryMetricDef {
+            name: "time".to_string(),
+            direction: Direction::Minimize,
+            weight: 1.0,
+        }],
         vec![],
     );
 
-    let input = make_input(&[("m", 0.0)], &[("m", 5.0)]);
+    let input = ScoreInput {
+        baseline: [("time", 100.0)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        candidate: [("time", 60.0)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+        best: [("time", 50.0)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+    };
     let result = scorer.calculate(&input).unwrap();
 
-    assert_eq!(result.rank, 0.0);
+    assert_eq!(result.decision, "discard");
+    assert!(result.rank < 0.0);
 }
 
 #[test]

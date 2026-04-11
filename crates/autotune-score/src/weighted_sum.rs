@@ -36,12 +36,15 @@ impl WeightedSumScorer {
 
 pub fn improvement(best: f64, candidate: f64, direction: Direction) -> f64 {
     if best == 0.0 {
-        return 0.0;
-    }
-
-    match direction {
-        Direction::Maximize => (candidate - best) / best.abs(),
-        Direction::Minimize => (best - candidate) / best.abs(),
+        match direction {
+            Direction::Maximize => candidate - best,
+            Direction::Minimize => best - candidate,
+        }
+    } else {
+        match direction {
+            Direction::Maximize => (candidate - best) / best.abs(),
+            Direction::Minimize => (best - candidate) / best.abs(),
+        }
     }
 }
 
@@ -51,13 +54,16 @@ pub fn check_guardrail(
     direction: Direction,
     max_regression: f64,
 ) -> Option<f64> {
-    if best == 0.0 {
-        return None;
-    }
-
-    let regression = match direction {
-        Direction::Maximize => (best - candidate) / best.abs(),
-        Direction::Minimize => (candidate - best) / best.abs(),
+    let regression = if best == 0.0 {
+        match direction {
+            Direction::Maximize => best - candidate,
+            Direction::Minimize => candidate - best,
+        }
+    } else {
+        match direction {
+            Direction::Maximize => (best - candidate) / best.abs(),
+            Direction::Minimize => (candidate - best) / best.abs(),
+        }
     };
 
     if regression > max_regression {
