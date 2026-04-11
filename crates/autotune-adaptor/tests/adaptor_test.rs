@@ -123,7 +123,7 @@ fn script_adaptor_echo_json() {
     let adaptor = ScriptAdaptor::new(vec![
         "sh".to_string(),
         "-c".to_string(),
-        r#"echo '{"metric1": 42.0, "metric2": 2.5}'"#.to_string(),
+        r#"echo '{"metric1": 42.0, "metric2": 3.14}'"#.to_string(),
     ]);
 
     let output = BenchmarkOutput {
@@ -133,7 +133,7 @@ fn script_adaptor_echo_json() {
 
     let metrics = adaptor.extract(&output).unwrap();
     assert_eq!(metrics["metric1"], 42.0);
-    assert_eq!(metrics["metric2"], 2.5);
+    assert_eq!(metrics["metric2"], 314.0_f64 / 100.0);
 }
 
 #[test]
