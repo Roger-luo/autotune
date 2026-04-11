@@ -22,6 +22,11 @@ fn git(dir: &Path, args: &[&str]) -> Result<GitOutput, GitError> {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !output.status.success() {
+        if args == ["rev-parse", "--show-toplevel"] {
+            return Err(GitError::NotARepo {
+                path: dir.display().to_string(),
+            });
+        }
         return Err(GitError::CommandFailed {
             command: format!("git {}", args.join(" ")),
             stderr,

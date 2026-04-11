@@ -1,6 +1,6 @@
 use autotune_git::{
-    checkout, cherry_pick, create_branch, create_worktree, current_branch, has_commits_ahead,
-    head_sha, latest_commit_sha, repo_root,
+    GitError, checkout, cherry_pick, create_branch, create_worktree, current_branch,
+    has_commits_ahead, head_sha, latest_commit_sha, repo_root,
 };
 use std::io::Write;
 use std::path::Path;
@@ -44,6 +44,13 @@ fn repo_root_and_heads() {
     assert_eq!(current_branch(repo.path()).unwrap(), "main");
     assert_eq!(head_sha(repo.path()).unwrap().len(), 7);
     assert_eq!(latest_commit_sha(repo.path()).unwrap().len(), 40);
+}
+
+#[test]
+fn repo_root_rejects_non_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = repo_root(dir.path()).unwrap_err();
+    assert!(matches!(err, GitError::NotARepo { .. }));
 }
 
 #[test]
