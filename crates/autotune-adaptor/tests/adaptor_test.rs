@@ -137,6 +137,23 @@ fn script_adaptor_echo_json() {
 }
 
 #[test]
+fn script_adaptor_pipes_benchmark_output_to_stdin() {
+    let adaptor = ScriptAdaptor::new(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        r#"bytes=$(cat | wc -c | tr -d ' '); echo "{\"stdin_bytes\": $bytes}""#.to_string(),
+    ]);
+
+    let output = BenchmarkOutput {
+        stdout: "abc".to_string(),
+        stderr: "de".to_string(),
+    };
+
+    let metrics = adaptor.extract(&output).unwrap();
+    assert_eq!(metrics["stdin_bytes"], 6.0);
+}
+
+#[test]
 fn script_adaptor_nonzero_exit_returns_error() {
     let adaptor = ScriptAdaptor::new(vec![
         "sh".to_string(),
@@ -144,6 +161,17 @@ fn script_adaptor_nonzero_exit_returns_error() {
         "exit 1".to_string(),
     ]);
 
+    let output = BenchmarkOutput {
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+
+    assert!(adaptor.extract(&output).is_err());
+}
+
+#[test]
+fn script_adaptor_empty_command_returns_error() {
+    let adaptor = ScriptAdaptor::new(vec![]);
     let output = BenchmarkOutput {
         stdout: String::new(),
         stderr: String::new(),

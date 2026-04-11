@@ -28,6 +28,9 @@ pub enum AdaptorError {
     #[error("script failed with exit code {code}: {stderr}")]
     ScriptFailed { code: i32, stderr: String },
 
+    #[error("script command is empty")]
+    ScriptEmptyCommand,
+
     #[error("script output is not valid JSON: {source}")]
     ScriptOutputParse { source: serde_json::Error },
 

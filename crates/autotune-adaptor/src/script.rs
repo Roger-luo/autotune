@@ -16,8 +16,9 @@ impl ScriptAdaptor {
 
 impl MetricAdaptor for ScriptAdaptor {
     fn extract(&self, output: &BenchmarkOutput) -> Result<Metrics, AdaptorError> {
-        let program = &self.command[0];
-        let args = &self.command[1..];
+        let Some((program, args)) = self.command.split_first() else {
+            return Err(AdaptorError::ScriptEmptyCommand);
+        };
 
         let mut child = Command::new(program)
             .args(args)
