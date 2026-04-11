@@ -77,3 +77,19 @@ fn times_out_long_running_test() {
         other => panic!("expected timeout error, got {other:?}"),
     }
 }
+
+#[test]
+fn verbose_test_does_not_false_timeout() {
+    let config = TestConfig {
+        name: "verbose".to_string(),
+        command: ["sh", "-c", "yes x | head -c 1048576"]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect(),
+        timeout: 1,
+    };
+
+    let result = run_test(&config, std::path::Path::new(".")).unwrap();
+    assert!(result.passed);
+    assert_eq!(result.stdout.len(), 1_048_576);
+}

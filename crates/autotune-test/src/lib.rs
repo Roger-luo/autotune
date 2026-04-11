@@ -2,7 +2,7 @@ use autotune_config::TestConfig;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -53,6 +53,9 @@ pub fn run_test(config: &TestConfig, working_dir: &Path) -> Result<TestResult, T
             source,
         })?;
 
+    let stdout_reader = spawn_output_reader(child.stdout.take(), &config.name)?;
+    let stderr_reader = spawn_output_reader(child.stderr.take(), &config.name)?;
+
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|source| TestError::Io {
             name: config.name.clone(),
@@ -64,6 +67,8 @@ pub fn run_test(config: &TestConfig, working_dir: &Path) -> Result<TestResult, T
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = collect_output(stdout_reader, &config.name);
+            let _ = collect_output(stderr_reader, &config.name);
             return Err(TestError::Timeout {
                 name: config.name.clone(),
                 timeout: config.timeout,
@@ -74,8 +79,8 @@ pub fn run_test(config: &TestConfig, working_dir: &Path) -> Result<TestResult, T
     };
 
     let duration = start.elapsed().as_secs_f64();
-    let stdout = read_child_stream(child.stdout.take(), &config.name)?;
-    let stderr = read_child_stream(child.stderr.take(), &config.name)?;
+    let stdout = collect_output(stdout_reader, &config.name)?;
+    let stderr = collect_output(stderr_reader, &config.name)?;
 
     if status.success() {
         Ok(TestResult {
@@ -96,17 +101,38 @@ pub fn run_test(config: &TestConfig, working_dir: &Path) -> Result<TestResult, T
     }
 }
 
-fn read_child_stream(mut stream: Option<impl Read>, test_name: &str) -> Result<String, TestError> {
-    let mut bytes = Vec::new();
+fn spawn_output_reader(
+    stream: Option<impl Read + Send + 'static>,
+    test_name: &str,
+) -> Result<JoinHandle<Result<Vec<u8>, TestError>>, TestError> {
+    let Some(mut stream) = stream else {
+        return Err(TestError::Io {
+            name: test_name.to_string(),
+            source: std::io::Error::other("child output pipe was not captured"),
+        });
+    };
+    let test_name = test_name.to_string();
 
-    if let Some(stream) = stream.as_mut() {
+    Ok(thread::spawn(move || {
+        let mut bytes = Vec::new();
         stream
             .read_to_end(&mut bytes)
             .map_err(|source| TestError::Io {
-                name: test_name.to_string(),
+                name: test_name,
                 source,
             })?;
-    }
+        Ok(bytes)
+    }))
+}
+
+fn collect_output(
+    reader: JoinHandle<Result<Vec<u8>, TestError>>,
+    test_name: &str,
+) -> Result<String, TestError> {
+    let bytes = reader.join().map_err(|_| TestError::Io {
+        name: test_name.to_string(),
+        source: std::io::Error::other("child output reader thread panicked"),
+    })??;
 
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
