@@ -6,6 +6,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
 pub type Metrics = HashMap<String, f64>;
 
 #[derive(Debug, Error)]
@@ -266,7 +269,7 @@ impl ExperimentStore {
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), StateError> {
-    let dir = path.parent().unwrap_or(Path::new("."));
+    let dir = parent_directory(path);
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(content.as_bytes())?;
     tmp.as_file_mut().sync_all()?;
@@ -279,13 +282,83 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), StateError> {
 }
 
 fn create_dir_all_and_sync_parent(path: &Path) -> Result<(), StateError> {
-    fs::create_dir_all(path)?;
-    sync_directory(path.parent().unwrap_or(Path::new(".")))?;
+    if path.exists() {
+        fs::create_dir_all(path)?;
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    let mut current = path;
+
+    while !current.exists() {
+        missing.push(current.to_path_buf());
+        current = parent_directory(current);
+    }
+
+    missing.reverse();
+
+    for dir in missing {
+        fs::create_dir(&dir)?;
+        sync_directory(parent_directory(&dir))?;
+    }
+
     Ok(())
+}
+
+fn parent_directory(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
 }
 
 fn sync_directory(path: &Path) -> Result<(), StateError> {
     let dir = fs::File::open(path)?;
     dir.sync_all()?;
+    record_synced_directory(path);
     Ok(())
+}
+
+#[cfg(test)]
+fn record_synced_directory(path: &Path) {
+    let synced = SYNCED_DIRECTORIES.get_or_init(|| Mutex::new(Vec::new()));
+    synced.lock().unwrap().push(path.to_path_buf());
+}
+
+#[cfg(not(test))]
+fn record_synced_directory(_path: &Path) {}
+
+#[cfg(test)]
+static SYNCED_DIRECTORIES: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+
+#[cfg(test)]
+fn take_synced_directories() -> Vec<PathBuf> {
+    let synced = SYNCED_DIRECTORIES.get_or_init(|| Mutex::new(Vec::new()));
+    std::mem::take(&mut *synced.lock().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_dir_all_and_sync_parent_syncs_each_new_component_in_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp
+            .path()
+            .join("experiments")
+            .join("demo")
+            .join("iterations");
+
+        create_dir_all_and_sync_parent(&nested).unwrap();
+
+        assert_eq!(
+            take_synced_directories(),
+            vec![
+                temp.path().to_path_buf(),
+                temp.path().join("experiments"),
+                temp.path().join("experiments").join("demo"),
+            ]
+        );
+    }
 }
