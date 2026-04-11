@@ -34,6 +34,8 @@ version = "0.1.0"
 dependencies = [
  "autotune-adaptor",
  "autotune-config",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
