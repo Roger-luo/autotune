@@ -86,6 +86,18 @@ fn roundtrip_state_with_approach() {
 }
 
 #[test]
+fn new_creates_experiment_and_iterations_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let experiment_dir = dir.path().join("experiments").join("demo");
+
+    let store = ExperimentStore::new(&experiment_dir).unwrap();
+
+    assert_eq!(store.root(), experiment_dir.as_path());
+    assert!(experiment_dir.exists());
+    assert!(experiment_dir.join("iterations").exists());
+}
+
+#[test]
 fn ledger_append_and_load() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperimentStore::new(dir.path()).unwrap();

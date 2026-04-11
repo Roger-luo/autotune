@@ -119,8 +119,8 @@ pub struct ExperimentStore {
 
 impl ExperimentStore {
     pub fn new(experiment_dir: &Path) -> Result<Self, StateError> {
-        fs::create_dir_all(experiment_dir)?;
-        fs::create_dir_all(experiment_dir.join("iterations"))?;
+        create_dir_all_and_sync_parent(experiment_dir)?;
+        create_dir_all_and_sync_parent(&experiment_dir.join("iterations"))?;
         Ok(Self {
             root: experiment_dir.to_path_buf(),
         })
@@ -216,7 +216,7 @@ impl ExperimentStore {
         metrics: &Metrics,
     ) -> Result<(), StateError> {
         let dir = self.iteration_dir(iteration, approach);
-        fs::create_dir_all(&dir)?;
+        create_dir_all_and_sync_parent(&dir)?;
         atomic_write(
             &dir.join("metrics.json"),
             &serde_json::to_string_pretty(metrics)?,
@@ -230,7 +230,7 @@ impl ExperimentStore {
         prompt: &str,
     ) -> Result<(), StateError> {
         let dir = self.iteration_dir(iteration, approach);
-        fs::create_dir_all(&dir)?;
+        create_dir_all_and_sync_parent(&dir)?;
         atomic_write(&dir.join("prompt.md"), prompt)
     }
 
@@ -241,7 +241,7 @@ impl ExperimentStore {
         output: &str,
     ) -> Result<(), StateError> {
         let dir = self.iteration_dir(iteration, approach);
-        fs::create_dir_all(&dir)?;
+        create_dir_all_and_sync_parent(&dir)?;
         atomic_write(&dir.join("test_output.txt"), output)
     }
 
@@ -275,6 +275,12 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), StateError> {
         source: error.error,
     })?;
     sync_directory(dir)?;
+    Ok(())
+}
+
+fn create_dir_all_and_sync_parent(path: &Path) -> Result<(), StateError> {
+    fs::create_dir_all(path)?;
+    sync_directory(path.parent().unwrap_or(Path::new(".")))?;
     Ok(())
 }
 
