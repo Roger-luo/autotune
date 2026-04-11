@@ -278,3 +278,81 @@ max_turns = 50
     assert_eq!(implementation.model.unwrap(), "sonnet");
     assert_eq!(implementation.max_turns.unwrap(), 50);
 }
+
+#[test]
+fn parse_criterion_benchmark_with_mean_metric() {
+    let f = write_config(
+        r#"
+[experiment]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[benchmark]]
+name = "criterion-bench"
+command = ["cargo", "bench"]
+adaptor = { type = "criterion", benchmark_name = "my_bench" }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "mean", direction = "Minimize" }]
+"#,
+    );
+    let config = AutotuneConfig::load(f.path()).unwrap();
+    assert_eq!(config.benchmark.len(), 1);
+}
+
+#[test]
+fn error_empty_script_adaptor_command() {
+    let f = write_config(
+        r#"
+[experiment]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[benchmark]]
+name = "script-bench"
+command = ["echo"]
+adaptor = { type = "script", command = [] }
+
+[score]
+type = "script"
+command = ["python", "judge.py"]
+"#,
+    );
+    let err = AutotuneConfig::load(f.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::Validation { .. }));
+    assert!(err.to_string().contains("empty script adaptor command"));
+}
+
+#[test]
+fn error_invalid_denied_glob() {
+    let f = write_config(
+        r#"
+[experiment]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+denied = ["["]
+
+[[benchmark]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+"#,
+    );
+    let err = AutotuneConfig::load(f.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::Validation { .. }));
+    assert!(err.to_string().contains("invalid denied glob"));
+}

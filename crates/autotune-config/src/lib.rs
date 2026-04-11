@@ -237,6 +237,13 @@ impl AutotuneConfig {
                     message: format!("benchmark '{}' has empty command", b.name),
                 });
             }
+            if let AdaptorConfig::Script { command } = &b.adaptor
+                && command.is_empty()
+            {
+                return Err(ConfigError::Validation {
+                    message: format!("benchmark '{}' has empty script adaptor command", b.name),
+                });
+            }
         }
 
         // Each test command non-empty
@@ -259,6 +266,11 @@ impl AutotuneConfig {
         for pattern in &self.paths.tunable {
             globset::Glob::new(pattern).map_err(|e| ConfigError::Validation {
                 message: format!("invalid tunable glob '{}': {}", pattern, e),
+            })?;
+        }
+        for pattern in &self.paths.denied {
+            globset::Glob::new(pattern).map_err(|e| ConfigError::Validation {
+                message: format!("invalid denied glob '{}': {}", pattern, e),
             })?;
         }
 
@@ -333,8 +345,13 @@ impl AutotuneConfig {
             AdaptorConfig::Regex { patterns } => patterns.iter().map(|p| p.name.clone()).collect(),
             AdaptorConfig::Criterion { .. } => {
                 // Criterion produces standard names: "mean", "median", etc.
-                // We can't validate references against these statically.
-                vec![]
+                vec![
+                    "mean".to_string(),
+                    "median".to_string(),
+                    "std_dev".to_string(),
+                    "variance".to_string(),
+                    "slope".to_string(),
+                ]
             }
             AdaptorConfig::Script { .. } => vec![],
         }
