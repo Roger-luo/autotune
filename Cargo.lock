@@ -53,6 +53,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "autotune-benchmark"
+version = "0.1.0"
+dependencies = [
+ "autotune-adaptor",
+ "autotune-config",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "autotune-config"
 version = "0.1.0"
 dependencies = [
