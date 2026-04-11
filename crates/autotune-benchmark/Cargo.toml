@@ -1,0 +1,10 @@
+[package]
+name = "autotune-benchmark"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+autotune-config = { path = "../autotune-config" }
+autotune-adaptor = { path = "../autotune-adaptor" }
+thiserror = "2"
+
