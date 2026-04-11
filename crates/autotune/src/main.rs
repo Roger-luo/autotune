@@ -35,17 +35,14 @@ fn main() -> Result<()> {
         } => cmd_resume(experiment, max_iterations, max_duration, target_improvement),
         Commands::Report { experiment, format } => cmd_report(experiment, format),
         Commands::List => cmd_list(),
-        Commands::Init
-        | Commands::Plan
-        | Commands::Implement
-        | Commands::Test
-        | Commands::Benchmark
-        | Commands::Record
-        | Commands::Apply
-        | Commands::Export => {
-            println!("not yet implemented");
-            Ok(())
-        }
+        Commands::Init { name } => cmd_init(name),
+        Commands::Plan { experiment } => cmd_step(experiment, Phase::Planning),
+        Commands::Implement { experiment } => cmd_step(experiment, Phase::Implementing),
+        Commands::Test { experiment } => cmd_step(experiment, Phase::Testing),
+        Commands::Benchmark { experiment } => cmd_step(experiment, Phase::Benchmarking),
+        Commands::Record { experiment } => cmd_step(experiment, Phase::Scoring),
+        Commands::Apply { experiment } => cmd_step(experiment, Phase::Integrating),
+        Commands::Export { experiment, output } => cmd_export(experiment, output),
     }
 }
 
@@ -437,6 +434,183 @@ fn cmd_list() -> Result<()> {
             }
         }
     }
+
+    Ok(())
+}
+
+fn cmd_init(name_override: Option<String>) -> Result<()> {
+    let repo_root = find_repo_root()?;
+    let config_path = repo_root.join(".autotune.toml");
+
+    if !config_path.exists() {
+        println!("[autotune] no .autotune.toml found — agent-assisted init not yet supported");
+        println!("[autotune] create .autotune.toml manually and run `autotune init` again");
+        return Ok(());
+    }
+
+    let mut config = load_config(&repo_root)?;
+
+    if let Some(name) = name_override {
+        config.experiment.name = name;
+    }
+
+    let experiment_dir = config.experiment_dir(&repo_root);
+    if experiment_dir.exists() {
+        bail!(
+            "experiment '{}' already exists at {}. Use 'resume' to continue it.",
+            config.experiment.name,
+            experiment_dir.display()
+        );
+    }
+
+    let store =
+        ExperimentStore::new(&experiment_dir).context("failed to create experiment store")?;
+
+    // Snapshot config
+    let config_content = std::fs::read_to_string(&config_path).context("failed to read config")?;
+    store
+        .save_config_snapshot(&config_content)
+        .context("failed to save config snapshot")?;
+
+    // Run sanity tests
+    if !config.test.is_empty() {
+        println!("[autotune] running sanity tests...");
+        let test_results = autotune_test::run_all_tests(&config.test, &repo_root)
+            .context("sanity tests failed to execute")?;
+        if !autotune_test::all_passed(&test_results) {
+            let failed: Vec<_> = test_results
+                .iter()
+                .filter(|r| !r.passed)
+                .map(|r| r.name.as_str())
+                .collect();
+            bail!("sanity tests failed: {}", failed.join(", "));
+        }
+        println!("[autotune] sanity tests passed");
+    }
+
+    // Take baseline benchmarks
+    println!("[autotune] running baseline benchmarks...");
+    let baseline_metrics = autotune_benchmark::run_all_benchmarks(&config.benchmark, &repo_root)
+        .context("baseline benchmarks failed")?;
+    println!("[autotune] baseline metrics: {:?}", baseline_metrics);
+
+    // Record baseline in ledger
+    let baseline_record = IterationRecord {
+        iteration: 0,
+        approach: "baseline".to_string(),
+        status: IterationStatus::Baseline,
+        hypothesis: None,
+        metrics: baseline_metrics,
+        rank: 0.0,
+        score: None,
+        reason: None,
+        timestamp: Utc::now(),
+    };
+    store
+        .append_ledger(&baseline_record)
+        .context("failed to record baseline")?;
+
+    println!();
+    println!(
+        "[autotune] experiment '{}' initialized",
+        config.experiment.name
+    );
+    println!("[autotune] results at: {}", experiment_dir.display());
+    println!("[autotune] run `autotune run` to start the tune loop or use step commands");
+
+    Ok(())
+}
+
+fn cmd_step(experiment_name: String, expected_phase: Phase) -> Result<()> {
+    let repo_root = find_repo_root()?;
+    let autotune_dir = repo_root.join(".autotune");
+    let experiment_dir = autotune_dir.join("experiments").join(&experiment_name);
+
+    let store = ExperimentStore::open(&experiment_dir).with_context(|| {
+        format!(
+            "experiment '{}' not found at {}",
+            experiment_name,
+            experiment_dir.display()
+        )
+    })?;
+
+    // Load frozen config from snapshot
+    let config_snapshot = store
+        .load_config_snapshot()
+        .context("failed to load config snapshot")?;
+    let config: AutotuneConfig =
+        toml::from_str(&config_snapshot).context("failed to parse frozen config")?;
+
+    let mut state = store
+        .load_state()
+        .context("failed to load experiment state")?;
+
+    // Validate phase
+    if state.current_phase != expected_phase {
+        bail!(
+            "experiment '{}' is in phase {}, but this command requires phase {}",
+            experiment_name,
+            state.current_phase,
+            expected_phase,
+        );
+    }
+
+    let agent = build_agent(&config);
+    let scorer = build_scorer(&config);
+
+    machine::run_single_phase(
+        &config,
+        agent.as_ref(),
+        scorer.as_ref(),
+        &repo_root,
+        &store,
+        &mut state,
+    )?;
+
+    println!(
+        "[autotune] step complete — experiment '{}' is now in phase {}",
+        experiment_name, state.current_phase
+    );
+
+    Ok(())
+}
+
+fn cmd_export(experiment_name: String, output_path: String) -> Result<()> {
+    let repo_root = find_repo_root()?;
+    let autotune_dir = repo_root.join(".autotune");
+    let experiment_dir = autotune_dir.join("experiments").join(&experiment_name);
+
+    let store = ExperimentStore::open(&experiment_dir).with_context(|| {
+        format!(
+            "experiment '{}' not found at {}",
+            experiment_name,
+            experiment_dir.display()
+        )
+    })?;
+
+    let state = store.load_state().context("failed to load state")?;
+    let ledger = store.load_ledger().context("failed to load ledger")?;
+    let log = store.read_log().unwrap_or_default();
+
+    // Load raw config snapshot as a string
+    let config_toml = store.load_config_snapshot().unwrap_or_default();
+
+    let export = serde_json::json!({
+        "experiment_name": experiment_name,
+        "config": config_toml,
+        "ledger": ledger,
+        "log": log,
+        "state": state,
+    });
+
+    let json = serde_json::to_string_pretty(&export).context("failed to serialize export")?;
+    std::fs::write(&output_path, &json)
+        .with_context(|| format!("failed to write export to {}", output_path))?;
+
+    println!(
+        "[autotune] exported experiment '{}' to {}",
+        experiment_name, output_path
+    );
 
     Ok(())
 }

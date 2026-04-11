@@ -44,22 +44,57 @@ pub enum Commands {
     },
     /// List all experiments
     List,
-    /// Initialize experiment (stub)
-    Init,
-    /// Run planning phase (stub)
-    Plan,
-    /// Run implementation phase (stub)
-    Implement,
-    /// Run test phase (stub)
-    Test,
-    /// Run benchmark phase (stub)
-    Benchmark,
-    /// Record iteration (stub)
-    Record,
-    /// Apply best result (stub)
-    Apply,
-    /// Export experiment data (stub)
-    Export,
+    /// Initialize experiment (run sanity tests and baseline benchmarks)
+    Init {
+        /// Override the experiment name from config
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Run planning phase for a single iteration
+    Plan {
+        /// Experiment name
+        #[arg(long)]
+        experiment: String,
+    },
+    /// Run implementation phase for a single iteration
+    Implement {
+        /// Experiment name
+        #[arg(long)]
+        experiment: String,
+    },
+    /// Run test phase for a single iteration
+    Test {
+        /// Experiment name
+        #[arg(long)]
+        experiment: String,
+    },
+    /// Run benchmark phase for a single iteration
+    Benchmark {
+        /// Experiment name
+        #[arg(long)]
+        experiment: String,
+    },
+    /// Score and record iteration results
+    Record {
+        /// Experiment name
+        #[arg(long)]
+        experiment: String,
+    },
+    /// Apply best result (cherry-pick onto canonical branch)
+    Apply {
+        /// Experiment name
+        #[arg(long)]
+        experiment: String,
+    },
+    /// Export experiment data to a JSON file
+    Export {
+        /// Experiment name
+        #[arg(long)]
+        experiment: String,
+        /// Output file path
+        #[arg(long)]
+        output: String,
+    },
 }
 
 #[derive(Clone, ValueEnum)]
