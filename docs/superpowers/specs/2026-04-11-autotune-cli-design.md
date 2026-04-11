@@ -47,8 +47,12 @@ autotune2/
 │   │       ├── regex.rs            # built-in regex adaptor
 │   │       ├── criterion.rs        # built-in criterion JSON reader
 │   │       └── script.rs           # custom script adaptor
-│   ├── autotune-score/             # scoring + guardrail evaluation
-│   │   └── src/lib.rs
+│   ├── autotune-score/             # score calculator adaptor framework
+│   │   └── src/
+│   │       ├── lib.rs              # ScoreCalculator trait, ScoreOutput type
+│   │       ├── weighted_sum.rs     # built-in weighted sum scorer
+│   │       ├── threshold.rs        # built-in threshold scorer
+│   │       └── script.rs           # custom script/command scorer
 │   └── autotune-git/               # git operations
 │       └── src/lib.rs
 ```
@@ -68,7 +72,7 @@ Each state in the state machine maps to its own crate. Crates communicate throug
 | `autotune-test` | Run configured test commands, report pass/fail |
 | `autotune-benchmark` | Run benchmark commands, invoke adaptors, return raw metrics |
 | `autotune-adaptor` | `Adaptor` trait, built-in adaptors (regex, criterion), custom script adaptor |
-| `autotune-score` | Compute rank from metrics, evaluate guardrails, decide keep/discard |
+| `autotune-score` | Score calculator adaptor framework: built-in scorers (weighted_sum, threshold) + custom script/command |
 | `autotune-git` | Worktree create/cleanup, branch, merge, cherry-pick, revert |
 
 ### Dependency Flow
@@ -321,14 +325,22 @@ name = "fidelity"
 command = ["python", "scripts/simulate.py"]
 adaptor = { type = "script", command = ["python", "scripts/extract_fidelity.py"] }
 
-[[primary_metrics]]
+[score]
+type = "weighted_sum"
+
+[[score.primary_metrics]]
 name = "time_us"
 direction = "Minimize"
 
-[[guardrail_metrics]]
+[[score.guardrail_metrics]]
 name = "correctness_rate"
 direction = "Maximize"
 max_regression = 0.01
+
+# Or use a custom script:
+# [score]
+# type = "script"
+# command = ["python", "scripts/judge_quality.py"]
 
 [agent]
 backend = "claude"
@@ -346,12 +358,14 @@ backend = "claude"
 ### Validation Rules
 
 - At least one stop condition must be set (`max_iterations`, `target_improvement`, or `max_duration`). Error if none are set.
-- Every `primary_metrics` and `guardrail_metrics` name must be producible by at least one benchmark's adaptor.
+- `[score]` section is required. `score.type` must be one of `"weighted_sum"`, `"threshold"`, `"script"`, or `"command"`.
+- For built-in score types (`weighted_sum`, `threshold`): every referenced metric name must be producible by at least one benchmark's adaptor.
 - `tunable` paths must be valid globs.
 - Each `test` entry must have a non-empty `command`.
 - Each `benchmark` entry must have a non-empty `command` and a valid `adaptor` section.
 - `adaptor.type` must be `"regex"`, `"criterion"`, or `"script"`. Script adaptors must have a `command` field.
 - Metric names must be unique across all benchmarks (no collisions).
+- Baseline run validates the full pipeline (metric extraction → score calculation) before the tune loop begins.
 
 ## Metric Adaptors
 
@@ -398,32 +412,113 @@ Contract:
 
 ## Scoring
 
-### Rank
+Scoring follows the same adaptor pattern as metric extraction: built-in implementations for common cases, custom scripts or commands for anything exotic. The score calculator takes the full set of extracted metrics (candidate + baseline) and produces a **judgment** — the single indicator used to decide keep/discard.
 
-Computed by `autotune-score` from all primary metrics. For each primary metric, compute the per-metric improvement relative to the **current best kept baseline** (initially iteration 0, updated each time a `kept` iteration becomes the new best):
+### Score Calculator Adaptor
 
+All score calculators implement the same contract:
+
+- **Input:** JSON on stdin:
+  ```json
+  {
+    "baseline": {"time_us": 180.76, "fidelity": 0.95},
+    "candidate": {"time_us": 149.83, "fidelity": 0.96},
+    "best": {"time_us": 155.0, "fidelity": 0.96}
+  }
+  ```
+- **Output:** JSON on stdout:
+  ```json
+  {
+    "rank": 0.171,
+    "decision": "keep",
+    "reason": "+17.1% improvement on time_us, fidelity stable"
+  }
+  ```
+  - `rank`: numeric indicator (higher = better), stored in the ledger
+  - `decision`: `"keep"` | `"discard"` | `"neutral"` (neutral defers to a threshold in config)
+  - `reason`: human-readable explanation for the report
+
+### Built-in: Weighted Sum
+
+The default scorer. Config-driven, no script needed:
+
+```toml
+[score]
+type = "weighted_sum"
+
+[[score.primary_metrics]]
+name = "time_us"
+direction = "Minimize"
+# weight = 1.0                         # default
+
+[[score.guardrail_metrics]]
+name = "correctness_rate"
+direction = "Maximize"
+max_regression = 0.01
+```
+
+Computes rank as weighted sum of per-metric improvements:
 - **Maximize:** `improvement_i = (candidate_i - best_i) / best_i`
 - **Minimize:** `improvement_i = (best_i - candidate_i) / best_i`
+- `rank = sum(weight_i * improvement_i)`
 
-Rank is the sum of all per-metric improvements: `rank = sum(improvement_i)`.
+Decision: `keep` if rank > 0 and all guardrails pass; `discard` otherwise.
 
-A positive rank means overall improvement; negative means regression. This is the value stored in the ledger and used to decide keep/discard.
+### Built-in: Threshold
 
-### Score
+Simple pass/fail on individual metrics:
 
-Human-readable percentage displayed in reports. Computed as the percentage change in the primary metric(s) relative to the original baseline (iteration 0). For single-metric experiments, this is simply the percentage improvement of the current best over the original measurement.
+```toml
+[score]
+type = "threshold"
 
-### Guardrails
+[[score.conditions]]
+metric = "binary_size_kb"
+direction = "Minimize"
+threshold = 0.0                        # any reduction counts
+```
 
-Evaluated per-metric (not on rank). For each guardrail metric:
-- **Maximize:** regression if `(best - candidate) / best > max_regression`
-- **Minimize:** regression if `(candidate - best) / best > max_regression`
+### Custom Script
 
-A single guardrail failure discards the iteration regardless of rank improvement.
+```toml
+[score]
+type = "script"
+command = ["python", "scripts/judge_quality.py"]
+```
 
-### Baseline
+Same stdin/stdout contract as above. The script can implement arbitrary logic — multi-criteria optimization, Pareto ranking, statistical significance tests, etc.
 
-The first iteration (iteration 0) runs the full scoring pipeline — no special-casing. Its metrics become the initial reference for both rank computation and score reporting. As iterations are kept, the "current best" used for rank computation advances to reflect the latest kept state of the codebase.
+### Custom Command (shell one-liner)
+
+```toml
+[score]
+type = "command"
+command = ["sh", "-c", "jq '{rank: (.candidate.fidelity - .baseline.fidelity), decision: (if .candidate.fidelity > .baseline.fidelity then \"keep\" else \"discard\" end), reason: \"fidelity check\"}' < /dev/stdin"]
+```
+
+### LLM-as-Judge
+
+```toml
+[score]
+type = "script"
+command = ["python", "scripts/llm_judge.py"]
+```
+
+The script calls an LLM API with the metrics, gets back a judgment. Same contract — the CLI doesn't care that an LLM is involved. The script is responsible for prompt construction and response parsing.
+
+### Score in Reports
+
+The human-readable percentage displayed in reports (`score` column) is derived from the rank values in the ledger: `score = (rank - baseline_rank) / |baseline_rank|`. This is computed at display time, not by the score calculator.
+
+### Baseline Validation
+
+The first iteration (iteration 0) runs the **full pipeline end-to-end** — metrics extraction through score calculation — with no special-casing. This validates that:
+
+1. Benchmark commands produce output the metric adaptors can parse.
+2. Metric adaptor output matches the shape the score calculator expects.
+3. The score calculator produces a valid judgment.
+
+If any step fails at baseline, the experiment aborts with a clear error before any agent work begins. This is the pipeline integration test.
 
 ## Experiment Storage
 
