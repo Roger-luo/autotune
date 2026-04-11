@@ -29,6 +29,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "autotune-agent"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "autotune-config"
 version = "0.1.0"
 dependencies = [
