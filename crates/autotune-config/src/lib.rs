@@ -344,13 +344,10 @@ impl AutotuneConfig {
         match adaptor {
             AdaptorConfig::Regex { patterns } => patterns.iter().map(|p| p.name.clone()).collect(),
             AdaptorConfig::Criterion { .. } => {
-                // Criterion produces standard names: "mean", "median", etc.
                 vec![
                     "mean".to_string(),
                     "median".to_string(),
                     "std_dev".to_string(),
-                    "variance".to_string(),
-                    "slope".to_string(),
                 ]
             }
             AdaptorConfig::Script { .. } => vec![],

@@ -305,6 +305,32 @@ primary_metrics = [{ name = "mean", direction = "Minimize" }]
 }
 
 #[test]
+fn error_criterion_benchmark_with_unsupported_metric() {
+    let f = write_config(
+        r#"
+[experiment]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[benchmark]]
+name = "criterion-bench"
+command = ["cargo", "bench"]
+adaptor = { type = "criterion", benchmark_name = "my_bench" }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "variance", direction = "Minimize" }]
+"#,
+    );
+    let err = AutotuneConfig::load(f.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::Validation { .. }));
+    assert!(err.to_string().contains("variance"));
+}
+
+#[test]
 fn error_empty_script_adaptor_command() {
     let f = write_config(
         r#"
