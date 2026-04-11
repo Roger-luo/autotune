@@ -1,6 +1,7 @@
 mod cli;
-mod machine;
-mod resume;
+
+use autotune::machine;
+use autotune::resume;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
