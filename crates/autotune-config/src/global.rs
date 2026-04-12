@@ -42,9 +42,9 @@ impl GlobalConfig {
         Ok(result)
     }
 
-    /// Path to the user-level config file.
+    /// Path to the user-level config file (~/.config/autotune/config.toml).
     pub fn user_config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("autotune").join("config.toml"))
+        dirs::home_dir().map(|d| d.join(".config").join("autotune").join("config.toml"))
     }
 
     /// Merge another GlobalConfig on top of self (other wins on conflicts).
