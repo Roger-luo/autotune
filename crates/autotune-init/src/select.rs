@@ -7,7 +7,7 @@
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyModifiers},
-    execute,
+    execute, queue,
     terminal::{self, ClearType},
 };
 use std::io::{self, Write};
@@ -31,29 +31,33 @@ pub fn interactive_select(items: &[String], has_free_text: bool) -> io::Result<S
     let mut cursor_pos: usize = 0;
     let mut text_mode = false;
     let mut text_buf = String::new();
+    let mut first_draw = true;
 
     terminal::enable_raw_mode()?;
-    let mut stdout = io::stderr();
-
-    // Hide cursor initially
-    execute!(stdout, cursor::Hide)?;
-
-    // Draw initial state
-    draw(
-        &mut stdout,
-        items,
-        has_free_text,
-        cursor_pos,
-        text_mode,
-        &text_buf,
-    )?;
+    let mut out = io::stderr();
+    execute!(out, cursor::Hide)?;
 
     let result = loop {
+        // Draw the menu
+        if first_draw {
+            first_draw = false;
+        } else {
+            // Move cursor back to top of menu to redraw
+            execute!(out, cursor::MoveUp(total as u16), cursor::MoveToColumn(0))?;
+        }
+        render(
+            &mut out,
+            items,
+            has_free_text,
+            cursor_pos,
+            text_mode,
+            &text_buf,
+        )?;
+
         if let Event::Key(key) = event::read()? {
-            // Ctrl+C always exits
+            // Ctrl+C: clean exit
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                cleanup(&mut stdout, total)?;
-                terminal::disable_raw_mode()?;
+                restore(&mut out, total)?;
                 return Err(io::Error::new(io::ErrorKind::Interrupted, "user cancelled"));
             }
 
@@ -63,12 +67,10 @@ pub fn interactive_select(items: &[String], has_free_text: bool) -> io::Result<S
                         break SelectResult::FreeText(text_buf);
                     }
                     KeyCode::Up => {
-                        // Exit text mode, move to previous option
                         text_mode = false;
                         cursor_pos = cursor_pos.saturating_sub(1);
                     }
                     KeyCode::Down => {
-                        // Exit text mode, but we're already at the bottom
                         text_mode = false;
                     }
                     KeyCode::Backspace => {
@@ -95,7 +97,6 @@ pub fn interactive_select(items: &[String], has_free_text: bool) -> io::Result<S
                     }
                     KeyCode::Enter => {
                         if has_free_text && cursor_pos == items.len() {
-                            // Activate text input mode
                             text_mode = true;
                         } else {
                             break SelectResult::Option(cursor_pos);
@@ -104,25 +105,16 @@ pub fn interactive_select(items: &[String], has_free_text: bool) -> io::Result<S
                     _ => {}
                 }
             }
-
-            draw(
-                &mut stdout,
-                items,
-                has_free_text,
-                cursor_pos,
-                text_mode,
-                &text_buf,
-            )?;
         }
     };
 
-    cleanup(&mut stdout, total)?;
-    terminal::disable_raw_mode()?;
-
+    restore(&mut out, total)?;
     Ok(result)
 }
 
-fn draw(
+/// Render the menu at the current cursor position. After this call,
+/// the cursor is at the start of the line after the last menu item.
+fn render(
     out: &mut impl Write,
     items: &[String],
     has_free_text: bool,
@@ -130,45 +122,23 @@ fn draw(
     text_mode: bool,
     text_buf: &str,
 ) -> io::Result<()> {
-    let total = items.len() + if has_free_text { 1 } else { 0 };
-
-    // Move to start of menu and clear
-    // Move up to the first line of the menu
-    if total > 0 {
-        execute!(out, cursor::MoveToColumn(0))?;
-        // Clear from current position down
-        for _ in 0..total {
-            execute!(
-                out,
-                terminal::Clear(ClearType::CurrentLine),
-                cursor::MoveDown(1)
-            )?;
-        }
-        // Move back up
-        execute!(out, cursor::MoveUp(total as u16))?;
-    }
-
     for (i, item) in items.iter().enumerate() {
         let marker = if i == cursor_pos && !text_mode {
             ">"
         } else {
             " "
         };
-        execute!(out, terminal::Clear(ClearType::CurrentLine))?;
+        queue!(out, terminal::Clear(ClearType::CurrentLine))?;
         write!(out, "  {marker} {item}\r\n")?;
     }
 
     if has_free_text {
-        let is_active = cursor_pos == items.len();
-        execute!(out, terminal::Clear(ClearType::CurrentLine))?;
+        queue!(out, terminal::Clear(ClearType::CurrentLine))?;
         if text_mode {
-            execute!(out, cursor::Show)?;
             write!(out, "  > {text_buf}")?;
-            out.flush()?;
-            return Ok(());
+            execute!(out, cursor::Show)?;
         } else {
-            execute!(out, cursor::Hide)?;
-            let marker = if is_active { ">" } else { " " };
+            let marker = if cursor_pos == items.len() { ">" } else { " " };
             write!(out, "  {marker} Type your own answer...\r\n")?;
         }
     }
@@ -176,19 +146,25 @@ fn draw(
     out.flush()
 }
 
-fn cleanup(out: &mut impl Write, total: usize) -> io::Result<()> {
-    // Move to start of menu and clear all lines
-    if total > 0 {
-        execute!(out, cursor::MoveToColumn(0))?;
-        for _ in 0..total {
-            execute!(
-                out,
-                terminal::Clear(ClearType::CurrentLine),
-                cursor::MoveDown(1)
-            )?;
-        }
-        execute!(out, cursor::MoveUp(total as u16))?;
+/// Restore terminal state: clear the menu, show cursor, disable raw mode.
+fn restore(out: &mut impl Write, total: usize) -> io::Result<()> {
+    // Move back to top of menu
+    execute!(out, cursor::MoveUp(total as u16), cursor::MoveToColumn(0))?;
+
+    // Clear all menu lines
+    for _ in 0..total {
+        queue!(out, terminal::Clear(ClearType::CurrentLine))?;
+        write!(out, "\r\n")?;
     }
-    execute!(out, cursor::Show)?;
+
+    // Move back to top and show cursor
+    execute!(
+        out,
+        cursor::MoveUp(total as u16),
+        cursor::MoveToColumn(0),
+        cursor::Show
+    )?;
+
+    terminal::disable_raw_mode()?;
     out.flush()
 }

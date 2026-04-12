@@ -241,6 +241,15 @@ fn init_agent_permissions() -> Vec<ToolPermission> {
     ]
 }
 
+/// Map IO errors to InitError, converting Interrupted to UserAborted.
+fn map_io(e: std::io::Error) -> InitError {
+    if e.kind() == std::io::ErrorKind::Interrupted {
+        InitError::UserAborted
+    } else {
+        InitError::Io { source: e }
+    }
+}
+
 /// Run the agent-assisted init conversation.
 ///
 /// `user_input` handles all user interaction (text prompts, option selection, approval).
@@ -360,9 +369,7 @@ pub fn run_init(
         };
 
         let reply = match request {
-            AgentRequest::Message { text } => user_input
-                .prompt_text(&text)
-                .map_err(|e| InitError::Io { source: e })?,
+            AgentRequest::Message { text } => user_input.prompt_text(&text).map_err(map_io)?,
             AgentRequest::Question {
                 text,
                 options,
@@ -370,13 +377,11 @@ pub fn run_init(
             } => {
                 if options.is_empty() {
                     // No options — treat as free-form text prompt
-                    user_input
-                        .prompt_text(&text)
-                        .map_err(|e| InitError::Io { source: e })?
+                    user_input.prompt_text(&text).map_err(map_io)?
                 } else {
                     user_input
                         .prompt_select(&text, &options, allow_free_response)
-                        .map_err(|e| InitError::Io { source: e })?
+                        .map_err(map_io)?
                 }
             }
             AgentRequest::Config { section } => {
@@ -417,16 +422,14 @@ pub fn run_init(
                             let display = format!(
                                 "All required sections collected. Proposed config:\n\n{preview}"
                             );
-                            let approved = user_input
-                                .prompt_approve(&display)
-                                .map_err(|e| InitError::Io { source: e })?;
+                            let approved = user_input.prompt_approve(&display).map_err(map_io)?;
                             if approved {
                                 break;
                             }
                             // User rejected — ask for feedback
                             let feedback = user_input
                                 .prompt_text("What would you like to change?")
-                                .map_err(|e| InitError::Io { source: e })?;
+                                .map_err(map_io)?;
                             // Send feedback to agent to revise
                             let handler = make_event_handler();
                             let response = agent.send_streaming(
