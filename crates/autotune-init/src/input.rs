@@ -1,6 +1,8 @@
 use autotune_agent::protocol::QuestionOption;
 use std::io::{self, IsTerminal, Write};
 
+use crate::select::{self, SelectResult};
+
 /// Trait for user interaction during the init conversation.
 /// Implementations handle text prompts, option selection, and approval.
 pub trait UserInput {
@@ -68,28 +70,12 @@ impl UserInput for TerminalInput {
         println!("\n{}", question);
 
         if io::stdin().is_terminal() {
-            // Interactive: arrow-key selection
-            let mut items: Vec<String> = options.iter().map(|o| o.description.clone()).collect();
+            // Interactive: arrow-key selection with inline text input
+            let items: Vec<String> = options.iter().map(|o| o.description.clone()).collect();
 
-            if allow_free_response {
-                items.push("Type your own answer...".to_string());
-            }
-
-            let selection = dialoguer::Select::new()
-                .items(&items)
-                .default(0)
-                .interact()
-                .map_err(io::Error::other)?;
-
-            if allow_free_response && selection == options.len() {
-                // User chose free text — open text input
-                let input: String = dialoguer::Input::new()
-                    .with_prompt("Your answer")
-                    .interact_text()
-                    .map_err(io::Error::other)?;
-                Ok(input)
-            } else {
-                Ok(options[selection].key.clone())
+            match select::interactive_select(&items, allow_free_response)? {
+                SelectResult::Option(idx) => Ok(options[idx].key.clone()),
+                SelectResult::FreeText(text) => Ok(text),
             }
         } else {
             // Piped: numbered list, accept number or free text

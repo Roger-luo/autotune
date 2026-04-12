@@ -1,6 +1,7 @@
 mod error;
 pub mod input;
 mod prompt;
+mod select;
 mod spinner;
 
 pub use error::InitError;
