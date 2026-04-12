@@ -86,6 +86,9 @@ pub enum Commands {
         #[arg(long)]
         experiment: String,
     },
+    /// Manage global user config
+    #[command(subcommand)]
+    Config(ConfigCommands),
     /// Export experiment data to a JSON file
     Export {
         /// Experiment name
@@ -95,6 +98,31 @@ pub enum Commands {
         #[arg(long)]
         output: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommands {
+    /// Get a config value
+    Get {
+        /// Dotted key path (e.g. agent.init.model)
+        key: String,
+    },
+    /// Set a config value
+    Set {
+        /// Dotted key path (e.g. agent.init.model)
+        key: String,
+        /// Value to set
+        value: String,
+    },
+    /// Remove a config value
+    Unset {
+        /// Dotted key path (e.g. agent.init.model)
+        key: String,
+    },
+    /// Show all config (merged system + user)
+    List,
+    /// Open user config in $EDITOR
+    Edit,
 }
 
 #[derive(Clone, ValueEnum)]

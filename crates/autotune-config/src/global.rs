@@ -41,6 +41,11 @@ impl GlobalConfig {
         Ok(result)
     }
 
+    /// Path to the user-level config file.
+    pub fn user_config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|d| d.join("autotune").join("config.toml"))
+    }
+
     /// Standard config file paths: system then user.
     fn config_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();

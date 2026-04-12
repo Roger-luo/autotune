@@ -21,7 +21,7 @@ use autotune_score::threshold::{ThresholdConditionDef, ThresholdScorer};
 use autotune_score::weighted_sum::{GuardrailMetricDef, PrimaryMetricDef, WeightedSumScorer};
 use autotune_state::{ExperimentState, ExperimentStore, IterationRecord, IterationStatus, Phase};
 
-use cli::{Cli, Commands, ReportFormat};
+use cli::{Cli, Commands, ConfigCommands, ReportFormat};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -43,6 +43,7 @@ fn main() -> Result<()> {
         Commands::Benchmark { experiment } => cmd_step(experiment, Phase::Benchmarking),
         Commands::Record { experiment } => cmd_step(experiment, Phase::Scoring),
         Commands::Apply { experiment } => cmd_step(experiment, Phase::Integrating),
+        Commands::Config(sub) => cmd_config(sub),
         Commands::Export { experiment, output } => cmd_export(experiment, output),
     }
 }
@@ -541,6 +542,221 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
     );
     println!("[autotune] results at: {}", experiment_dir.display());
     println!("[autotune] run `autotune run` to start the tune loop or use step commands");
+
+    Ok(())
+}
+
+fn cmd_config(sub: ConfigCommands) -> Result<()> {
+    match sub {
+        ConfigCommands::Get { key } => {
+            let config = GlobalConfig::load().context("failed to load global config")?;
+            match get_config_value(&config, &key) {
+                Some(value) => println!("{}", value),
+                None => bail!("key '{}' is not set", key),
+            }
+        }
+        ConfigCommands::Set { key, value } => {
+            let path = GlobalConfig::user_config_path()
+                .context("could not determine user config directory")?;
+            let mut doc = load_or_create_toml_doc(&path)?;
+            set_toml_value(&mut doc, &key, &value)?;
+            write_toml_doc(&path, &doc)?;
+            println!("{} = {}", key, value);
+        }
+        ConfigCommands::Unset { key } => {
+            let path = GlobalConfig::user_config_path()
+                .context("could not determine user config directory")?;
+            if !path.exists() {
+                bail!("no user config file exists");
+            }
+            let mut doc = load_or_create_toml_doc(&path)?;
+            unset_toml_value(&mut doc, &key)?;
+            write_toml_doc(&path, &doc)?;
+            println!("unset {}", key);
+        }
+        ConfigCommands::List => {
+            let config = GlobalConfig::load().context("failed to load global config")?;
+            let path = GlobalConfig::user_config_path();
+            if let Some(ref p) = path
+                && p.exists()
+            {
+                println!("# user config: {}", p.display());
+            }
+            println!("# system config: /etc/autotune/config.toml");
+            println!();
+            print_config(&config);
+        }
+        ConfigCommands::Edit => {
+            let path = GlobalConfig::user_config_path()
+                .context("could not determine user config directory")?;
+            // Ensure parent dir and file exist
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).context("failed to create config directory")?;
+            }
+            if !path.exists() {
+                std::fs::write(&path, "").context("failed to create config file")?;
+            }
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            let status = std::process::Command::new(&editor)
+                .arg(&path)
+                .status()
+                .with_context(|| format!("failed to launch editor '{}'", editor))?;
+            if !status.success() {
+                bail!("editor exited with {}", status);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Valid config keys and their dotted paths.
+const VALID_KEYS: &[&str] = &[
+    "agent.backend",
+    "agent.research.model",
+    "agent.research.max_turns",
+    "agent.research.backend",
+    "agent.implementation.model",
+    "agent.implementation.max_turns",
+    "agent.implementation.backend",
+    "agent.init.model",
+    "agent.init.max_turns",
+    "agent.init.backend",
+];
+
+fn validate_key(key: &str) -> Result<()> {
+    if VALID_KEYS.contains(&key) {
+        Ok(())
+    } else {
+        bail!(
+            "unknown config key '{}'. Valid keys:\n  {}",
+            key,
+            VALID_KEYS.join("\n  ")
+        )
+    }
+}
+
+fn get_config_value(config: &GlobalConfig, key: &str) -> Option<String> {
+    let agent = config.agent.as_ref()?;
+    match key {
+        "agent.backend" => Some(agent.backend.clone()),
+        "agent.research.model" => agent.research.as_ref()?.model.clone(),
+        "agent.research.max_turns" => agent.research.as_ref()?.max_turns.map(|v| v.to_string()),
+        "agent.research.backend" => agent.research.as_ref()?.backend.clone(),
+        "agent.implementation.model" => agent.implementation.as_ref()?.model.clone(),
+        "agent.implementation.max_turns" => agent
+            .implementation
+            .as_ref()?
+            .max_turns
+            .map(|v| v.to_string()),
+        "agent.implementation.backend" => agent.implementation.as_ref()?.backend.clone(),
+        "agent.init.model" => agent.init.as_ref()?.model.clone(),
+        "agent.init.max_turns" => agent.init.as_ref()?.max_turns.map(|v| v.to_string()),
+        "agent.init.backend" => agent.init.as_ref()?.backend.clone(),
+        _ => None,
+    }
+}
+
+fn print_config(config: &GlobalConfig) {
+    let agent = match &config.agent {
+        Some(a) => a,
+        None => {
+            println!("(no config set)");
+            return;
+        }
+    };
+
+    println!("agent.backend = {}", agent.backend);
+
+    for (name, role) in [
+        ("research", &agent.research),
+        ("implementation", &agent.implementation),
+        ("init", &agent.init),
+    ] {
+        if let Some(r) = role {
+            if let Some(ref b) = r.backend {
+                println!("agent.{}.backend = {}", name, b);
+            }
+            if let Some(ref m) = r.model {
+                println!("agent.{}.model = {}", name, m);
+            }
+            if let Some(t) = r.max_turns {
+                println!("agent.{}.max_turns = {}", name, t);
+            }
+        }
+    }
+}
+
+fn load_or_create_toml_doc(path: &Path) -> Result<toml_edit::DocumentMut> {
+    if path.exists() {
+        let content = std::fs::read_to_string(path).context("failed to read config file")?;
+        content
+            .parse::<toml_edit::DocumentMut>()
+            .context("failed to parse config file")
+    } else {
+        Ok(toml_edit::DocumentMut::new())
+    }
+}
+
+fn write_toml_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("failed to create config directory")?;
+    }
+    std::fs::write(path, doc.to_string()).context("failed to write config file")
+}
+
+fn set_toml_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<()> {
+    validate_key(key)?;
+
+    let parts: Vec<&str> = key.split('.').collect();
+
+    // Navigate/create intermediate tables
+    let mut table = doc.as_table_mut();
+    for &part in &parts[..parts.len() - 1] {
+        if !table.contains_key(part) {
+            table.insert(part, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        table = table[part]
+            .as_table_mut()
+            .with_context(|| format!("'{}' is not a table in config", part))?;
+    }
+
+    let leaf = parts[parts.len() - 1];
+
+    // Parse value: try integer first, then string
+    let toml_value = if key.ends_with("max_turns") {
+        let n: u64 = value
+            .parse()
+            .with_context(|| format!("'{}' must be an integer", key))?;
+        toml_edit::value(n as i64)
+    } else {
+        toml_edit::value(value)
+    };
+
+    table.insert(leaf, toml_value);
+    Ok(())
+}
+
+fn unset_toml_value(doc: &mut toml_edit::DocumentMut, key: &str) -> Result<()> {
+    validate_key(key)?;
+
+    let parts: Vec<&str> = key.split('.').collect();
+
+    let mut table = doc.as_table_mut();
+    for &part in &parts[..parts.len() - 1] {
+        match table.get_mut(part) {
+            Some(item) => {
+                table = item
+                    .as_table_mut()
+                    .with_context(|| format!("'{}' is not a table in config", part))?;
+            }
+            None => bail!("key '{}' is not set", key),
+        }
+    }
+
+    let leaf = parts[parts.len() - 1];
+    if table.remove(leaf).is_none() {
+        bail!("key '{}' is not set", key);
+    }
 
     Ok(())
 }
