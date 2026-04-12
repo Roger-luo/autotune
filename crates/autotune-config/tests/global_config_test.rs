@@ -24,8 +24,7 @@ model = "opus"
 
 #[test]
 fn load_from_missing_file_returns_empty() {
-    let config =
-        GlobalConfig::load_from(std::path::Path::new("/nonexistent/config.toml")).unwrap();
+    let config = GlobalConfig::load_from(std::path::Path::new("/nonexistent/config.toml")).unwrap();
     assert!(config.agent.is_none());
 }
 

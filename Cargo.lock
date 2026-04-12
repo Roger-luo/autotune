@@ -120,6 +120,7 @@ dependencies = [
 name = "autotune-agent"
 version = "0.1.0"
 dependencies = [
+ "autotune-config",
  "serde",
  "serde_json",
  "thiserror",
@@ -167,6 +168,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "autotune-init"
+version = "0.1.0"
+dependencies = [
+ "autotune-agent",
+ "autotune-config",
+ "autotune-mock",
+ "globset",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

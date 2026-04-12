@@ -1,4 +1,4 @@
-use autotune_agent::protocol::{parse_agent_request, AgentRequest, ConfigSection};
+use autotune_agent::protocol::{AgentRequest, ConfigSection, parse_agent_request};
 
 #[test]
 fn parse_message_request() {
@@ -25,7 +25,11 @@ fn parse_question_request() {
     }"#;
     let req = parse_agent_request(json).unwrap();
     match req {
-        AgentRequest::Question { text, options, allow_free_response } => {
+        AgentRequest::Question {
+            text,
+            options,
+            allow_free_response,
+        } => {
             assert_eq!(text, "What type of project is this?");
             assert_eq!(options.len(), 2);
             assert_eq!(options[0].key, "a");
@@ -48,14 +52,12 @@ fn parse_config_experiment_section() {
     }"#;
     let req = parse_agent_request(json).unwrap();
     match req {
-        AgentRequest::Config { section } => {
-            match section {
-                ConfigSection::Experiment(exp) => {
-                    assert_eq!(exp.name, "my-experiment");
-                }
-                _ => panic!("expected Experiment section"),
+        AgentRequest::Config { section } => match section {
+            ConfigSection::Experiment(exp) => {
+                assert_eq!(exp.name, "my-experiment");
             }
-        }
+            _ => panic!("expected Experiment section"),
+        },
         _ => panic!("expected Config"),
     }
 }
@@ -72,14 +74,12 @@ fn parse_config_paths_section() {
     }"#;
     let req = parse_agent_request(json).unwrap();
     match req {
-        AgentRequest::Config { section } => {
-            match section {
-                ConfigSection::Paths(paths) => {
-                    assert_eq!(paths.tunable, vec!["src/**/*.rs"]);
-                }
-                _ => panic!("expected Paths section"),
+        AgentRequest::Config { section } => match section {
+            ConfigSection::Paths(paths) => {
+                assert_eq!(paths.tunable, vec!["src/**/*.rs"]);
             }
-        }
+            _ => panic!("expected Paths section"),
+        },
         _ => panic!("expected Config"),
     }
 }

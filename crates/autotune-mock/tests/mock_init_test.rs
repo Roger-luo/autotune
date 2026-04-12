@@ -1,4 +1,4 @@
-use autotune_agent::protocol::{parse_agent_request, AgentRequest};
+use autotune_agent::protocol::{AgentRequest, parse_agent_request};
 use autotune_agent::{Agent, AgentConfig, ToolPermission};
 use autotune_mock::MockAgent;
 use std::path::PathBuf;
