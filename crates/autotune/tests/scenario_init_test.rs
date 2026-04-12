@@ -359,3 +359,76 @@ fn scenario_pty_ctrl_c_cancels_cleanly() {
         "expected cancellation message.\noutput:\n{text}"
     );
 }
+
+#[test]
+fn scenario_pty_ctrl_c_during_text_input() {
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(120, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Wait for first question
+    session.expect("What metric").unwrap();
+    session.expect("Type your own answer").unwrap();
+
+    // Navigate to "Type your own answer..." and enter text mode
+    for _ in 0..5 {
+        session.send(b"\x1b[B").unwrap(); // Down
+    }
+    session.send(b"\r").unwrap(); // Enter to activate text input
+
+    // Start typing
+    std::thread::sleep(Duration::from_millis(100));
+    session.send(b"some text").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Ctrl+C while in text input mode
+    session.send(b"\x03").unwrap();
+
+    let output = session.wait().unwrap();
+    let text = output.stdout();
+    assert!(
+        !text.contains("panicked"),
+        "should not panic on Ctrl+C during text input.\noutput:\n{text}"
+    );
+}
+
+#[test]
+fn scenario_pty_ctrl_c_during_approval_prompt() {
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(120, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Answer both questions to reach the approval prompt
+    session.expect("What metric").unwrap();
+    session.send(b"\r").unwrap(); // Select first option
+
+    session.expect("How should we measure").unwrap();
+    session.send(b"\r").unwrap(); // Select first option
+
+    // Wait for approval prompt
+    session.expect("Approve").unwrap();
+
+    // Ctrl+C during the approval prompt (dialoguer Confirm)
+    session.send(b"\x03").unwrap();
+
+    let output = session.wait().unwrap();
+    let text = output.stdout();
+    assert!(
+        !text.contains("panicked"),
+        "should not panic on Ctrl+C during approval.\noutput:\n{text}"
+    );
+}
