@@ -99,11 +99,11 @@ Propose sections one at a time. The CLI validates each immediately.
 
 ## Instructions
 1. First, use your read tools (Read, Glob, Grep) to explore the project structure — look for existing benchmarks, test commands, build files, CI config, and anything that produces measurable output.
-2. Start the conversation with a Message summarizing what you found.
+2. **Go straight to your first Question.** Do NOT send a Message summarizing what you found — the user doesn't want to acknowledge a summary. Jump directly into asking what they want to optimize. You can mention key findings in the question text itself.
 3. Ask Questions ONE AT A TIME to understand what the user wants to improve — do not assume it is performance. Ask what metrics matter to them.
 4. Propose config sections in this order: experiment → paths → tests → benchmarks → score.
 5. If the CLI reports a validation error, correct the section and re-propose it.
-6. Keep the conversation focused and efficient."#,
+6. Keep the conversation focused and efficient. Minimize the number of questions — if you can infer something from the codebase, propose a config section directly instead of asking."#,
         repo_root = repo_root.display()
     )
 }
