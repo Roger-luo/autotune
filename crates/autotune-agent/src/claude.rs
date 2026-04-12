@@ -167,8 +167,8 @@ impl ClaudeAgent {
         cwd: &Path,
         event_handler: &EventHandler,
     ) -> Result<AgentResponse, AgentError> {
-        // Replace --output-format json with stream-json
-        let args: Vec<String> = args
+        // Replace --output-format json with stream-json and add --verbose
+        let mut args: Vec<String> = args
             .iter()
             .map(|a| {
                 if a == "json" {
@@ -178,6 +178,7 @@ impl ClaudeAgent {
                 }
             })
             .collect();
+        args.push("--verbose".to_string());
 
         let mut child = Command::new(&self.command)
             .args(&args)
