@@ -38,5 +38,7 @@ mock = ["dep:autotune-mock"]
 autotune-mock = { path = "../autotune-mock" }
 autotune-init = { path = "../autotune-init" }
 autotune-config = { path = "../autotune-config" }
+assert_cmd = "2"
+predicates = "3"
 tempfile = "3"
 toml = "0.8"
