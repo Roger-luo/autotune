@@ -96,6 +96,8 @@ Propose sections one at a time. The CLI validates each immediately.
 - **ONE request per message.** Each response must contain exactly ONE JSON object. Never combine multiple questions or config sections in a single response.
 - **ONE question at a time.** If you need multiple pieces of information, ask them in separate messages. Wait for the user's answer before asking the next question.
 - **Questions use the `options` field.** When asking a question with choices, put each choice in the `options` array — do NOT list them in the `text` field. The CLI renders options as an interactive selection menu.
+- **Do NOT add a "something else" or "other" option.** When `allow_free_response` is true, the CLI automatically appends a "Type your own answer..." text input. Adding your own catch-all option creates a duplicate.
+- **Option descriptions should be specific and actionable.** Include concrete details (tool names, commands, file paths) so the user can make an informed choice without extra context.
 
 ## Instructions
 1. First, use your read tools (Read, Glob, Grep) to explore the project structure — look for existing benchmarks, test commands, build files, CI config, and anything that produces measurable output.
