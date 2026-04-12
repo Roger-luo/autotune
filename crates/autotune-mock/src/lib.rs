@@ -25,6 +25,7 @@ struct HypothesisEntry {
 pub struct MockAgent {
     hypotheses: Vec<HypothesisEntry>,
     impl_behavior: ImplBehavior,
+    init_responses: Vec<String>,
     // Interior-mutable tracking state
     spawn_count: Mutex<usize>,
     send_count: Mutex<usize>,
@@ -36,6 +37,7 @@ pub struct MockAgent {
 pub struct MockAgentBuilder {
     hypotheses: Vec<HypothesisEntry>,
     impl_behavior: ImplBehavior,
+    init_responses: Vec<String>,
 }
 
 impl MockAgentBuilder {
@@ -60,11 +62,20 @@ impl MockAgentBuilder {
         self
     }
 
+    /// Queue a JSON response string for the init conversation.
+    /// The first call to `spawn()` (non-worktree) returns `init_responses[0]`;
+    /// subsequent `send()` calls cycle through the remaining responses.
+    pub fn init_response(mut self, json: &str) -> Self {
+        self.init_responses.push(json.to_string());
+        self
+    }
+
     /// Build the [`MockAgent`].
     pub fn build(self) -> MockAgent {
         MockAgent {
             hypotheses: self.hypotheses,
             impl_behavior: self.impl_behavior,
+            init_responses: self.init_responses,
             spawn_count: Mutex::new(0),
             send_count: Mutex::new(0),
             last_spawn_config: Mutex::new(None),
@@ -79,6 +90,7 @@ impl MockAgent {
         MockAgentBuilder {
             hypotheses: Vec::new(),
             impl_behavior: ImplBehavior::CommitDummy,
+            init_responses: Vec::new(),
         }
     }
 
@@ -121,8 +133,13 @@ impl Agent for MockAgent {
         let is_worktree = wd.join(".git").is_file();
 
         if idx == 0 && !is_worktree {
+            let text = if !self.init_responses.is_empty() {
+                self.init_responses[0].clone()
+            } else {
+                "ready".to_string()
+            };
             return Ok(AgentResponse {
-                text: "ready".to_string(),
+                text,
                 session_id: "mock-session-001".to_string(),
             });
         }
@@ -150,9 +167,22 @@ impl Agent for MockAgent {
         *self.last_send_message.lock().unwrap() = Some(message.to_string());
 
         let mut count = self.send_count.lock().unwrap();
-        let idx = *count % self.hypotheses.len().max(1);
+        let idx = *count;
         *count += 1;
         drop(count);
+
+        // In init mode, cycle through init_responses. The +1 offset accounts for
+        // spawn() having consumed index 0.
+        if !self.init_responses.is_empty() {
+            let response_idx = (idx + 1) % self.init_responses.len();
+            return Ok(AgentResponse {
+                text: self.init_responses[response_idx].clone(),
+                session_id: "mock-session-001".to_string(),
+            });
+        }
+
+        // Hypothesis (research) mode.
+        let hyp_idx = idx % self.hypotheses.len().max(1);
 
         if self.hypotheses.is_empty() {
             return Ok(AgentResponse {
@@ -161,7 +191,7 @@ impl Agent for MockAgent {
             });
         }
 
-        let entry = &self.hypotheses[idx];
+        let entry = &self.hypotheses[hyp_idx];
         let json = serde_json::json!({
             "approach": entry.approach,
             "hypothesis": entry.hypothesis,
