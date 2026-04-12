@@ -1,8 +1,10 @@
 mod error;
+pub mod input;
 mod prompt;
 mod spinner;
 
 pub use error::InitError;
+pub use input::{MockInput, TerminalInput, UserInput};
 pub use prompt::build_init_prompt;
 
 use spinner::Spinner;
@@ -240,17 +242,14 @@ fn init_agent_permissions() -> Vec<ToolPermission> {
 
 /// Run the agent-assisted init conversation.
 ///
-/// `read_user_input` is a closure that reads a line from the user.
-/// This is injectable for testing (mock agents don't need real stdin).
-pub fn run_init<F>(
+/// `user_input` handles all user interaction (text prompts, option selection, approval).
+/// Use `TerminalInput` for real CLI sessions or `MockInput` for testing.
+pub fn run_init(
     agent: &dyn Agent,
     global_config: &GlobalConfig,
     repo_root: &Path,
-    read_user_input: F,
-) -> Result<AutotuneConfig, InitError>
-where
-    F: Fn() -> Result<String, std::io::Error>,
-{
+    user_input: &dyn UserInput,
+) -> Result<AutotuneConfig, InitError> {
     let prompt = build_init_prompt(repo_root);
 
     let model = global_config
@@ -333,25 +332,24 @@ where
         };
 
         let reply = match request {
-            AgentRequest::Message { text } => {
-                println!("\n{}", text);
-                print!("> ");
-                read_user_input().map_err(|e| InitError::Io { source: e })?
-            }
+            AgentRequest::Message { text } => user_input
+                .prompt_text(&text)
+                .map_err(|e| InitError::Io { source: e })?,
             AgentRequest::Question {
                 text,
                 options,
                 allow_free_response,
             } => {
-                println!("\n{}", text);
-                for opt in &options {
-                    println!("  {}) {}", opt.key, opt.description);
+                if options.is_empty() {
+                    // No options — treat as free-form text prompt
+                    user_input
+                        .prompt_text(&text)
+                        .map_err(|e| InitError::Io { source: e })?
+                } else {
+                    user_input
+                        .prompt_select(&text, &options, allow_free_response)
+                        .map_err(|e| InitError::Io { source: e })?
                 }
-                if allow_free_response {
-                    println!("  (or type a custom response)");
-                }
-                print!("> ");
-                read_user_input().map_err(|e| InitError::Io { source: e })?
             }
             AgentRequest::Config { section } => {
                 match validate_section(&section, &acc) {
@@ -388,25 +386,26 @@ where
                         if acc.is_complete() {
                             // Show assembled config for final approval
                             let preview = acc.assemble_preview();
-                            println!(
-                                "\n[autotune] All required sections collected. Proposed config:\n"
+                            let display = format!(
+                                "All required sections collected. Proposed config:\n\n{preview}"
                             );
-                            println!("{}", preview);
-                            println!("\nApprove this config? (yes to write, or provide feedback)");
-                            print!("> ");
-                            let approval =
-                                read_user_input().map_err(|e| InitError::Io { source: e })?;
-                            let trimmed = approval.trim().to_lowercase();
-                            if trimmed == "yes" || trimmed == "y" {
+                            let approved = user_input
+                                .prompt_approve(&display)
+                                .map_err(|e| InitError::Io { source: e })?;
+                            if approved {
                                 break;
                             }
-                            // User rejected -- send feedback to agent to revise
+                            // User rejected — ask for feedback
+                            let feedback = user_input
+                                .prompt_text("What would you like to change?")
+                                .map_err(|e| InitError::Io { source: e })?;
+                            // Send feedback to agent to revise
                             let sp = Spinner::start("waiting for agent...");
                             let response = agent.send(
                                 &session,
                                 &format!(
                                     "User rejected the config with feedback: {}. Please revise the relevant sections.",
-                                    approval
+                                    feedback
                                 ),
                             )?;
                             sp.stop();

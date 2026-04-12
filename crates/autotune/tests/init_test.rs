@@ -1,5 +1,5 @@
 use autotune_config::global::GlobalConfig;
-use autotune_init::run_init;
+use autotune_init::{MockInput, run_init};
 use autotune_mock::MockAgent;
 use std::path::PathBuf;
 
@@ -25,10 +25,8 @@ fn agent_assisted_init_produces_valid_config() {
         .build();
 
     let global = GlobalConfig::default();
-    let config = run_init(&agent, &global, &PathBuf::from("/tmp/fake"), || {
-        Ok("yes".to_string())
-    })
-    .unwrap();
+    let input = MockInput::new("yes");
+    let config = run_init(&agent, &global, &PathBuf::from("/tmp/fake"), &input).unwrap();
 
     // Verify all sections are present and correct
     assert_eq!(config.experiment.name, "perf-opt");
@@ -72,10 +70,8 @@ fn agent_assisted_init_validates_sections_incrementally() {
         .build();
 
     let global = GlobalConfig::default();
-    let config = run_init(&agent, &global, &PathBuf::from("/tmp/fake"), || {
-        Ok("yes".to_string())
-    })
-    .unwrap();
+    let input = MockInput::new("yes");
+    let config = run_init(&agent, &global, &PathBuf::from("/tmp/fake"), &input).unwrap();
 
     assert_eq!(config.experiment.name, "test-exp");
 }

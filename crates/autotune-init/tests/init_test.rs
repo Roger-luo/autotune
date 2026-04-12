@@ -1,5 +1,5 @@
 use autotune_config::global::GlobalConfig;
-use autotune_init::run_init;
+use autotune_init::{MockInput, run_init};
 use autotune_mock::MockAgent;
 use std::path::PathBuf;
 
@@ -27,11 +27,8 @@ fn complete_init_agent() -> MockAgent {
 fn run_init_complete_conversation() {
     let agent = complete_init_agent();
     let global = GlobalConfig::default();
-    // "yes" handles both conversation replies and final approval
-    let config = run_init(&agent, &global, &PathBuf::from("/tmp/fake-repo"), || {
-        Ok("yes".to_string())
-    })
-    .unwrap();
+    let input = MockInput::new("yes");
+    let config = run_init(&agent, &global, &PathBuf::from("/tmp/fake-repo"), &input).unwrap();
 
     assert_eq!(config.experiment.name, "test-exp");
     assert_eq!(config.paths.tunable, vec!["src/**"]);
@@ -51,9 +48,8 @@ fn run_init_missing_required_sections_keeps_going() {
         .build();
 
     let global = GlobalConfig::default();
-    let result = run_init(&agent, &global, &PathBuf::from("/tmp/fake-repo"), || {
-        Ok("yes".to_string())
-    });
+    let input = MockInput::new("yes");
+    let result = run_init(&agent, &global, &PathBuf::from("/tmp/fake-repo"), &input);
 
     // Should error because we never get benchmark + score sections
     assert!(result.is_err());

@@ -486,12 +486,9 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
 
         let agent = build_agent_from_global(&global_config);
 
-        let config = autotune_init::run_init(&*agent, &global_config, &repo_root, || {
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input)?;
-            Ok(input.trim().to_string())
-        })
-        .context("agent-assisted init failed")?;
+        let terminal_input = autotune_init::TerminalInput;
+        let config = autotune_init::run_init(&*agent, &global_config, &repo_root, &terminal_input)
+            .context("agent-assisted init failed")?;
 
         // Write .autotune.toml
         let toml_content = toml::to_string_pretty(&config).context("failed to serialize config")?;

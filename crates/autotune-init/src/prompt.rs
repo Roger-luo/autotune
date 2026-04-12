@@ -91,10 +91,16 @@ Propose sections one at a time. The CLI validates each immediately.
 {{"type": "config", "section": {{"type": "agent", "backend": "claude", "research": {{"model": "opus"}}, "implementation": {{"model": "sonnet"}}}}}}
 ```
 
+## Critical Rules
+
+- **ONE request per message.** Each response must contain exactly ONE JSON object. Never combine multiple questions or config sections in a single response.
+- **ONE question at a time.** If you need multiple pieces of information, ask them in separate messages. Wait for the user's answer before asking the next question.
+- **Questions use the `options` field.** When asking a question with choices, put each choice in the `options` array — do NOT list them in the `text` field. The CLI renders options as an interactive selection menu.
+
 ## Instructions
 1. First, use your read tools (Read, Glob, Grep) to explore the project structure — look for existing benchmarks, test commands, build files, CI config, and anything that produces measurable output.
 2. Start the conversation with a Message summarizing what you found.
-3. Ask Questions to understand what the user wants to improve — do not assume it is performance. Ask what metrics matter to them.
+3. Ask Questions ONE AT A TIME to understand what the user wants to improve — do not assume it is performance. Ask what metrics matter to them.
 4. Propose config sections in this order: experiment → paths → tests → benchmarks → score.
 5. If the CLI reports a validation error, correct the section and re-propose it.
 6. Keep the conversation focused and efficient."#,
