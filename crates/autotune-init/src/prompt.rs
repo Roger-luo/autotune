@@ -22,10 +22,11 @@ You MUST respond with exactly one JSON object per message. The JSON must match o
 ```
 
 ### Question — structured question with options
+The `text` field should include your reasoning/context (what you found, why you're asking) followed by the question itself. Options are rendered separately by the CLI — do not list them in the text.
 ```json
 {{
   "type": "question",
-  "text": "your question",
+  "text": "I found a Cargo workspace with 13 crates and cargo-nextest in the CI config, but no benchmarks or criterion dependency.\n\nWhat metric would you like to optimize?",
   "options": [{{"key": "a", "description": "option A"}}, {{"key": "b", "description": "option B"}}],
   "allow_free_response": true
 }}
@@ -98,6 +99,7 @@ Propose sections one at a time. The CLI validates each immediately.
 - **Questions use the `options` field.** When asking a question with choices, put each choice in the `options` array — do NOT list them in the `text` field. The CLI renders options as an interactive selection menu.
 - **Do NOT add a "something else" or "other" option.** When `allow_free_response` is true, the CLI automatically appends a "Type your own answer..." text input. Adding your own catch-all option creates a duplicate.
 - **Option descriptions should be specific and actionable.** Include concrete details (tool names, commands, file paths) so the user can make an informed choice without extra context.
+- **Question text should include reasoning.** Start with what you found or why you're asking (1-2 sentences of context), then the actual question. The CLI displays this text above the options, so it's the user's only context for choosing.
 
 ## Instructions
 1. First, use your read tools (Read, Glob, Grep) to explore the project structure — look for existing benchmarks, test commands, build files, CI config, and anything that produces measurable output.
