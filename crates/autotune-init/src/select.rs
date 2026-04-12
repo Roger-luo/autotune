@@ -27,6 +27,8 @@ pub fn interactive_select(items: &[String], has_free_text: bool) -> io::Result<S
     let mut text_mode = false;
     let mut text_buf = String::new();
     let mut first_draw = true;
+    // Track the mode of the *previous* render for correct cursor repositioning
+    let mut prev_text_mode = false;
 
     terminal::enable_raw_mode()?;
     let mut out = io::stderr();
@@ -36,9 +38,10 @@ pub fn interactive_select(items: &[String], has_free_text: bool) -> io::Result<S
         if first_draw {
             first_draw = false;
         } else {
-            // Move back to the top of the menu to redraw
-            move_to_menu_top(&mut out, total, text_mode)?;
+            // Move back to the top of the menu using the *previous* render's mode
+            move_to_menu_top(&mut out, total, prev_text_mode)?;
         }
+        prev_text_mode = text_mode;
         render(
             &mut out,
             items,
