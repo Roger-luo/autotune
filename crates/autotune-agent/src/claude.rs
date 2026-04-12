@@ -183,7 +183,7 @@ impl ClaudeAgent {
             .args(&args)
             .current_dir(cwd)
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|source| AgentError::Io { source })?;
 
@@ -193,6 +193,8 @@ impl ClaudeAgent {
             .ok_or_else(|| AgentError::CommandFailed {
                 message: "failed to capture claude stdout".to_string(),
             })?;
+
+        let stderr_handle = child.stderr.take();
 
         let mut final_result: Option<AgentResponse> = None;
         let reader = std::io::BufReader::new(stdout);
@@ -225,8 +227,7 @@ impl ClaudeAgent {
                                     .and_then(Value::as_str)
                                     .unwrap_or("unknown")
                                     .to_string();
-                                let input_summary =
-                                    Self::summarize_tool_input(block.get("input"));
+                                let input_summary = Self::summarize_tool_input(block.get("input"));
                                 event_handler(AgentEvent::ToolUse {
                                     tool,
                                     input_summary,
@@ -271,8 +272,15 @@ impl ClaudeAgent {
         let status = child.wait().map_err(|source| AgentError::Io { source })?;
 
         if !status.success() {
+            let stderr = stderr_handle
+                .map(|mut h| {
+                    let mut buf = String::new();
+                    let _ = std::io::Read::read_to_string(&mut h, &mut buf);
+                    buf
+                })
+                .unwrap_or_default();
             return Err(AgentError::CommandFailed {
-                message: format!("claude exited with {}", status),
+                message: format!("claude exited with {}: {}", status, stderr.trim()),
             });
         }
 

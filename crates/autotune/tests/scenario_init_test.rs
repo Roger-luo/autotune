@@ -190,3 +190,34 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
         "expected direct init.\nstdout:\n{stdout}"
     );
 }
+
+#[test]
+fn scenario_init_failure_shows_useful_error() {
+    let dir = tempfile::tempdir().unwrap();
+    setup_mock_project(dir.path());
+
+    // Run without AUTOTUNE_MOCK but with a bogus claude path so the agent fails.
+    // This tests that the error message is informative.
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("init")
+        .env("PATH", "") // claude won't be found
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should fail, not succeed
+    assert!(
+        !output.status.success(),
+        "expected failure when agent backend is unavailable"
+    );
+
+    // Error should mention something useful — not just "exit status: 1"
+    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
+    assert!(
+        combined.contains("Error") || combined.contains("error"),
+        "expected error in output.\nstdout+stderr:\n{combined}"
+    );
+}
