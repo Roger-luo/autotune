@@ -89,9 +89,9 @@ fn build_agent_from_global(_global_config: &GlobalConfig) -> Box<dyn Agent> {
 fn mock_init_agent() -> autotune_mock::MockAgent {
     autotune_mock::MockAgent::builder()
         // First: ask what the user wants to optimize
-        .init_response(r#"{"type":"question","text":"I found a Rust workspace with 13 crates. What would you like to optimize?","options":[{"key":"perf","description":"Runtime performance (execution speed, throughput)"},{"key":"size","description":"Binary size"},{"key":"coverage","description":"Test coverage"},{"key":"compile","description":"Compilation time"}],"allow_free_response":true}"#)
+        .init_response(r#"{"type":"question","text":"I found a Rust workspace with 13 crates under crates/, cargo-nextest for testing, but no benchmarks or criterion dependency.\n\nWhat would you like to optimize?","options":[{"key":"perf","label":"Runtime performance","description":"execution speed, throughput"},{"key":"size","label":"Binary size","description":"track the compiled binary size"},{"key":"coverage","label":"Test coverage","description":"line/branch coverage via cargo-tarpaulin"},{"key":"compile","label":"Compilation time","description":"measure cargo build speed"}],"allow_free_response":true}"#)
         // Then: ask about the benchmark command
-        .init_response(r#"{"type":"question","text":"How should we measure it?","options":[{"key":"bench","description":"cargo bench (Criterion or built-in)"},{"key":"custom","description":"Custom command"},{"key":"script","description":"External script"}],"allow_free_response":true}"#)
+        .init_response(r#"{"type":"question","text":"How should we measure the target metric?","options":[{"key":"bench","label":"cargo bench","description":"Criterion or built-in bench harness"},{"key":"custom","label":"Custom command","description":"a shell command that outputs the metric"},{"key":"script","label":"External script","description":"a script that extracts metrics from output"}],"allow_free_response":true}"#)
         // Propose config sections based on "answers"
         .init_response(r#"{"type":"config","section":{"type":"experiment","name":"mock-experiment","description":"Mock experiment for testing","max_iterations":"5","canonical_branch":"main"}}"#)
         .init_response(r#"{"type":"config","section":{"type":"paths","tunable":["src/**"]}}"#)

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 fn mock_agent_init_conversation() {
     let agent = MockAgent::builder()
         .init_response(r#"{"type":"message","text":"I see a Rust project."}"#)
-        .init_response(r#"{"type":"question","text":"Pick a name","options":[{"key":"a","description":"my-exp"}],"allow_free_response":false}"#)
+        .init_response(r#"{"type":"question","text":"Pick a name","options":[{"key":"a","label":"my-exp"}],"allow_free_response":false}"#)
         .build();
 
     let config = AgentConfig {

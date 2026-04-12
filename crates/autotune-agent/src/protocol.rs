@@ -29,8 +29,13 @@ pub enum AgentRequest {
 /// An option in a structured question.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuestionOption {
+    /// Short identifier returned when selected (e.g., "a", "perf").
     pub key: String,
-    pub description: String,
+    /// Concise label shown in the selection menu (e.g., "Compile time").
+    pub label: String,
+    /// Optional detail shown next to the label (e.g., "measure cargo build speed").
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// A section of the autotune config, proposed incrementally.

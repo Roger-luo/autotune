@@ -3,6 +3,14 @@ use std::io::{self, IsTerminal, Write};
 
 use crate::select::{self, SelectResult};
 
+/// Format a question option for display: "label — description" or just "label".
+fn format_option(opt: &QuestionOption) -> String {
+    match &opt.description {
+        Some(desc) if !desc.is_empty() => format!("{} — {}", opt.label, desc),
+        _ => opt.label.clone(),
+    }
+}
+
 /// Trait for user interaction during the init conversation.
 /// Implementations handle text prompts, option selection, and approval.
 pub trait UserInput {
@@ -71,7 +79,7 @@ impl UserInput for TerminalInput {
 
         if io::stdin().is_terminal() {
             // Interactive: arrow-key selection with inline text input
-            let items: Vec<String> = options.iter().map(|o| o.description.clone()).collect();
+            let items: Vec<String> = options.iter().map(format_option).collect();
 
             match select::interactive_select(&items, allow_free_response)? {
                 SelectResult::Option(idx) => Ok(options[idx].key.clone()),
@@ -80,7 +88,7 @@ impl UserInput for TerminalInput {
         } else {
             // Piped: numbered list, accept number or free text
             for (i, opt) in options.iter().enumerate() {
-                println!("  {}) {}", i + 1, opt.description);
+                println!("  {}) {}", i + 1, format_option(opt));
             }
             if allow_free_response {
                 println!("  (or type your own answer)");

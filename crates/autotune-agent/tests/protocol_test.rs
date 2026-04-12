@@ -18,8 +18,8 @@ fn parse_question_request() {
         "type": "question",
         "text": "What type of project is this?",
         "options": [
-            {"key": "a", "description": "Rust library"},
-            {"key": "b", "description": "Python package"}
+            {"key": "a", "label": "Rust library"},
+            {"key": "b", "label": "Python package", "description": "uses pyproject.toml"}
         ],
         "allow_free_response": true
     }"#;

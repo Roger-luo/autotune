@@ -27,10 +27,17 @@ The `text` field should include your reasoning/context (what you found, why you'
 {{
   "type": "question",
   "text": "I found a Cargo workspace with 13 crates and cargo-nextest in the CI config, but no benchmarks or criterion dependency.\n\nWhat metric would you like to optimize?",
-  "options": [{{"key": "a", "description": "option A"}}, {{"key": "b", "description": "option B"}}],
+  "options": [
+    {{"key": "compile", "label": "Compile time", "description": "measure cargo build / cargo check speed"}},
+    {{"key": "coverage", "label": "Test coverage", "description": "track line/branch coverage via cargo-tarpaulin or cargo-llvm-cov"}}
+  ],
   "allow_free_response": true
 }}
 ```
+Each option has:
+- `key`: short identifier returned when selected
+- `label`: concise name shown in the selection menu
+- `description`: optional detail shown next to the label (rendered as "label — description")
 
 ### Config — propose a config section for validation
 ```json
