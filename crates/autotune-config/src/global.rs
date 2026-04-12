@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::{AgentConfig, ConfigError};
 
-/// Global (user/system) config. Only agent defaults — project-specific
+/// Global user config. Only agent defaults — project-specific
 /// settings live in `.autotune.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct GlobalConfig {
@@ -13,12 +13,13 @@ pub struct GlobalConfig {
 }
 
 impl GlobalConfig {
-    /// Load from the standard system → user config paths.
-    /// Missing files are silently skipped.
+    /// Load from the user config path (~/.config/autotune/config.toml).
+    /// Returns empty config if the file is missing.
     pub fn load() -> Result<Self, ConfigError> {
-        let paths = Self::config_paths();
-        let path_refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-        Self::load_layered(&path_refs)
+        match Self::user_config_path() {
+            Some(path) => Self::load_from(&path),
+            None => Ok(Self::default()),
+        }
     }
 
     /// Load from a single explicit path. Returns empty config if file is missing.
@@ -44,18 +45,6 @@ impl GlobalConfig {
     /// Path to the user-level config file.
     pub fn user_config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|d| d.join("autotune").join("config.toml"))
-    }
-
-    /// Standard config file paths: system then user.
-    fn config_paths() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-        // System config
-        paths.push(PathBuf::from("/etc/autotune/config.toml"));
-        // User config (XDG)
-        if let Some(config_dir) = dirs::config_dir() {
-            paths.push(config_dir.join("autotune").join("config.toml"));
-        }
-        paths
     }
 
     /// Merge another GlobalConfig on top of self (other wins on conflicts).

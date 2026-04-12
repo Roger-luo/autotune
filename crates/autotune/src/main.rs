@@ -576,14 +576,10 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
         }
         ConfigCommands::List => {
             let config = GlobalConfig::load().context("failed to load global config")?;
-            let path = GlobalConfig::user_config_path();
-            if let Some(ref p) = path
-                && p.exists()
-            {
-                println!("# user config: {}", p.display());
+            if let Some(p) = GlobalConfig::user_config_path() {
+                println!("# {}", p.display());
+                println!();
             }
-            println!("# system config: /etc/autotune/config.toml");
-            println!();
             print_config(&config);
         }
         ConfigCommands::Edit => {
