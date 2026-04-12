@@ -496,7 +496,7 @@ fn record_discard(
 
     state.current_iteration += 1;
     state.current_approach = None;
-    state.current_phase = Phase::Planning;
+    state.current_phase = Phase::Recorded;
     store.save_state(state)?;
     Ok(())
 }
