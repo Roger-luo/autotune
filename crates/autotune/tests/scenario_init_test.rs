@@ -221,3 +221,76 @@ fn scenario_init_failure_shows_useful_error() {
         "expected error in output.\nstdout+stderr:\n{combined}"
     );
 }
+
+#[test]
+fn scenario_init_question_shows_text_and_options() {
+    let dir = tempfile::tempdir().unwrap();
+    setup_mock_project(dir.path());
+
+    // Provide full piped input: answer to Q1, answer to Q2, approval
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(dir.path())
+        .write_stdin("perf\nbench\nyes\n")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "autotune init failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // Question text should contain reasoning context (not just bare options)
+    assert!(
+        stdout.contains("Rust workspace") || stdout.contains("crates"),
+        "question text should mention codebase findings.\nstdout:\n{stdout}"
+    );
+
+    // Options should be rendered with labels and descriptions
+    assert!(
+        stdout.contains("Runtime performance"),
+        "expected option label in output.\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Binary size"),
+        "expected option label in output.\nstdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn scenario_init_graceful_exit_on_eof() {
+    let dir = tempfile::tempdir().unwrap();
+    setup_mock_project(dir.path());
+
+    // Provide no stdin input — the process will get EOF when trying to read
+    // user answers. This simulates the user closing the terminal / pipe.
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(dir.path())
+        .write_stdin("") // EOF immediately
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Should exit without panic or crash — either clean cancellation or an error
+    // The key assertion: no panic backtrace in output
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        !combined.contains("panicked") && !combined.contains("RUST_BACKTRACE"),
+        "should not panic on EOF.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+// TODO: test real Ctrl+C (SIGINT) via PTY once the `scenario` crate
+// publishes its interactive session support (Roger-luo/Ion#118).
+// That would test: spawn PTY → expect question text → send Ctrl+C →
+// verify "[autotune] init cancelled" in output.
