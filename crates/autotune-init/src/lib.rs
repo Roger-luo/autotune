@@ -358,6 +358,11 @@ fn run_init_inner(
             let mut has_tl = htl.lock().unwrap();
             match event {
                 AgentEvent::Text(text) => {
+                    // Skip JSON protocol payloads — those are parsed separately
+                    let trimmed = text.trim();
+                    if trimmed.starts_with('{') || trimmed.starts_with("```") {
+                        return;
+                    }
                     // Clear the tool/status line if present, then print text
                     if *has_tl {
                         let _ = write!(stderr, "\r\x1b[2K");
