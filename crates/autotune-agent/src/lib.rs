@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod protocol;
 
 use std::path::PathBuf;
 use thiserror::Error;
