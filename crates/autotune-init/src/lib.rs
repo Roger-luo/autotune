@@ -290,12 +290,18 @@ pub fn run_init(
         max_turns,
     };
 
-    fn make_event_handler() -> EventHandler {
+    fn make_event_handler(default_status: &str) -> EventHandler {
         use std::sync::Mutex;
-        // Track the last agent text so we can show it persistently
-        // while tool calls update below it.
         let last_text: std::sync::Arc<Mutex<String>> =
-            std::sync::Arc::new(Mutex::new(String::new()));
+            std::sync::Arc::new(Mutex::new(default_status.to_string()));
+
+        // Print the default status immediately
+        {
+            use std::io::Write;
+            let mut stderr = std::io::stderr();
+            let _ = write!(stderr, "\r\x1b[2K\x1b[1A\r\x1b[2K  {default_status}\n");
+            let _ = stderr.flush();
+        }
 
         let lt = last_text.clone();
         Box::new(move |event| {
@@ -308,7 +314,7 @@ pub fn run_init(
                     let mut current = lt.lock().unwrap();
                     if *current != summary {
                         *current = summary.to_string();
-                        // Clear two lines (text + tool) and rewrite
+                        // Move up to text line, clear both lines, rewrite text
                         let _ = write!(stderr, "\r\x1b[2K\x1b[1A\r\x1b[2K  {summary}\n");
                         let _ = stderr.flush();
                     }
@@ -366,8 +372,8 @@ pub fn run_init(
     eprintln!();
 
     // Spawn the init agent with event streaming
-    let config_with_events =
-        AgentConfigWithEvents::new(agent_config.clone()).with_event_handler(make_event_handler());
+    let config_with_events = AgentConfigWithEvents::new(agent_config.clone())
+        .with_event_handler(make_event_handler("exploring project..."));
     let response = agent.spawn_streaming(config_with_events)?;
     clear_status();
 
@@ -397,7 +403,7 @@ pub fn run_init(
             Err(_) => {
                 // Retry once with corrective prompt (counts as an extra turn)
                 turns += 1;
-                let handler = make_event_handler();
+                let handler = make_event_handler("retrying...");
                 let retry = agent.send_streaming(
                     &session,
                     "Your previous response was not valid JSON. Please respond with exactly one JSON object matching the protocol schema.",
@@ -481,7 +487,7 @@ pub fn run_init(
                                 .prompt_text("What would you like to change?")
                                 .map_err(map_io)?;
                             // Send feedback to agent to revise
-                            let handler = make_event_handler();
+                            let handler = make_event_handler("revising config...");
                             let response = agent.send_streaming(
                                 &session,
                                 &format!(
@@ -509,7 +515,7 @@ pub fn run_init(
             }
         };
 
-        let handler = make_event_handler();
+        let handler = make_event_handler("thinking...");
         let response = agent.send_streaming(&session, &reply, Some(&handler))?;
         clear_status();
         last_response_text = response.text;
