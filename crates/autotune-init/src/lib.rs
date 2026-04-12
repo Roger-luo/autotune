@@ -1,8 +1,11 @@
 mod error;
 mod prompt;
+mod spinner;
 
 pub use error::InitError;
 pub use prompt::build_init_prompt;
+
+use spinner::Spinner;
 
 use autotune_agent::protocol::{AgentRequest, ConfigSection, parse_agent_request};
 use autotune_agent::{Agent, AgentConfig, AgentSession, ToolPermission};
@@ -262,6 +265,14 @@ where
         .and_then(|a| a.init.as_ref())
         .and_then(|i| i.max_turns);
 
+    // Show agent info
+    let model_display = model.as_deref().unwrap_or("default");
+    println!(
+        "[autotune] init agent: backend={}, model={}",
+        agent.backend_name(),
+        model_display
+    );
+
     let agent_config = AgentConfig {
         prompt,
         allowed_tools: init_agent_permissions(),
@@ -271,7 +282,10 @@ where
     };
 
     // Spawn the init agent
+    let sp = Spinner::start("agent is exploring the codebase...");
     let response = agent.spawn(&agent_config)?;
+    sp.stop();
+
     let session = AgentSession {
         session_id: response.session_id,
         backend: agent.backend_name().to_string(),
@@ -298,10 +312,12 @@ where
             Err(_) => {
                 // Retry once with corrective prompt (counts as an extra turn)
                 turns += 1;
+                let sp = Spinner::start("waiting for agent...");
                 let retry = agent.send(
                     &session,
                     "Your previous response was not valid JSON. Please respond with exactly one JSON object matching the protocol schema.",
                 )?;
+                sp.stop();
                 match parse_agent_request(&retry.text) {
                     Ok(req) => req,
                     Err(e) => {
@@ -385,6 +401,7 @@ where
                                 break;
                             }
                             // User rejected -- send feedback to agent to revise
+                            let sp = Spinner::start("waiting for agent...");
                             let response = agent.send(
                                 &session,
                                 &format!(
@@ -392,6 +409,7 @@ where
                                     approval
                                 ),
                             )?;
+                            sp.stop();
                             last_response_text = response.text;
                             continue;
                         }
@@ -410,7 +428,9 @@ where
             }
         };
 
+        let sp = Spinner::start("waiting for agent...");
         let response = agent.send(&session, &reply)?;
+        sp.stop();
         last_response_text = response.text;
     }
 
