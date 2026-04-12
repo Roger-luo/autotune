@@ -1,8 +1,12 @@
-use crate::{Agent, AgentConfig, AgentError, AgentResponse, AgentSession, ToolPermission};
+use crate::{
+    Agent, AgentConfig, AgentConfigWithEvents, AgentError, AgentEvent, AgentResponse, AgentSession,
+    EventHandler, ToolPermission,
+};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 pub struct ClaudeAgent {
@@ -155,6 +159,145 @@ impl ClaudeAgent {
         let stdout = String::from_utf8_lossy(&output.stdout);
         Self::parse_response(&stdout)
     }
+
+    /// Run claude with `--output-format stream-json`, forwarding events to the handler.
+    fn run_claude_streaming(
+        &self,
+        args: &[String],
+        cwd: &Path,
+        event_handler: &EventHandler,
+    ) -> Result<AgentResponse, AgentError> {
+        // Replace --output-format json with stream-json
+        let args: Vec<String> = args
+            .iter()
+            .map(|a| {
+                if a == "json" {
+                    "stream-json".to_string()
+                } else {
+                    a.clone()
+                }
+            })
+            .collect();
+
+        let mut child = Command::new(&self.command)
+            .args(&args)
+            .current_dir(cwd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|source| AgentError::Io { source })?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AgentError::CommandFailed {
+                message: "failed to capture claude stdout".to_string(),
+            })?;
+
+        let mut final_result: Option<AgentResponse> = None;
+        let reader = std::io::BufReader::new(stdout);
+
+        for line in reader.lines() {
+            let line = line.map_err(|source| AgentError::Io { source })?;
+            if line.is_empty() {
+                continue;
+            }
+
+            let event: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+
+            match event_type {
+                "assistant" => {
+                    // Tool use events in assistant messages
+                    if let Some(arr) = event
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(Value::as_array)
+                    {
+                        for block in arr {
+                            if block.get("type").and_then(Value::as_str) == Some("tool_use") {
+                                let tool = block
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                let input_summary =
+                                    Self::summarize_tool_input(block.get("input"));
+                                event_handler(AgentEvent::ToolUse {
+                                    tool,
+                                    input_summary,
+                                });
+                            }
+                        }
+                    }
+                }
+                "content_block_start" => {
+                    if let Some(block) = event.get("content_block")
+                        && block.get("type").and_then(Value::as_str) == Some("tool_use")
+                    {
+                        let tool = block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string();
+                        event_handler(AgentEvent::ToolUse {
+                            tool,
+                            input_summary: String::new(),
+                        });
+                    }
+                }
+                "result" => {
+                    // Final result — same shape as non-streaming JSON output
+                    let session_id = event
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let text = event
+                        .get("result")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    final_result = Some(AgentResponse { text, session_id });
+                }
+                _ => {}
+            }
+        }
+
+        let status = child.wait().map_err(|source| AgentError::Io { source })?;
+
+        if !status.success() {
+            return Err(AgentError::CommandFailed {
+                message: format!("claude exited with {}", status),
+            });
+        }
+
+        final_result.ok_or_else(|| AgentError::ParseFailed {
+            message: "claude stream ended without a result event".to_string(),
+        })
+    }
+
+    /// Summarize tool input for display (e.g., file path for Read, pattern for Grep).
+    fn summarize_tool_input(input: Option<&Value>) -> String {
+        let Some(input) = input else {
+            return String::new();
+        };
+        // Common tool input fields
+        if let Some(path) = input.get("file_path").and_then(Value::as_str) {
+            return path.to_string();
+        }
+        if let Some(pattern) = input.get("pattern").and_then(Value::as_str) {
+            return format!("pattern: {}", pattern);
+        }
+        if let Some(command) = input.get("command").and_then(Value::as_str) {
+            return command.to_string();
+        }
+        String::new()
+    }
 }
 
 impl Default for ClaudeAgent {
@@ -175,6 +318,38 @@ impl Agent for ClaudeAgent {
         let config = self.config_for_session(&session.session_id, message)?;
         let args = Self::build_args(&config, Some(&session.session_id));
         let response = self.run_claude(&args, &config.working_directory)?;
+        self.remember_session(&response.session_id, &config)?;
+        Ok(response)
+    }
+
+    fn spawn_streaming(
+        &self,
+        config_with_events: AgentConfigWithEvents,
+    ) -> Result<AgentResponse, AgentError> {
+        let config = &config_with_events.config;
+        let args = Self::build_args(config, None);
+        let response = if let Some(ref handler) = config_with_events.event_handler {
+            self.run_claude_streaming(&args, &config.working_directory, handler)?
+        } else {
+            self.run_claude(&args, &config.working_directory)?
+        };
+        self.remember_session(&response.session_id, config)?;
+        Ok(response)
+    }
+
+    fn send_streaming(
+        &self,
+        session: &AgentSession,
+        message: &str,
+        event_handler: Option<&EventHandler>,
+    ) -> Result<AgentResponse, AgentError> {
+        let config = self.config_for_session(&session.session_id, message)?;
+        let args = Self::build_args(&config, Some(&session.session_id));
+        let response = if let Some(handler) = event_handler {
+            self.run_claude_streaming(&args, &config.working_directory, handler)?
+        } else {
+            self.run_claude(&args, &config.working_directory)?
+        };
         self.remember_session(&response.session_id, &config)?;
         Ok(response)
     }

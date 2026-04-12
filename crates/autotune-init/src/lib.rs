@@ -2,16 +2,16 @@ mod error;
 pub mod input;
 mod prompt;
 mod select;
-mod spinner;
 
 pub use error::InitError;
 pub use input::{MockInput, TerminalInput, UserInput};
 pub use prompt::build_init_prompt;
 
-use spinner::Spinner;
-
 use autotune_agent::protocol::{AgentRequest, ConfigSection, parse_agent_request};
-use autotune_agent::{Agent, AgentConfig, AgentSession, ToolPermission};
+use autotune_agent::{
+    Agent, AgentConfig, AgentConfigWithEvents, AgentEvent, AgentSession, EventHandler,
+    ToolPermission,
+};
 use autotune_config::global::GlobalConfig;
 use autotune_config::{
     AutotuneConfig, BenchmarkConfig, ExperimentConfig, PathsConfig, ScoreConfig, TestConfig,
@@ -281,10 +281,36 @@ pub fn run_init(
         max_turns,
     };
 
-    // Spawn the init agent
-    let sp = Spinner::start("agent is exploring the codebase...");
-    let response = agent.spawn(&agent_config)?;
-    sp.stop();
+    fn make_event_handler() -> EventHandler {
+        Box::new(|event| match event {
+            AgentEvent::ToolUse {
+                tool,
+                input_summary,
+            } => {
+                if input_summary.is_empty() {
+                    eprint!("\r\x1b[2K  [{tool}]");
+                } else {
+                    eprint!("\r\x1b[2K  [{tool}] {input_summary}");
+                }
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+            }
+            AgentEvent::Text(text) => {
+                eprint!("\r\x1b[2K  {text}");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+            }
+        })
+    }
+
+    fn clear_event_line() {
+        eprint!("\r\x1b[2K");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
+
+    // Spawn the init agent with event streaming
+    let config_with_events =
+        AgentConfigWithEvents::new(agent_config.clone()).with_event_handler(make_event_handler());
+    let response = agent.spawn_streaming(config_with_events)?;
+    clear_event_line();
 
     let session = AgentSession {
         session_id: response.session_id,
@@ -312,12 +338,13 @@ pub fn run_init(
             Err(_) => {
                 // Retry once with corrective prompt (counts as an extra turn)
                 turns += 1;
-                let sp = Spinner::start("waiting for agent...");
-                let retry = agent.send(
+                let handler = make_event_handler();
+                let retry = agent.send_streaming(
                     &session,
                     "Your previous response was not valid JSON. Please respond with exactly one JSON object matching the protocol schema.",
+                    Some(&handler),
                 )?;
-                sp.stop();
+                clear_event_line();
                 match parse_agent_request(&retry.text) {
                     Ok(req) => req,
                     Err(e) => {
@@ -401,15 +428,16 @@ pub fn run_init(
                                 .prompt_text("What would you like to change?")
                                 .map_err(|e| InitError::Io { source: e })?;
                             // Send feedback to agent to revise
-                            let sp = Spinner::start("waiting for agent...");
-                            let response = agent.send(
+                            let handler = make_event_handler();
+                            let response = agent.send_streaming(
                                 &session,
                                 &format!(
                                     "User rejected the config with feedback: {}. Please revise the relevant sections.",
                                     feedback
                                 ),
+                                Some(&handler),
                             )?;
-                            sp.stop();
+                            clear_event_line();
                             last_response_text = response.text;
                             continue;
                         }
@@ -428,9 +456,9 @@ pub fn run_init(
             }
         };
 
-        let sp = Spinner::start("waiting for agent...");
-        let response = agent.send(&session, &reply)?;
-        sp.stop();
+        let handler = make_event_handler();
+        let response = agent.send_streaming(&session, &reply, Some(&handler))?;
+        clear_event_line();
         last_response_text = response.text;
     }
 
