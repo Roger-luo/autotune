@@ -29,4 +29,5 @@ serde_json = "1"
 toml = "0.8"
 
 [dev-dependencies]
+autotune-mock = { path = "../autotune-mock" }
 tempfile = "3"

@@ -1,97 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 
-use autotune_agent::{Agent, AgentConfig, AgentError, AgentResponse, AgentSession};
 use autotune_benchmark::run_all_benchmarks;
 use autotune_config::AutotuneConfig;
+use autotune_mock::MockAgent;
 use autotune_score::weighted_sum::{Direction, PrimaryMetricDef, WeightedSumScorer};
 use autotune_score::{ScoreCalculator, ScoreInput};
 use autotune_state::{ExperimentState, ExperimentStore, IterationRecord, IterationStatus, Phase};
 use chrono::Utc;
-
-// ---------------------------------------------------------------------------
-// MockAgent
-// ---------------------------------------------------------------------------
-
-struct MockAgent {
-    hypotheses: Vec<String>,
-    send_count: Mutex<usize>,
-    spawn_count: Mutex<usize>,
-}
-
-impl MockAgent {
-    fn new(hypotheses: Vec<String>) -> Self {
-        Self {
-            hypotheses,
-            send_count: Mutex::new(0),
-            spawn_count: Mutex::new(0),
-        }
-    }
-}
-
-impl Agent for MockAgent {
-    fn spawn(&self, config: &AgentConfig) -> Result<AgentResponse, AgentError> {
-        let mut count = self.spawn_count.lock().unwrap();
-        let idx = *count;
-        *count += 1;
-
-        // If this looks like an implementation spawn (worktree directory),
-        // create a file and commit it so the SHA-before != SHA-after check passes.
-        let wd = &config.working_directory;
-        if idx > 0 || is_worktree_dir(wd) {
-            create_dummy_commit(wd);
-        }
-
-        Ok(AgentResponse {
-            text: "agent ready".to_string(),
-            session_id: "mock-session".to_string(),
-        })
-    }
-
-    fn send(&self, _session: &AgentSession, _message: &str) -> Result<AgentResponse, AgentError> {
-        let mut count = self.send_count.lock().unwrap();
-        let idx = *count % self.hypotheses.len();
-        *count += 1;
-
-        Ok(AgentResponse {
-            text: self.hypotheses[idx].clone(),
-            session_id: "mock-session".to_string(),
-        })
-    }
-
-    fn backend_name(&self) -> &str {
-        "mock"
-    }
-
-    fn handover_command(&self, _session: &AgentSession) -> String {
-        "mock-handover".to_string()
-    }
-}
-
-fn is_worktree_dir(path: &Path) -> bool {
-    let git_path = path.join(".git");
-    git_path.is_file()
-}
-
-fn create_dummy_commit(dir: &Path) {
-    let dummy = dir.join("dummy_change.txt");
-    std::fs::write(&dummy, format!("change at {:?}", std::time::Instant::now())).unwrap();
-
-    Command::new("git")
-        .args(["add", "dummy_change.txt"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-
-    Command::new("git")
-        .args(["commit", "-m", "mock implementation commit"])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -219,7 +137,7 @@ fn test_full_pipeline_one_iteration() {
     let initial_state = ExperimentState {
         experiment_name: config.experiment.name.clone(),
         canonical_branch: "main".to_string(),
-        research_session_id: "mock-session".to_string(),
+        research_session_id: "mock-session-001".to_string(),
         current_iteration: 1,
         current_phase: Phase::Planning,
         current_approach: None,
@@ -227,13 +145,10 @@ fn test_full_pipeline_one_iteration() {
     store.save_state(&initial_state).unwrap();
 
     // MockAgent: benchmark will produce metric_value=42.0, baseline=100.0, direction=Minimize
-    // So 42 < 100 → improvement → keep
-    let hypothesis_json = serde_json::json!({
-        "approach": "opt-1",
-        "hypothesis": "optimize thing to reduce metric",
-        "files_to_modify": ["src/lib.rs"]
-    });
-    let agent = MockAgent::new(vec![hypothesis_json.to_string()]);
+    // So 42 < 100 -> improvement -> keep
+    let agent = MockAgent::builder()
+        .hypothesis("opt-1", "optimize thing to reduce metric", &["src/lib.rs"])
+        .build();
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 

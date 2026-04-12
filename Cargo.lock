@@ -92,6 +92,7 @@ dependencies = [
  "autotune-config",
  "autotune-git",
  "autotune-implement",
+ "autotune-mock",
  "autotune-plan",
  "autotune-score",
  "autotune-state",
@@ -165,6 +166,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "autotune-mock"
+version = "0.1.0"
+dependencies = [
+ "autotune-agent",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
