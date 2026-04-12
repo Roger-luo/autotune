@@ -260,6 +260,53 @@ pub fn run_init(
     repo_root: &Path,
     user_input: &dyn UserInput,
 ) -> Result<AutotuneConfig, InitError> {
+    // Install Ctrl+C handler that sets a flag instead of killing the process.
+    // This lets us clean up terminal state before exiting.
+    let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let int_flag = interrupted.clone();
+    let _ = ctrlc::set_handler(move || {
+        int_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    // Run the init loop, ensuring terminal state is restored on any exit path.
+    let result = run_init_inner(agent, global_config, repo_root, user_input, &interrupted);
+
+    // Always restore terminal state
+    restore_terminal();
+
+    result
+}
+
+/// Restore terminal to a clean state: disable raw mode, show cursor, reset attributes.
+fn restore_terminal() {
+    use crossterm::{cursor, execute, terminal};
+    let _ = terminal::disable_raw_mode();
+    let _ = execute!(
+        std::io::stderr(),
+        cursor::Show,
+        crossterm::style::SetAttribute(crossterm::style::Attribute::Reset)
+    );
+    // Clear any ephemeral status line
+    eprint!("\r\x1b[2K");
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+}
+
+/// Check if Ctrl+C was pressed and return UserAborted if so.
+fn check_interrupted(flag: &std::sync::atomic::AtomicBool) -> Result<(), InitError> {
+    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+        Err(InitError::UserAborted)
+    } else {
+        Ok(())
+    }
+}
+
+fn run_init_inner(
+    agent: &dyn Agent,
+    global_config: &GlobalConfig,
+    repo_root: &Path,
+    user_input: &dyn UserInput,
+    interrupted: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<AutotuneConfig, InitError> {
     let prompt = build_init_prompt(repo_root);
 
     let model = global_config
@@ -364,6 +411,7 @@ pub fn run_init(
         .with_event_handler(make_event_handler("exploring project..."));
     let response = agent.spawn_streaming(config_with_events)?;
     clear_status();
+    check_interrupted(interrupted)?;
 
     let session = AgentSession {
         session_id: response.session_id,
@@ -398,6 +446,7 @@ pub fn run_init(
                     Some(&handler),
                 )?;
                 clear_status();
+                check_interrupted(interrupted)?;
                 match parse_agent_request(&retry.text) {
                     Ok(req) => req,
                     Err(e) => {
@@ -485,6 +534,7 @@ pub fn run_init(
                                 Some(&handler),
                             )?;
                             clear_status();
+                            check_interrupted(interrupted)?;
                             last_response_text = response.text;
                             continue;
                         }
@@ -506,6 +556,7 @@ pub fn run_init(
         let handler = make_event_handler("thinking...");
         let response = agent.send_streaming(&session, &reply, Some(&handler))?;
         clear_status();
+        check_interrupted(interrupted)?;
         last_response_text = response.text;
     }
 
