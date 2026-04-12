@@ -1,6 +1,7 @@
 mod error;
 
 pub use error::ConfigError;
+pub mod global;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
