@@ -241,6 +241,19 @@ fn scenario_pty_arrow_keys_navigate_options() {
     // Wait for second question
     session.expect("How should we measure").unwrap();
 
+    // After the menu clears and the next question renders, the old menu
+    // options should not be visible in subsequent output. Check that the
+    // first question's options don't leak into the second question's area.
+    let output_so_far = session.current_output();
+    // Find text after "How should we measure" — first question options shouldn't appear there
+    if let Some(pos) = output_so_far.find("How should we measure") {
+        let after_second_q = &output_so_far[pos..];
+        assert!(
+            !after_second_q.contains("Runtime performance"),
+            "first question's options leaked into second question area.\noutput:\n{output_so_far}"
+        );
+    }
+
     // Select first option
     session.send(b"\r").unwrap();
 
@@ -271,6 +284,7 @@ fn scenario_pty_free_text_input() {
 
     // Wait for first question
     session.expect("What metric").unwrap();
+    session.expect("Type your own answer").unwrap();
 
     // Navigate to "Type your own answer..." (last option)
     for _ in 0..5 {
@@ -285,6 +299,17 @@ fn scenario_pty_free_text_input() {
 
     // Wait for second question
     session.expect("How should we measure").unwrap();
+
+    // After the first menu clears, its options should not appear in the
+    // second question's output area. This catches rendering artifacts.
+    let output_so_far = session.current_output();
+    if let Some(pos) = output_so_far.find("How should we measure") {
+        let after_second_q = &output_so_far[pos..];
+        assert!(
+            !after_second_q.contains("Runtime performance"),
+            "first question's options leaked after text input.\noutput:\n{output_so_far}"
+        );
+    }
 
     // Select first option
     session.send(b"\r").unwrap();
