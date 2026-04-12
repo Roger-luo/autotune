@@ -340,45 +340,16 @@ pub fn run_init(
         })
     }
 
-    /// Translate raw tool calls into short activity descriptions.
     fn describe_tool_use(tool: &str, input: &str) -> String {
-        match tool {
-            "Read" => {
-                if input.is_empty() {
-                    "reading file...".to_string()
-                } else {
-                    let name = input.rsplit('/').next().unwrap_or(input);
-                    format!("reading {name}")
-                }
-            }
-            "Glob" => {
-                if input.is_empty() {
-                    "scanning files...".to_string()
-                } else {
-                    format!("scanning {input}")
-                }
-            }
-            "Grep" => {
-                if input.is_empty() {
-                    "searching...".to_string()
-                } else {
-                    format!("searching for {input}")
-                }
-            }
-            "Bash" => {
-                if input.is_empty() {
-                    "running command...".to_string()
-                } else {
-                    // Show first 60 chars of the command, truncated
-                    let cmd = if input.len() > 60 {
-                        format!("{}...", &input[..57])
-                    } else {
-                        input.to_string()
-                    };
-                    format!("running: {cmd}")
-                }
-            }
-            _ => format!("{tool}..."),
+        if input.is_empty() {
+            format!("{tool}()")
+        } else {
+            let summary = if input.len() > 60 {
+                format!("{}...", &input[..57])
+            } else {
+                input.to_string()
+            };
+            format!("{tool}({summary})")
         }
     }
 
