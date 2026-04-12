@@ -371,11 +371,17 @@ fn run_init_inner(
                     tool,
                     input_summary,
                 } => {
+                    // Only show known user-facing tools
+                    if !matches!(
+                        tool.as_str(),
+                        "Read" | "Glob" | "Grep" | "Bash" | "Edit" | "Write"
+                    ) {
+                        return;
+                    }
                     // Clear previous tool line, show new one (dimmed)
                     if *has_tl {
                         let _ = write!(stderr, "\r\x1b[2K");
                     } else {
-                        // Move to a new line for the tool status
                         let _ = writeln!(stderr);
                     }
                     let detail = describe_tool_use(&tool, &input_summary);
