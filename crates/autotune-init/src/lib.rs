@@ -292,40 +292,49 @@ pub fn run_init(
 
     fn make_event_handler(default_status: &str) -> EventHandler {
         use std::sync::Mutex;
-        let last_text: std::sync::Arc<Mutex<String>> =
-            std::sync::Arc::new(Mutex::new(default_status.to_string()));
+        // Track whether we've seen any text (to know if tool line needs clearing)
+        let has_tool_line = std::sync::Arc::new(Mutex::new(false));
 
-        // Print the default status immediately
+        // Print the default status as an ephemeral tool-style line
         {
             use std::io::Write;
             let mut stderr = std::io::stderr();
-            let _ = write!(stderr, "\r\x1b[2K\x1b[1A\r\x1b[2K  {default_status}\n");
+            let _ = write!(stderr, "\r\x1b[2K  \x1b[2m{default_status}\x1b[0m");
             let _ = stderr.flush();
         }
+        *has_tool_line.lock().unwrap() = true;
 
-        let lt = last_text.clone();
+        let htl = has_tool_line.clone();
         Box::new(move |event| {
             use std::io::Write;
             let mut stderr = std::io::stderr();
+            let mut has_tl = htl.lock().unwrap();
             match event {
                 AgentEvent::Text(text) => {
-                    // Take just the first line as a summary
-                    let summary = text.lines().next().unwrap_or(&text);
-                    let mut current = lt.lock().unwrap();
-                    if *current != summary {
-                        *current = summary.to_string();
-                        // Move up to text line, clear both lines, rewrite text
-                        let _ = write!(stderr, "\r\x1b[2K\x1b[1A\r\x1b[2K  {summary}\n");
-                        let _ = stderr.flush();
+                    // Clear the tool/status line if present, then print text
+                    if *has_tl {
+                        let _ = write!(stderr, "\r\x1b[2K");
+                        *has_tl = false;
                     }
+                    // Stream text as-is (append, like a typewriter)
+                    let _ = write!(stderr, "{text}");
+                    let _ = stderr.flush();
                 }
                 AgentEvent::ToolUse {
                     tool,
                     input_summary,
                 } => {
+                    // Clear previous tool line, show new one (dimmed)
+                    if *has_tl {
+                        let _ = write!(stderr, "\r\x1b[2K");
+                    } else {
+                        // Move to a new line for the tool status
+                        let _ = writeln!(stderr);
+                    }
                     let detail = describe_tool_use(&tool, &input_summary);
-                    let _ = write!(stderr, "\r\x1b[2K    {detail}");
+                    let _ = write!(stderr, "  \x1b[2m{detail}\x1b[0m");
                     let _ = stderr.flush();
+                    *has_tl = true;
                 }
             }
         })
@@ -362,14 +371,10 @@ pub fn run_init(
     }
 
     fn clear_status() {
-        // Clear both status lines (agent text + tool detail)
-        eprint!("\r\x1b[2K\x1b[1A\r\x1b[2K");
+        // Clear the current ephemeral status line
+        eprint!("\r\x1b[2K");
         let _ = std::io::Write::flush(&mut std::io::stderr());
     }
-
-    // Print two blank lines to reserve space for the status display
-    eprintln!();
-    eprintln!();
 
     // Spawn the init agent with event streaming
     let config_with_events = AgentConfigWithEvents::new(agent_config.clone())
