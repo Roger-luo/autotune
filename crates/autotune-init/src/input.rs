@@ -7,8 +7,8 @@ pub trait UserInput {
     /// Show a message and read a free-form text response.
     fn prompt_text(&self, message: &str) -> Result<String, io::Error>;
 
-    /// Show a question with selectable options. Returns the selected option's key.
-    /// If `allow_free_response` is true, the user can also type a custom response.
+    /// Show a question with selectable options. Returns the selected option's key
+    /// or a free-text response.
     fn prompt_select(
         &self,
         question: &str,
@@ -31,6 +31,24 @@ impl TerminalInput {
         io::stdin().read_line(&mut input)?;
         Ok(input.trim().to_string())
     }
+
+    /// Parse user input against options. Returns the option key if matched,
+    /// or the raw input as free text.
+    fn match_option(input: &str, options: &[QuestionOption]) -> String {
+        // Match by key (case-insensitive)
+        if let Some(opt) = options.iter().find(|o| o.key.eq_ignore_ascii_case(input)) {
+            return opt.key.clone();
+        }
+        // Match by 1-based index
+        if let Ok(idx) = input.parse::<usize>()
+            && idx >= 1
+            && idx <= options.len()
+        {
+            return options[idx - 1].key.clone();
+        }
+        // Return as free text
+        input.to_string()
+    }
 }
 
 impl UserInput for TerminalInput {
@@ -49,16 +67,12 @@ impl UserInput for TerminalInput {
     ) -> Result<String, io::Error> {
         println!("\n{}", question);
 
-        if io::stdin().is_terminal() {
-            // Interactive: arrow-key selection
-            let mut items: Vec<String> = options
+        if io::stdin().is_terminal() && !allow_free_response {
+            // Pure selection (no free text) — use arrow-key menu
+            let items: Vec<String> = options
                 .iter()
                 .map(|o| format!("{}: {}", o.key, o.description))
                 .collect();
-
-            if allow_free_response {
-                items.push("(custom response)".to_string());
-            }
 
             let selection = dialoguer::Select::new()
                 .items(&items)
@@ -66,44 +80,20 @@ impl UserInput for TerminalInput {
                 .interact()
                 .map_err(io::Error::other)?;
 
-            if allow_free_response && selection == options.len() {
-                print!("  > ");
-                io::stdout().flush()?;
-                Self::read_line()
-            } else {
-                Ok(options[selection].key.clone())
-            }
+            Ok(options[selection].key.clone())
         } else {
-            // Piped: print options, read a line, match by key or index
+            // Show numbered options, accept number or free text
             for (i, opt) in options.iter().enumerate() {
-                println!("  {}) {}: {}", i + 1, opt.key, opt.description);
+                println!("  {}) {}", i + 1, opt.description);
             }
             if allow_free_response {
-                println!("  (or type a custom response)");
+                println!();
+                println!("  Enter a number to select, or type your own answer.");
             }
             print!("> ");
             io::stdout().flush()?;
             let input = Self::read_line()?;
-
-            // Match by key
-            if let Some(opt) = options.iter().find(|o| o.key == input) {
-                return Ok(opt.key.clone());
-            }
-            // Match by 1-based index
-            if let Ok(idx) = input.parse::<usize>()
-                && idx >= 1
-                && idx <= options.len()
-            {
-                return Ok(options[idx - 1].key.clone());
-            }
-            // Free response or default to first option
-            if allow_free_response {
-                Ok(input)
-            } else if let Some(first) = options.first() {
-                Ok(first.key.clone())
-            } else {
-                Ok(input)
-            }
+            Ok(Self::match_option(&input, options))
         }
     }
 
