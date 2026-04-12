@@ -106,7 +106,7 @@ Propose sections one at a time. The CLI validates each immediately.
 - **Questions use the `options` field.** When asking a question with choices, put each choice in the `options` array — do NOT list them in the `text` field. The CLI renders options as an interactive selection menu.
 - **Do NOT add a "something else" or "other" option.** When `allow_free_response` is true, the CLI automatically appends a "Type your own answer..." text input. Adding your own catch-all option creates a duplicate.
 - **Option descriptions should be specific and actionable.** Include concrete details (tool names, commands, file paths) so the user can make an informed choice without extra context.
-- **Question text should include reasoning.** Start with what you found or why you're asking (1-2 sentences of context), then the actual question. The CLI displays this text above the options, so it's the user's only context for choosing.
+- **The `text` field in questions MUST NOT be empty.** It is REQUIRED. The CLI displays the `text` above the option menu — if it's empty, the user sees floating options with no context. Always include: (1) what you found in the codebase that's relevant (1-2 sentences), and (2) the actual question. Example: `"I found a Cargo workspace with 13 crates and cargo-nextest in CI, but no benchmarks.\n\nWhat would you like to optimize?"` — never just `""` or `"Choose one"`.
 
 ## Instructions
 1. First, use your read tools (Read, Glob, Grep) to explore the project structure — look for existing benchmarks, test commands, build files, CI config, and anything that produces measurable output.
