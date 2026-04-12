@@ -365,7 +365,19 @@ pub fn run_init(
                     format!("searching for {input}")
                 }
             }
-            "Bash" => "running command...".to_string(),
+            "Bash" => {
+                if input.is_empty() {
+                    "running command...".to_string()
+                } else {
+                    // Show first 60 chars of the command, truncated
+                    let cmd = if input.len() > 60 {
+                        format!("{}...", &input[..57])
+                    } else {
+                        input.to_string()
+                    };
+                    format!("running: {cmd}")
+                }
+            }
             _ => format!("{tool}..."),
         }
     }
