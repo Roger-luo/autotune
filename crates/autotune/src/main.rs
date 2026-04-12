@@ -590,9 +590,11 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
                 std::fs::create_dir_all(parent).context("failed to create config directory")?;
             }
             if !path.exists() {
-                std::fs::write(&path, "").context("failed to create config file")?;
+                std::fs::write(&path, CONFIG_TEMPLATE).context("failed to create config file")?;
             }
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            let editor = std::env::var("EDITOR").context(
+                "$EDITOR is not set. Set it to your preferred editor (e.g. export EDITOR=vim)",
+            )?;
             let status = std::process::Command::new(&editor)
                 .arg(&path)
                 .status()
@@ -604,6 +606,25 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
     }
     Ok(())
 }
+
+const CONFIG_TEMPLATE: &str = r#"# Autotune global config
+# Uncomment and edit the values you want to set.
+
+# [agent]
+# backend = "claude"
+
+# [agent.research]
+# model = "opus"
+# max_turns = 200
+
+# [agent.implementation]
+# model = "sonnet"
+# max_turns = 50
+
+# [agent.init]
+# model = "opus"
+# max_turns = 200
+"#;
 
 /// Valid config keys and their dotted paths.
 const VALID_KEYS: &[&str] = &[
