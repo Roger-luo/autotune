@@ -17,6 +17,7 @@ autotune-benchmark = { path = "../autotune-benchmark" }
 autotune-config = { path = "../autotune-config" }
 autotune-git = { path = "../autotune-git" }
 autotune-implement = { path = "../autotune-implement" }
+autotune-init = { path = "../autotune-init" }
 autotune-plan = { path = "../autotune-plan" }
 autotune-score = { path = "../autotune-score" }
 autotune-state = { path = "../autotune-state" }

@@ -13,6 +13,7 @@ use clap::Parser;
 
 use autotune_agent::Agent;
 use autotune_agent::claude::ClaudeAgent;
+use autotune_config::global::GlobalConfig;
 use autotune_config::{AutotuneConfig, ScoreConfig};
 use autotune_score::ScoreCalculator;
 use autotune_score::script::ScriptScorer;
@@ -59,6 +60,12 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
 
 fn build_agent(_config: &AutotuneConfig) -> Box<dyn Agent> {
     // Currently only the Claude backend is supported.
+    Box::new(ClaudeAgent::new())
+}
+
+fn build_agent_from_global(_global_config: &GlobalConfig) -> Box<dyn Agent> {
+    // Currently only the Claude backend is supported.
+    // In the future, read global_config.agent.backend to select backend.
     Box::new(ClaudeAgent::new())
 }
 
@@ -442,13 +449,30 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let config_path = repo_root.join(".autotune.toml");
 
-    if !config_path.exists() {
-        println!("[autotune] no .autotune.toml found — agent-assisted init not yet supported");
-        println!("[autotune] create .autotune.toml manually and run `autotune init` again");
-        return Ok(());
-    }
+    let mut config = if config_path.exists() {
+        load_config(&repo_root)?
+    } else {
+        // Agent-assisted init
+        println!("[autotune] no .autotune.toml found — starting agent-assisted init");
 
-    let mut config = load_config(&repo_root)?;
+        let global_config = GlobalConfig::load().context("failed to load global config")?;
+
+        let agent = build_agent_from_global(&global_config);
+
+        let config = autotune_init::run_init(&*agent, &global_config, &repo_root, || {
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            Ok(input.trim().to_string())
+        })
+        .context("agent-assisted init failed")?;
+
+        // Write .autotune.toml
+        let toml_content = toml::to_string_pretty(&config).context("failed to serialize config")?;
+        std::fs::write(&config_path, &toml_content).context("failed to write .autotune.toml")?;
+        println!("[autotune] wrote .autotune.toml");
+
+        config
+    };
 
     if let Some(name) = name_override {
         config.experiment.name = name;
