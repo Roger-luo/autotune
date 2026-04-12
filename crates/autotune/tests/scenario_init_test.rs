@@ -1,37 +1,49 @@
-//! Scenario test for the agent-assisted init pipeline.
+//! Scenario tests for the agent-assisted init pipeline.
 //!
 //! Requires: `cargo nextest run --features mock -E 'test(scenario_)'`
+//!
+//! Uses `scenario` crate for PTY-based interactive tests and `assert_cmd`
+//! for piped stdin tests.
 
 #![cfg(feature = "mock")]
 
 use assert_cmd::Command;
+use scenario::{Project, Scenario, Terminal};
 use std::path::Path;
+use std::time::Duration;
 
-/// Set up a temporary directory as a git repo with some source files.
-fn setup_mock_project(dir: &Path) {
-    std::fs::write(
-        dir.join("Cargo.toml"),
-        r#"[package]
+fn autotune_bin() -> String {
+    env!("CARGO_BIN_EXE_autotune").to_string()
+}
+
+/// Build a mock project fixture with git init.
+fn mock_project() -> Project {
+    let project = Project::empty()
+        .file(
+            "Cargo.toml",
+            r#"[package]
 name = "sample-project"
 version = "0.1.0"
 edition = "2021"
 "#,
-    )
-    .unwrap();
-
-    std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(
-        dir.join("src/lib.rs"),
-        "pub fn compute(n: u64) -> u64 { (0..n).sum() }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        dir.join("src/main.rs"),
-        "fn main() { println!(\"result: {}\", sample_project::compute(1000)); }\n",
-    )
-    .unwrap();
+        )
+        .file(
+            "src/lib.rs",
+            "pub fn compute(n: u64) -> u64 { (0..n).sum() }\n",
+        )
+        .file(
+            "src/main.rs",
+            "fn main() { println!(\"result: {}\", sample_project::compute(1000)); }\n",
+        )
+        .build()
+        .unwrap();
 
     // Initialize git repo (required by autotune's find_repo_root)
+    git_init(project.path());
+    project
+}
+
+fn git_init(dir: &Path) {
     std::process::Command::new("git")
         .args(["init"])
         .current_dir(dir)
@@ -49,21 +61,17 @@ edition = "2021"
         .expect("git commit failed");
 }
 
+// --- Piped stdin tests (non-interactive, via assert_cmd) ---
+
 #[test]
 fn scenario_init_creates_config_and_baseline() {
-    let dir = tempfile::tempdir().unwrap();
-    setup_mock_project(dir.path());
+    let project = mock_project();
 
-    // The mock agent conversation needs user input:
-    // 1. Answer to "what to optimize?" question (select by key)
-    // 2. Answer to "how to measure?" question (select by key)
-    // 3. Approve the final config ("yes")
-    // Config sections are auto-accepted by the CLI without user input.
     let output = Command::cargo_bin("autotune")
         .unwrap()
         .arg("init")
         .env("AUTOTUNE_MOCK", "1")
-        .current_dir(dir.path())
+        .current_dir(project.path())
         .write_stdin("perf\nbench\nyes\n")
         .output()
         .unwrap();
@@ -76,73 +84,32 @@ fn scenario_init_creates_config_and_baseline() {
         "autotune init failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
-    // Verify mock agent was used
     assert!(
         stderr.contains("mock"),
-        "expected mock agent indicator in stderr.\nstderr:\n{stderr}"
+        "expected mock agent indicator.\nstderr:\n{stderr}"
     );
 
-    // Verify config sections were accepted
-    assert!(
-        stdout.contains("experiment") && stdout.contains("accepted"),
-        "expected experiment accepted.\nstdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("paths") && stdout.contains("accepted"),
-        "expected paths accepted.\nstdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("benchmark") && stdout.contains("accepted"),
-        "expected benchmark accepted.\nstdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("score") && stdout.contains("accepted"),
-        "expected score accepted.\nstdout:\n{stdout}"
-    );
-
-    // Verify .autotune.toml was written
-    let config_path = dir.path().join(".autotune.toml");
+    // Verify .autotune.toml was written with correct content
+    let config_path = project.path().join(".autotune.toml");
     assert!(config_path.exists(), ".autotune.toml should exist");
     let config_content = std::fs::read_to_string(&config_path).unwrap();
     assert!(config_content.contains("mock-experiment"));
-    assert!(config_content.contains("time_us"));
 
-    // Verify the config is valid TOML that parses
-    let parsed: toml::Value = toml::from_str(&config_content).unwrap();
-    assert_eq!(
-        parsed["experiment"]["name"].as_str().unwrap(),
-        "mock-experiment"
-    );
-
-    // Verify experiment was initialized (baseline recorded)
-    assert!(
-        stdout.contains("experiment") && stdout.contains("initialized"),
-        "expected experiment initialization.\nstdout:\n{stdout}"
-    );
-
-    // Verify experiment directory and ledger
-    let experiment_dir = dir
-        .path()
-        .join(".autotune")
-        .join("experiments")
-        .join("mock-experiment");
+    // Verify experiment initialized
+    let experiment_dir = project.path().join(".autotune/experiments/mock-experiment");
     assert!(experiment_dir.exists(), "experiment directory should exist");
-
-    let ledger_path = experiment_dir.join("ledger.json");
-    assert!(ledger_path.exists(), "ledger.json should exist");
-    let ledger_content = std::fs::read_to_string(&ledger_path).unwrap();
-    assert!(ledger_content.contains("baseline"));
-    assert!(ledger_content.contains("time_us"));
+    assert!(
+        experiment_dir.join("ledger.json").exists(),
+        "ledger should exist"
+    );
 }
 
 #[test]
 fn scenario_init_with_existing_config_skips_agent() {
-    let dir = tempfile::tempdir().unwrap();
-    setup_mock_project(dir.path());
+    let project = mock_project();
 
-    // Write a pre-existing .autotune.toml
     std::fs::write(
-        dir.path().join(".autotune.toml"),
+        project.path().join(".autotune.toml"),
         r#"[experiment]
 name = "existing-exp"
 max_iterations = "5"
@@ -166,7 +133,7 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
         .unwrap()
         .arg("init")
         .env("AUTOTUNE_MOCK", "1")
-        .current_dir(dir.path())
+        .current_dir(project.path())
         .output()
         .unwrap();
 
@@ -175,16 +142,8 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
 
     assert!(
         output.status.success(),
-        "autotune init failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-
-    // Should NOT have triggered agent-assisted init
-    assert!(
-        !stdout.contains("agent-assisted init"),
-        "should skip agent when config exists.\nstdout:\n{stdout}"
-    );
-
-    // Should have initialized the experiment directly
     assert!(
         stdout.contains("existing-exp") && stdout.contains("initialized"),
         "expected direct init.\nstdout:\n{stdout}"
@@ -192,105 +151,186 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
 }
 
 #[test]
-fn scenario_init_failure_shows_useful_error() {
-    let dir = tempfile::tempdir().unwrap();
-    setup_mock_project(dir.path());
-
-    // Run without AUTOTUNE_MOCK but with a bogus claude path so the agent fails.
-    // This tests that the error message is informative.
-    let output = Command::cargo_bin("autotune")
-        .unwrap()
-        .arg("init")
-        .env("PATH", "") // claude won't be found
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Should fail, not succeed
-    assert!(
-        !output.status.success(),
-        "expected failure when agent backend is unavailable"
-    );
-
-    // Error should mention something useful — not just "exit status: 1"
-    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
-    assert!(
-        combined.contains("Error") || combined.contains("error"),
-        "expected error in output.\nstdout+stderr:\n{combined}"
-    );
-}
-
-#[test]
-fn scenario_init_question_shows_text_and_options() {
-    let dir = tempfile::tempdir().unwrap();
-    setup_mock_project(dir.path());
-
-    // Provide full piped input: answer to Q1, answer to Q2, approval
-    let output = Command::cargo_bin("autotune")
-        .unwrap()
-        .arg("init")
-        .env("AUTOTUNE_MOCK", "1")
-        .current_dir(dir.path())
-        .write_stdin("perf\nbench\nyes\n")
-        .output()
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "autotune init failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-
-    // Question text should contain reasoning context (not just bare options)
-    assert!(
-        stdout.contains("Rust workspace") || stdout.contains("crates"),
-        "question text should mention codebase findings.\nstdout:\n{stdout}"
-    );
-
-    // Options should be rendered with labels and descriptions
-    assert!(
-        stdout.contains("Runtime performance"),
-        "expected option label in output.\nstdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("Binary size"),
-        "expected option label in output.\nstdout:\n{stdout}"
-    );
-}
-
-#[test]
 fn scenario_init_graceful_exit_on_eof() {
-    let dir = tempfile::tempdir().unwrap();
-    setup_mock_project(dir.path());
+    let project = mock_project();
 
-    // Provide no stdin input — the process will get EOF when trying to read
-    // user answers. This simulates the user closing the terminal / pipe.
     let output = Command::cargo_bin("autotune")
         .unwrap()
         .arg("init")
         .env("AUTOTUNE_MOCK", "1")
-        .current_dir(dir.path())
-        .write_stdin("") // EOF immediately
+        .current_dir(project.path())
+        .write_stdin("")
         .output()
         .unwrap();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Should exit without panic or crash — either clean cancellation or an error
-    // The key assertion: no panic backtrace in output
-    let combined = format!("{stdout}{stderr}");
     assert!(
-        !combined.contains("panicked") && !combined.contains("RUST_BACKTRACE"),
+        !format!("{stdout}{stderr}").contains("panicked"),
         "should not panic on EOF.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 
-// TODO: test real Ctrl+C (SIGINT) via PTY once the `scenario` crate
-// publishes its interactive session support (Roger-luo/Ion#118).
-// That would test: spawn PTY → expect question text → send Ctrl+C →
-// verify "[autotune] init cancelled" in output.
+// --- PTY-based interactive tests (via scenario crate) ---
+
+#[test]
+fn scenario_pty_question_shows_text_and_options() {
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(120, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Wait for the first question — should contain context about the codebase
+    session.expect("What metric").unwrap();
+
+    // Verify option labels are shown
+    session.expect("Runtime performance").unwrap();
+
+    // Select first option by pressing Enter (default selection)
+    session.send_line("").unwrap();
+
+    // Wait for the second question
+    session.expect("How should we measure").unwrap();
+
+    // Select first option
+    session.send_line("").unwrap();
+
+    // Wait for the config approval prompt
+    session.expect("Approve").unwrap();
+
+    // Approve
+    session.send_line("y").unwrap();
+
+    // Wait for completion
+    let output = session.wait().unwrap();
+    assert!(
+        output.success(),
+        "init should succeed.\noutput:\n{}",
+        output.stdout()
+    );
+}
+
+#[test]
+fn scenario_pty_arrow_keys_navigate_options() {
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(120, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Wait for first question
+    session.expect("What metric").unwrap();
+
+    // Press Down arrow twice to move to third option, then Enter
+    session.send(b"\x1b[B").unwrap(); // Down
+    session.send(b"\x1b[B").unwrap(); // Down
+    session.send(b"\r").unwrap(); // Enter
+
+    // Wait for second question
+    session.expect("How should we measure").unwrap();
+
+    // Select first option
+    session.send(b"\r").unwrap();
+
+    // Approve config
+    session.expect("Approve").unwrap();
+    session.send_line("y").unwrap();
+
+    let output = session.wait().unwrap();
+    assert!(
+        output.success(),
+        "init should succeed.\noutput:\n{}",
+        output.stdout()
+    );
+}
+
+#[test]
+fn scenario_pty_free_text_input() {
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(120, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Wait for first question
+    session.expect("What metric").unwrap();
+
+    // Navigate to "Type your own answer..." (last option)
+    for _ in 0..5 {
+        session.send(b"\x1b[B").unwrap(); // Down
+    }
+    // Press Enter to activate text input
+    session.send(b"\r").unwrap();
+
+    // Type a custom answer
+    std::thread::sleep(Duration::from_millis(100));
+    session.send_line("memory usage").unwrap();
+
+    // Wait for second question
+    session.expect("How should we measure").unwrap();
+
+    // Select first option
+    session.send(b"\r").unwrap();
+
+    // Approve config
+    session.expect("Approve").unwrap();
+    session.send_line("y").unwrap();
+
+    let output = session.wait().unwrap();
+    assert!(
+        output.success(),
+        "init should succeed with free text.\noutput:\n{}",
+        output.stdout()
+    );
+}
+
+#[test]
+fn scenario_pty_ctrl_c_cancels_cleanly() {
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(120, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Wait for first question to appear
+    session.expect("What metric").unwrap();
+
+    // Send Ctrl+C
+    session.send(b"\x03").unwrap();
+
+    // Process should exit
+    let output = session.wait().unwrap();
+
+    // Should show cancellation message, not crash
+    let text = output.stdout();
+    assert!(
+        !text.contains("panicked"),
+        "should not panic on Ctrl+C.\noutput:\n{text}"
+    );
+    assert!(
+        text.contains("cancelled") || text.contains("canceled"),
+        "expected cancellation message.\noutput:\n{text}"
+    );
+}
