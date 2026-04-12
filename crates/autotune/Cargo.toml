@@ -31,4 +31,7 @@ toml = "0.8"
 
 [dev-dependencies]
 autotune-mock = { path = "../autotune-mock" }
+autotune-init = { path = "../autotune-init" }
+autotune-config = { path = "../autotune-config" }
 tempfile = "3"
+toml = "0.8"
