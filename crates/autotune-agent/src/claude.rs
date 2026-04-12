@@ -215,24 +215,36 @@ impl ClaudeAgent {
 
             match event_type {
                 "assistant" => {
-                    // Tool use events in assistant messages
+                    // Content blocks in assistant messages
                     if let Some(arr) = event
                         .get("message")
                         .and_then(|m| m.get("content"))
                         .and_then(Value::as_array)
                     {
                         for block in arr {
-                            if block.get("type").and_then(Value::as_str) == Some("tool_use") {
-                                let tool = block
-                                    .get("name")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("unknown")
-                                    .to_string();
-                                let input_summary = Self::summarize_tool_input(block.get("input"));
-                                event_handler(AgentEvent::ToolUse {
-                                    tool,
-                                    input_summary,
-                                });
+                            match block.get("type").and_then(Value::as_str) {
+                                Some("tool_use") => {
+                                    let tool = block
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("unknown")
+                                        .to_string();
+                                    let input_summary =
+                                        Self::summarize_tool_input(block.get("input"));
+                                    event_handler(AgentEvent::ToolUse {
+                                        tool,
+                                        input_summary,
+                                    });
+                                }
+                                Some("text") => {
+                                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                        let trimmed = text.trim();
+                                        if !trimmed.is_empty() {
+                                            event_handler(AgentEvent::Text(trimmed.to_string()));
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -250,6 +262,20 @@ impl ClaudeAgent {
                             tool,
                             input_summary: String::new(),
                         });
+                    }
+                }
+                "content_block_delta" => {
+                    // Streaming text deltas
+                    if let Some(text) = event
+                        .get("delta")
+                        .filter(|d| d.get("type").and_then(Value::as_str) == Some("text_delta"))
+                        .and_then(|d| d.get("text"))
+                        .and_then(Value::as_str)
+                    {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            event_handler(AgentEvent::Text(trimmed.to_string()));
+                        }
                     }
                 }
                 "result" => {

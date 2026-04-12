@@ -291,60 +291,85 @@ pub fn run_init(
     };
 
     fn make_event_handler() -> EventHandler {
-        Box::new(|event| {
-            let status = match event {
+        use std::sync::Mutex;
+        // Track the last agent text so we can show it persistently
+        // while tool calls update below it.
+        let last_text: std::sync::Arc<Mutex<String>> =
+            std::sync::Arc::new(Mutex::new(String::new()));
+
+        let lt = last_text.clone();
+        Box::new(move |event| {
+            use std::io::Write;
+            let mut stderr = std::io::stderr();
+            match event {
+                AgentEvent::Text(text) => {
+                    // Take just the first line as a summary
+                    let summary = text.lines().next().unwrap_or(&text);
+                    let mut current = lt.lock().unwrap();
+                    if *current != summary {
+                        *current = summary.to_string();
+                        // Clear two lines (text + tool) and rewrite
+                        let _ = write!(stderr, "\r\x1b[2K\x1b[1A\r\x1b[2K  {summary}\n");
+                        let _ = stderr.flush();
+                    }
+                }
                 AgentEvent::ToolUse {
                     tool,
                     input_summary,
-                } => describe_tool_use(&tool, &input_summary),
-                AgentEvent::Text(_) => "thinking...".to_string(),
-            };
-            eprint!("\r\x1b[2K  {status}");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
+                } => {
+                    let detail = describe_tool_use(&tool, &input_summary);
+                    let _ = write!(stderr, "\r\x1b[2K    {detail}");
+                    let _ = stderr.flush();
+                }
+            }
         })
     }
 
-    /// Translate raw tool calls into human-friendly status messages.
+    /// Translate raw tool calls into short activity descriptions.
     fn describe_tool_use(tool: &str, input: &str) -> String {
         match tool {
             "Read" => {
                 if input.is_empty() {
                     "reading file...".to_string()
                 } else {
-                    // Show just the filename, not the full path
                     let name = input.rsplit('/').next().unwrap_or(input);
                     format!("reading {name}")
                 }
             }
             "Glob" => {
                 if input.is_empty() {
-                    "scanning project files...".to_string()
+                    "scanning files...".to_string()
                 } else {
                     format!("scanning {input}")
                 }
             }
             "Grep" => {
                 if input.is_empty() {
-                    "searching codebase...".to_string()
+                    "searching...".to_string()
                 } else {
                     format!("searching for {input}")
                 }
             }
             "Bash" => "running command...".to_string(),
-            _ => format!("working... [{tool}]"),
+            _ => format!("{tool}..."),
         }
     }
 
-    fn clear_event_line() {
-        eprint!("\r\x1b[2K");
+    fn clear_status() {
+        // Clear both status lines (agent text + tool detail)
+        eprint!("\r\x1b[2K\x1b[1A\r\x1b[2K");
         let _ = std::io::Write::flush(&mut std::io::stderr());
     }
+
+    // Print two blank lines to reserve space for the status display
+    eprintln!();
+    eprintln!();
 
     // Spawn the init agent with event streaming
     let config_with_events =
         AgentConfigWithEvents::new(agent_config.clone()).with_event_handler(make_event_handler());
     let response = agent.spawn_streaming(config_with_events)?;
-    clear_event_line();
+    clear_status();
 
     let session = AgentSession {
         session_id: response.session_id,
@@ -378,7 +403,7 @@ pub fn run_init(
                     "Your previous response was not valid JSON. Please respond with exactly one JSON object matching the protocol schema.",
                     Some(&handler),
                 )?;
-                clear_event_line();
+                clear_status();
                 match parse_agent_request(&retry.text) {
                     Ok(req) => req,
                     Err(e) => {
@@ -465,7 +490,7 @@ pub fn run_init(
                                 ),
                                 Some(&handler),
                             )?;
-                            clear_event_line();
+                            clear_status();
                             last_response_text = response.text;
                             continue;
                         }
@@ -486,7 +511,7 @@ pub fn run_init(
 
         let handler = make_event_handler();
         let response = agent.send_streaming(&session, &reply, Some(&handler))?;
-        clear_event_line();
+        clear_status();
         last_response_text = response.text;
     }
 
