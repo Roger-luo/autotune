@@ -29,6 +29,10 @@ ctrlc = "3"
 serde_json = "1"
 toml = "0.8"
 toml_edit = "0.22"
+autotune-mock = { path = "../autotune-mock", optional = true }
+
+[features]
+mock = ["dep:autotune-mock"]
 
 [dev-dependencies]
 autotune-mock = { path = "../autotune-mock" }

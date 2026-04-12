@@ -60,14 +60,40 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
 }
 
 fn build_agent(_config: &AutotuneConfig) -> Box<dyn Agent> {
-    // Currently only the Claude backend is supported.
+    #[cfg(feature = "mock")]
+    if std::env::var("AUTOTUNE_MOCK").is_ok() {
+        eprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
+        return Box::new(
+            autotune_mock::MockAgent::builder()
+                .hypothesis(
+                    "mock-approach",
+                    "mock hypothesis for testing",
+                    &["src/lib.rs"],
+                )
+                .build(),
+        );
+    }
     Box::new(ClaudeAgent::new())
 }
 
 fn build_agent_from_global(_global_config: &GlobalConfig) -> Box<dyn Agent> {
-    // Currently only the Claude backend is supported.
-    // In the future, read global_config.agent.backend to select backend.
+    #[cfg(feature = "mock")]
+    if std::env::var("AUTOTUNE_MOCK").is_ok() {
+        eprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
+        return Box::new(mock_init_agent());
+    }
     Box::new(ClaudeAgent::new())
+}
+
+#[cfg(feature = "mock")]
+fn mock_init_agent() -> autotune_mock::MockAgent {
+    autotune_mock::MockAgent::builder()
+        .init_response(r#"{"type":"message","text":"[MOCK] I see a project. Let me set up a default config for testing."}"#)
+        .init_response(r#"{"type":"config","section":{"type":"experiment","name":"mock-experiment","description":"Mock experiment for testing","max_iterations":"5","canonical_branch":"main"}}"#)
+        .init_response(r#"{"type":"config","section":{"type":"paths","tunable":["src/**"]}}"#)
+        .init_response(r#"{"type":"config","section":{"type":"benchmark","name":"mock-bench","command":["echo","time: 100.0 us"],"adaptor":{"type":"regex","patterns":[{"name":"time_us","pattern":"time: ([0-9.]+)"}]}}}"#)
+        .init_response(r#"{"type":"config","section":{"type":"score","value":{"type":"weighted_sum","primary_metrics":[{"name":"time_us","direction":"Minimize"}]}}}"#)
+        .build()
 }
 
 fn map_direction_weighted(
