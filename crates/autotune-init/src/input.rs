@@ -67,12 +67,13 @@ impl UserInput for TerminalInput {
     ) -> Result<String, io::Error> {
         println!("\n{}", question);
 
-        if io::stdin().is_terminal() && !allow_free_response {
-            // Pure selection (no free text) — use arrow-key menu
-            let items: Vec<String> = options
-                .iter()
-                .map(|o| format!("{}: {}", o.key, o.description))
-                .collect();
+        if io::stdin().is_terminal() {
+            // Interactive: arrow-key selection
+            let mut items: Vec<String> = options.iter().map(|o| o.description.clone()).collect();
+
+            if allow_free_response {
+                items.push("Type your own answer...".to_string());
+            }
 
             let selection = dialoguer::Select::new()
                 .items(&items)
@@ -80,15 +81,23 @@ impl UserInput for TerminalInput {
                 .interact()
                 .map_err(io::Error::other)?;
 
-            Ok(options[selection].key.clone())
+            if allow_free_response && selection == options.len() {
+                // User chose free text — open text input
+                let input: String = dialoguer::Input::new()
+                    .with_prompt("Your answer")
+                    .interact_text()
+                    .map_err(io::Error::other)?;
+                Ok(input)
+            } else {
+                Ok(options[selection].key.clone())
+            }
         } else {
-            // Show numbered options, accept number or free text
+            // Piped: numbered list, accept number or free text
             for (i, opt) in options.iter().enumerate() {
                 println!("  {}) {}", i + 1, opt.description);
             }
             if allow_free_response {
-                println!();
-                println!("  Enter a number to select, or type your own answer.");
+                println!("  (or type your own answer)");
             }
             print!("> ");
             io::stdout().flush()?;
