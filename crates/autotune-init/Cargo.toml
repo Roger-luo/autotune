@@ -1,0 +1,16 @@
+[package]
+name = "autotune-init"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+autotune-agent = { path = "../autotune-agent" }
+autotune-config = { path = "../autotune-config" }
+thiserror = "2"
+serde_json = "1"
+toml = "0.8"
+globset = "0.4"
+
+[dev-dependencies]
+autotune-mock = { path = "../autotune-mock" }
+tempfile = "3"
