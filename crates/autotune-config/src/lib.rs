@@ -2,10 +2,10 @@ mod error;
 
 pub use error::ConfigError;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutotuneConfig {
     pub experiment: ExperimentConfig,
     pub paths: PathsConfig,
@@ -17,7 +17,7 @@ pub struct AutotuneConfig {
     pub agent: AgentConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentConfig {
     pub name: String,
     #[serde(default)]
@@ -59,14 +59,26 @@ impl<'de> Deserialize<'de> for StopValue {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+impl Serialize for StopValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            StopValue::Finite(n) => serializer.serialize_str(&n.to_string()),
+            StopValue::Infinite => serializer.serialize_str("inf"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathsConfig {
     pub tunable: Vec<String>,
     #[serde(default)]
     pub denied: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestConfig {
     pub name: String,
     pub command: Vec<String>,
@@ -78,7 +90,7 @@ fn default_test_timeout() -> u64 {
     300
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkConfig {
     pub name: String,
     pub command: Vec<String>,
@@ -91,7 +103,7 @@ fn default_benchmark_timeout() -> u64 {
     600
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AdaptorConfig {
     #[serde(rename = "regex")]
@@ -102,13 +114,13 @@ pub enum AdaptorConfig {
     Script { command: Vec<String> },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegexPattern {
     pub name: String,
     pub pattern: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ScoreConfig {
     #[serde(rename = "weighted_sum")]
@@ -125,7 +137,7 @@ pub enum ScoreConfig {
     Command { command: Vec<String> },
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrimaryMetric {
     pub name: String,
     pub direction: Direction,
@@ -137,27 +149,27 @@ fn default_weight() -> f64 {
     1.0
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailMetric {
     pub name: String,
     pub direction: Direction,
     pub max_regression: f64,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Direction {
     Minimize,
     Maximize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThresholdCondition {
     pub metric: String,
     pub direction: Direction,
     pub threshold: f64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     #[serde(default = "default_backend")]
     pub backend: String,
@@ -184,7 +196,7 @@ fn default_backend() -> String {
     "claude".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRoleConfig {
     #[serde(default)]
     pub backend: Option<String>,

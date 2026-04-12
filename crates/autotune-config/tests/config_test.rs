@@ -1,6 +1,34 @@
 use autotune_config::{AutotuneConfig, ConfigError};
 use std::io::Write;
 
+#[test]
+fn roundtrip_serialize_deserialize() {
+    let f = write_config(
+        r#"
+[experiment]
+name = "roundtrip"
+max_iterations = "10"
+
+[paths]
+tunable = ["src/**"]
+
+[[benchmark]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+"#,
+    );
+    let config = AutotuneConfig::load(f.path()).unwrap();
+    let serialized = toml::to_string_pretty(&config).unwrap();
+    let reparsed: AutotuneConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(reparsed.experiment.name, "roundtrip");
+    assert_eq!(reparsed.benchmark.len(), 1);
+}
+
 fn write_config(content: &str) -> tempfile::NamedTempFile {
     let mut f = tempfile::NamedTempFile::new().unwrap();
     f.write_all(content.as_bytes()).unwrap();
