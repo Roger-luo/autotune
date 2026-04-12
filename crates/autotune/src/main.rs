@@ -88,7 +88,11 @@ fn build_agent_from_global(_global_config: &GlobalConfig) -> Box<dyn Agent> {
 #[cfg(feature = "mock")]
 fn mock_init_agent() -> autotune_mock::MockAgent {
     autotune_mock::MockAgent::builder()
-        .init_response(r#"{"type":"message","text":"[MOCK] I see a project. Let me set up a default config for testing."}"#)
+        // First: ask what the user wants to optimize
+        .init_response(r#"{"type":"question","text":"I found a Rust workspace with 13 crates. What would you like to optimize?","options":[{"key":"perf","description":"Runtime performance (execution speed, throughput)"},{"key":"size","description":"Binary size"},{"key":"coverage","description":"Test coverage"},{"key":"compile","description":"Compilation time"}],"allow_free_response":true}"#)
+        // Then: ask about the benchmark command
+        .init_response(r#"{"type":"question","text":"How should we measure it?","options":[{"key":"bench","description":"cargo bench (Criterion or built-in)"},{"key":"custom","description":"Custom command"},{"key":"script","description":"External script"}],"allow_free_response":true}"#)
+        // Propose config sections based on "answers"
         .init_response(r#"{"type":"config","section":{"type":"experiment","name":"mock-experiment","description":"Mock experiment for testing","max_iterations":"5","canonical_branch":"main"}}"#)
         .init_response(r#"{"type":"config","section":{"type":"paths","tunable":["src/**"]}}"#)
         .init_response(r#"{"type":"config","section":{"type":"benchmark","name":"mock-bench","command":["echo","time: 100.0 us"],"adaptor":{"type":"regex","patterns":[{"name":"time_us","pattern":"time: ([0-9.]+)"}]}}}"#)

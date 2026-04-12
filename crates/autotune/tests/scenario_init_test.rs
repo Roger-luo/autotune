@@ -54,16 +54,17 @@ fn scenario_init_creates_config_and_baseline() {
     let dir = tempfile::tempdir().unwrap();
     setup_mock_project(dir.path());
 
-    // The mock agent conversation needs user input at two points:
-    // 1. Reply to the initial Message ("ok" or anything)
-    // 2. Approve the final config ("yes")
+    // The mock agent conversation needs user input:
+    // 1. Answer to "what to optimize?" question (select by key)
+    // 2. Answer to "how to measure?" question (select by key)
+    // 3. Approve the final config ("yes")
     // Config sections are auto-accepted by the CLI without user input.
     let output = Command::cargo_bin("autotune")
         .unwrap()
         .arg("init")
         .env("AUTOTUNE_MOCK", "1")
         .current_dir(dir.path())
-        .write_stdin("ok\nyes\n")
+        .write_stdin("perf\nbench\nyes\n")
         .output()
         .unwrap();
 
