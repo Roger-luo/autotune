@@ -608,19 +608,23 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
 }
 
 const CONFIG_TEMPLATE: &str = r#"# Autotune global config
+# Default agent settings used across all experiments.
 # Uncomment and edit the values you want to set.
 
 # [agent]
-# backend = "claude"
+# backend = "claude"            # LLM backend (currently only "claude")
 
+# # Research agent: persistent session that proposes optimization hypotheses.
 # [agent.research]
-# model = "opus"
-# max_turns = 200
+# model = "opus"                # LLM model to use
+# max_turns = 200               # Max agent tool-use turns per session
 
+# # Implementation agent: ephemeral session that writes code in a worktree.
 # [agent.implementation]
 # model = "sonnet"
 # max_turns = 50
 
+# # Init agent: one-shot session that helps write .autotune.toml.
 # [agent.init]
 # model = "opus"
 # max_turns = 200
