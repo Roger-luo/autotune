@@ -10,10 +10,10 @@ Autotune is a Rust CLI that orchestrates autonomous, benchmark-driven performanc
 
 ```bash
 cargo build                              # Dev build
-cargo test                               # All tests (107 across 12 crates)
-cargo test -p autotune                   # Tests for binary crate only
-cargo test -p autotune-config            # Tests for a specific crate
-cargo test test_full_pipeline            # Single test by name substring
+cargo nextest run                        # All tests (109 across 12 crates)
+cargo nextest run -p autotune            # Tests for binary crate only
+cargo nextest run -p autotune-config     # Tests for a specific crate
+cargo nextest run -E 'test(full_pipeline)' # Single test by name substring
 cargo clippy                             # Lint
 cargo fmt                                # Format
 ```
@@ -25,7 +25,7 @@ cargo fmt                                # Format
 ```bash
 cargo fmt --all                                          # 1. Format
 cargo clippy --all-targets --all-features -- -D warnings # 2. Lint (warnings are errors)
-cargo test                                               # 3. Test
+cargo nextest run                                        # 3. Test
 ```
 
 ## Architecture
