@@ -291,23 +291,48 @@ pub fn run_init(
     };
 
     fn make_event_handler() -> EventHandler {
-        Box::new(|event| match event {
-            AgentEvent::ToolUse {
-                tool,
-                input_summary,
-            } => {
-                if input_summary.is_empty() {
-                    eprint!("\r\x1b[2K  [{tool}]");
-                } else {
-                    eprint!("\r\x1b[2K  [{tool}] {input_summary}");
-                }
-                let _ = std::io::Write::flush(&mut std::io::stderr());
-            }
-            AgentEvent::Text(text) => {
-                eprint!("\r\x1b[2K  {text}");
-                let _ = std::io::Write::flush(&mut std::io::stderr());
-            }
+        Box::new(|event| {
+            let status = match event {
+                AgentEvent::ToolUse {
+                    tool,
+                    input_summary,
+                } => describe_tool_use(&tool, &input_summary),
+                AgentEvent::Text(_) => "thinking...".to_string(),
+            };
+            eprint!("\r\x1b[2K  {status}");
+            let _ = std::io::Write::flush(&mut std::io::stderr());
         })
+    }
+
+    /// Translate raw tool calls into human-friendly status messages.
+    fn describe_tool_use(tool: &str, input: &str) -> String {
+        match tool {
+            "Read" => {
+                if input.is_empty() {
+                    "reading file...".to_string()
+                } else {
+                    // Show just the filename, not the full path
+                    let name = input.rsplit('/').next().unwrap_or(input);
+                    format!("reading {name}")
+                }
+            }
+            "Glob" => {
+                if input.is_empty() {
+                    "scanning project files...".to_string()
+                } else {
+                    format!("scanning {input}")
+                }
+            }
+            "Grep" => {
+                if input.is_empty() {
+                    "searching codebase...".to_string()
+                } else {
+                    format!("searching for {input}")
+                }
+            }
+            "Bash" => "running command...".to_string(),
+            _ => format!("working... [{tool}]"),
+        }
     }
 
     fn clear_event_line() {
