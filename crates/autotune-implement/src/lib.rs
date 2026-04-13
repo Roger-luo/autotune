@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use autotune_agent::{Agent, AgentConfig, AgentError, AgentResponse, ToolPermission};
+use autotune_agent::{
+    Agent, AgentConfig, AgentConfigWithEvents, AgentError, AgentResponse, EventHandler,
+    ToolPermission,
+};
 use autotune_git::GitError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -130,6 +133,11 @@ pub fn setup_worktree(
 }
 
 /// Spawn a sandboxed implementation agent and validate it committed changes.
+///
+/// When `event_handler` is provided, streaming text and tool-use events are
+/// forwarded to it in real time (same mechanism used by the research/init
+/// agents). The implementer does not converse with the user — the handler is
+/// purely for visibility.
 #[allow(clippy::too_many_arguments)]
 pub fn run_implementation(
     agent: &dyn Agent,
@@ -140,6 +148,7 @@ pub fn run_implementation(
     log_content: &str,
     model: Option<&str>,
     max_turns: Option<u64>,
+    event_handler: Option<EventHandler>,
 ) -> Result<ImplementResult, ImplementError> {
     let prompt = build_implementation_prompt(hypothesis, log_content);
     let permissions = implementation_agent_permissions(tunable_paths);
@@ -155,7 +164,11 @@ pub fn run_implementation(
     // Record the commit SHA before the agent runs so we can detect new commits.
     let sha_before = autotune_git::latest_commit_sha(worktree_path)?;
 
-    let response = agent.spawn(&config)?;
+    let mut config_with_events = AgentConfigWithEvents::new(config);
+    if let Some(handler) = event_handler {
+        config_with_events = config_with_events.with_event_handler(handler);
+    }
+    let response = agent.spawn_streaming(config_with_events)?;
 
     let sha_after = autotune_git::latest_commit_sha(worktree_path)?;
 

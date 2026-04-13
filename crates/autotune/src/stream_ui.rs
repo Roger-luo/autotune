@@ -1,84 +1,240 @@
 //! Shared helpers for rendering streaming agent events to stderr.
 //!
-//! Used by `cmd_run` for the research agent's initial spawn and by the
-//! planning phase for each in-loop hypothesis request. The init flow has
-//! its own variant (XML-aware) — this one is JSON-aware for the research
-//! agent's hypothesis payload.
+//! Used by `cmd_run` for the research agent's initial spawn, by the planning
+//! phase for each in-loop hypothesis request, and by the implementation phase
+//! for sandboxed agent runs.
 //!
 //! Output model:
 //! - An ephemeral status line (dimmed) is shown until the first text/tool event.
 //! - Tool use events (`Read`, `Glob`, `Grep`, etc.) render as a single dimmed
 //!   line that is overwritten by the next event.
-//! - Streaming text is printed as it arrives, typewriter-style.
-//! - Once text begins the protocol payload (a leading `{`), the rest of the
-//!   response is suppressed so the raw JSON doesn't leak into the terminal.
+//! - Streaming text is **buffered** and rendered as markdown (via `termimad`)
+//!   whenever a natural block boundary is reached — a blank line between
+//!   paragraphs, or the closing of a fenced code block. Any unflushed text is
+//!   rendered on `Stream::finish()`.
+//! - For the research agent, once a line begins with `<`, the rest of the
+//!   response is treated as the XML protocol payload and suppressed so it
+//!   doesn't leak into the terminal.
 
 use autotune_agent::{AgentEvent, EventHandler};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-/// Build an event handler that forwards streaming agent events to stderr.
-///
-/// `status` is shown as a dimmed placeholder line until the first real event.
-pub fn make_research_event_handler(status: &str) -> EventHandler {
-    let has_tool_line = Arc::new(Mutex::new(false));
-    let protocol_started = Arc::new(Mutex::new(false));
+/// Which kind of protocol payload (if any) to suppress once it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuppressMode {
+    /// Research-agent mode — suppress from the first line that starts with `<`.
+    Xml,
+    /// Implementation-agent mode — render everything.
+    None,
+}
 
-    {
-        use std::io::Write;
+/// A streaming UI session that forwards agent events to stderr with buffered
+/// markdown rendering.
+///
+/// Create one per agent invocation. Call `handler()` to get an `EventHandler`
+/// (you can call it multiple times; all handlers share the same state), pass
+/// it to the agent, then call `finish()` after the agent returns to flush any
+/// trailing buffered markdown and clear the ephemeral status line.
+pub struct Stream {
+    state: Arc<Mutex<StreamState>>,
+}
+
+impl Stream {
+    /// Stream for the research agent. Buffers markdown and suppresses the
+    /// `<plan>` / `<request-tool>` XML payload once it begins.
+    pub fn research(status: &str) -> Self {
+        Self::new(status, SuppressMode::Xml)
+    }
+
+    /// Stream for the implementation agent. Buffers markdown; there is no
+    /// protocol payload to suppress.
+    pub fn implementation(status: &str) -> Self {
+        Self::new(status, SuppressMode::None)
+    }
+
+    fn new(status: &str, suppress: SuppressMode) -> Self {
+        // Show the ephemeral dim status line immediately.
         let mut stderr = std::io::stderr();
         let _ = write!(stderr, "\r\x1b[2K  \x1b[2m{status}\x1b[0m");
         let _ = stderr.flush();
-    }
-    *has_tool_line.lock().unwrap() = true;
 
-    let htl = has_tool_line.clone();
-    let ps = protocol_started.clone();
-    Box::new(move |event| {
-        use std::io::Write;
-        let mut stderr = std::io::stderr();
-        let mut has_tl = htl.lock().unwrap();
-        match event {
-            AgentEvent::Text(text) => {
-                let mut flag = ps.lock().unwrap();
-                if *flag {
-                    return;
-                }
-                // Research agent's protocol payload is a JSON hypothesis — once
-                // we see a `{` or a fenced block, suppress the rest.
-                let trimmed = text.trim_start();
-                if trimmed.starts_with('{') || trimmed.starts_with("```") {
-                    *flag = true;
-                    return;
-                }
-                if *has_tl {
-                    let _ = write!(stderr, "\r\x1b[2K");
-                    *has_tl = false;
-                }
-                let _ = write!(stderr, "{text}");
-                let _ = stderr.flush();
+        Self {
+            state: Arc::new(Mutex::new(StreamState::new(suppress))),
+        }
+    }
+
+    /// Build an `EventHandler` for the underlying agent. Safe to call multiple
+    /// times — each returned handler shares the same buffering state.
+    pub fn handler(&self) -> EventHandler {
+        let state = self.state.clone();
+        Box::new(move |event| {
+            if let Ok(mut s) = state.lock() {
+                s.on_event(event);
             }
+        })
+    }
+
+    /// Flush any buffered markdown, render a final newline, and clear the
+    /// ephemeral status line. Call after the agent returns.
+    pub fn finish(&self) {
+        if let Ok(mut s) = self.state.lock() {
+            s.finish();
+        }
+    }
+}
+
+struct StreamState {
+    /// Complete lines waiting to be rendered.
+    pending: String,
+    /// Partial line currently being accumulated (no trailing newline yet).
+    current_line: String,
+    /// Whether we are currently inside a ``` fenced code block.
+    in_code_fence: bool,
+    /// True while the ephemeral dim line (status or tool use) occupies the
+    /// cursor and must be cleared before printing anything else.
+    has_tool_line: bool,
+    /// True once the protocol payload has begun — further text is dropped.
+    suppressed: bool,
+    /// Protocol-payload detection mode.
+    suppress_mode: SuppressMode,
+    /// Reusable markdown skin for rendering.
+    skin: termimad::MadSkin,
+}
+
+impl StreamState {
+    fn new(suppress_mode: SuppressMode) -> Self {
+        Self {
+            pending: String::new(),
+            current_line: String::new(),
+            in_code_fence: false,
+            has_tool_line: true,
+            suppressed: false,
+            suppress_mode,
+            skin: termimad::MadSkin::default_dark(),
+        }
+    }
+
+    fn on_event(&mut self, event: AgentEvent) {
+        match event {
+            AgentEvent::Text(text) => self.push_text(&text),
             AgentEvent::ToolUse {
                 tool,
                 input_summary,
-            } => {
-                if !matches!(
-                    tool.as_str(),
-                    "Read" | "Glob" | "Grep" | "Bash" | "Edit" | "Write"
-                ) {
+            } => self.push_tool_use(&tool, &input_summary),
+        }
+    }
+
+    fn push_text(&mut self, text: &str) {
+        if self.suppressed {
+            return;
+        }
+
+        for ch in text.chars() {
+            if ch == '\n' {
+                let line = std::mem::take(&mut self.current_line);
+                self.process_line(line);
+                if self.suppressed {
                     return;
                 }
-                if *has_tl {
-                    let _ = write!(stderr, "\r\x1b[2K");
-                } else {
-                    let _ = writeln!(stderr);
-                }
-                let detail = describe_tool_use(&tool, &input_summary);
-                let _ = write!(stderr, "  \x1b[2m{detail}\x1b[0m");
-                let _ = stderr.flush();
-                *has_tl = true;
+            } else {
+                self.current_line.push(ch);
             }
         }
-    })
+    }
+
+    /// Handle one complete input line: update fence state, check XML
+    /// suppression, append to pending, and flush on paragraph boundaries.
+    fn process_line(&mut self, line: String) {
+        let trimmed = line.trim();
+
+        // Research-mode protocol payload detection: once we see a line whose
+        // first non-whitespace char is `<`, everything from here on is XML we
+        // shouldn't render. Only triggers at a block boundary so we don't
+        // accidentally swallow an inline `<` inside prose.
+        if self.suppress_mode == SuppressMode::Xml
+            && !self.suppressed
+            && self.pending.is_empty()
+            && !self.in_code_fence
+            && trimmed.starts_with('<')
+        {
+            self.suppressed = true;
+            return;
+        }
+
+        // Track fenced code blocks — we flush *after* the closing fence so the
+        // whole block goes through the renderer together.
+        let is_fence = trimmed.starts_with("```");
+        if is_fence {
+            self.in_code_fence = !self.in_code_fence;
+        }
+
+        self.pending.push_str(&line);
+        self.pending.push('\n');
+
+        let paragraph_break = trimmed.is_empty() && !self.in_code_fence;
+        let fence_just_closed = is_fence && !self.in_code_fence;
+        if paragraph_break || fence_just_closed {
+            self.flush_pending();
+        }
+    }
+
+    fn flush_pending(&mut self) {
+        if self.pending.trim().is_empty() {
+            self.pending.clear();
+            return;
+        }
+        let md = std::mem::take(&mut self.pending);
+
+        // Clear the ephemeral status/tool line before writing a rendered block.
+        let mut stderr = std::io::stderr();
+        if self.has_tool_line {
+            let _ = write!(stderr, "\r\x1b[2K");
+            self.has_tool_line = false;
+        }
+        let _ = self
+            .skin
+            .write_text_on(&mut stderr, md.trim_end_matches('\n'));
+        // Ensure a blank line follows each rendered block so subsequent
+        // tool-use lines or blocks don't visually run together.
+        let _ = writeln!(stderr);
+        let _ = stderr.flush();
+    }
+
+    fn push_tool_use(&mut self, tool: &str, input_summary: &str) {
+        if !matches!(tool, "Read" | "Glob" | "Grep" | "Bash" | "Edit" | "Write") {
+            return;
+        }
+        let mut stderr = std::io::stderr();
+        if self.has_tool_line {
+            let _ = write!(stderr, "\r\x1b[2K");
+        }
+        let detail = describe_tool_use(tool, input_summary);
+        let _ = write!(stderr, "  \x1b[2m{detail}\x1b[0m");
+        let _ = stderr.flush();
+        self.has_tool_line = true;
+    }
+
+    fn finish(&mut self) {
+        // Flush any partial trailing line.
+        if !self.current_line.is_empty() {
+            let line = std::mem::take(&mut self.current_line);
+            // Don't let XML suppression swallow a legitimate trailing line on
+            // finish — process_line applies suppression rules though, which is
+            // fine: a trailing `<plan>` fragment without a newline would be
+            // suppressed just as it would mid-stream.
+            self.process_line(line);
+        }
+        self.flush_pending();
+
+        // Clear the ephemeral line if still occupying the cursor.
+        if self.has_tool_line {
+            let mut stderr = std::io::stderr();
+            let _ = write!(stderr, "\r\x1b[2K");
+            let _ = stderr.flush();
+            self.has_tool_line = false;
+        }
+    }
 }
 
 fn describe_tool_use(tool: &str, input: &str) -> String {
@@ -94,10 +250,11 @@ fn describe_tool_use(tool: &str, input: &str) -> String {
     }
 }
 
-/// Clear the ephemeral status/tool line so subsequent output starts clean.
+/// Clear the current terminal line. Used by the tool-approval prompt to wipe
+/// any leftover ephemeral status before showing an interactive question.
 pub fn clear_status() {
     eprint!("\r\x1b[2K");
-    let _ = std::io::Write::flush(&mut std::io::stderr());
+    let _ = std::io::stderr().flush();
 }
 
 /// Interactive approval for runtime tool requests from the research agent.

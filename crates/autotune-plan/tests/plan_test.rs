@@ -3,9 +3,13 @@ use autotune_state::{IterationRecord, IterationStatus, Metrics, TaskStore};
 use chrono::Utc;
 
 #[test]
-fn parse_hypothesis_clean_json() {
-    let json = r#"{"approach":"batch-read","hypothesis":"Batching reads reduces syscalls","files_to_modify":["src/io.rs"]}"#;
-    let h = parse_hypothesis(json).unwrap();
+fn parse_hypothesis_clean_xml() {
+    let xml = "<plan>\
+        <approach>batch-read</approach>\
+        <hypothesis>Batching reads reduces syscalls</hypothesis>\
+        <files-to-modify><file>src/io.rs</file></files-to-modify>\
+        </plan>";
+    let h = parse_hypothesis(xml).unwrap();
     assert_eq!(h.approach, "batch-read");
     assert_eq!(h.hypothesis, "Batching reads reduces syscalls");
     assert_eq!(h.files_to_modify, vec!["src/io.rs"]);
@@ -14,8 +18,15 @@ fn parse_hypothesis_clean_json() {
 #[test]
 fn parse_hypothesis_with_surrounding_text() {
     let response = "After reviewing the codebase I think we should try:\n\n\
-        ```json\n\
-        {\"approach\": \"prefetch\", \"hypothesis\": \"Prefetching data improves latency\", \"files_to_modify\": [\"src/fetch.rs\", \"src/lib.rs\"]}\n\
+        ```xml\n\
+        <plan>\n\
+          <approach>prefetch</approach>\n\
+          <hypothesis>Prefetching data improves latency</hypothesis>\n\
+          <files-to-modify>\n\
+            <file>src/fetch.rs</file>\n\
+            <file>src/lib.rs</file>\n\
+          </files-to-modify>\n\
+        </plan>\n\
         ```\n\n\
         Let me know if you'd like me to elaborate.";
     let h = parse_hypothesis(response).unwrap();
@@ -24,7 +35,7 @@ fn parse_hypothesis_with_surrounding_text() {
 }
 
 #[test]
-fn parse_hypothesis_no_json_errors() {
+fn parse_hypothesis_no_plan_errors() {
     let response = "I have no suggestions at this time.";
     let err = parse_hypothesis(response).unwrap_err();
     assert!(matches!(err, PlanError::ParseHypothesis { .. }));
@@ -78,7 +89,7 @@ fn build_planning_prompt_includes_last_iteration() {
     assert!(prompt.contains("initial run"));
     assert!(prompt.contains("first attempt"));
     assert!(prompt.contains("latency_ms"));
-    assert!(prompt.contains("Iteration: 2"));
+    assert!(prompt.contains("Iteration 2"));
 }
 
 #[test]

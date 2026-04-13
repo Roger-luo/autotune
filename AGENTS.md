@@ -140,6 +140,17 @@ All restoration logic is centralized in **`autotune_agent::terminal`**. Three ov
 
 Rust can't enforce "all terminal-touching code wears a Guard" at the type level (third-party APIs don't take our witness). The discipline is: the number of call sites is small, they're listed in `autotune_agent::terminal` module docs, and every new one should hold a Guard.
 
+## Bug-fix & test-gap workflow
+
+When you spot a bug or a behavior that isn't covered by tests, follow this order — **do not** skip to the fix. The discipline keeps regressions from reappearing and surfaces missing test infrastructure instead of working around it.
+
+1. **Write a failing scenario test first.** Reproduce the bug end-to-end in `crates/autotune/tests/scenario_run_test.rs` (or the closest scenario file). Scenario tests exercise the full CLI via `assert_cmd` or the `scenario` crate's PTY harness against a `MockAgent`, driven by `AUTOTUNE_MOCK_RESEARCH_SCRIPT`. Running the test should fail for the exact reason the user's bug did.
+2. **Fix the bug, then add unit tests alongside.** The scenario test pins the externally-visible behavior; unit tests in the affected crate pin the internal invariant so future refactors can't silently regress the same surface. Most fixes should grow at least one unit test in the crate that owns the logic.
+3. **If scenario coverage is missing the knobs you need** — e.g. the mock can't emit the response shape, the harness can't simulate an input, the config doesn't support what you're testing — **implement a small ad-hoc version first** so the current fix can land with an end-to-end test. Keep the ad-hoc addition scoped (one new builder method, one env var, one fixture helper).
+4. **Open an issue on [Roger-luo/Ion](https://github.com/Roger-luo/Ion/issues)** for the proper generalized version of any ad-hoc infrastructure you added, and for any follow-up scenario coverage you identified but didn't implement. Use `enhancement` for missing features, `bug` for broken behavior. Link the issue from a code comment if the ad-hoc path is load-bearing for the test.
+
+**Why:** every real bug is a test gap. Fixing without a test lets the same bug recur; fixing with only a unit test misses integration-level regressions. And when scenario infrastructure is the bottleneck, we'd rather grow it deliberately than let tests rot because "the harness can't do that yet."
+
 ## Git Conventions
 
 - **Conventional commits:** `feat:`, `fix:`, `docs:`, `test:`, `ci:`, `refactor:`, `perf:`, `build:`, `chore:`

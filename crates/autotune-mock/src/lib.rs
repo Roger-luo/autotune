@@ -26,9 +26,17 @@ pub struct MockAgent {
     hypotheses: Vec<HypothesisEntry>,
     impl_behavior: ImplBehavior,
     init_responses: Vec<String>,
+    /// Raw verbatim responses for the research agent, consumed in order
+    /// across `spawn()` + `send()`. When non-empty, these take precedence
+    /// over `hypotheses` and let tests inject arbitrary XML (e.g. a
+    /// `<request-tool>` fragment, malformed XML, or a `<plan>` with
+    /// surrounding prose).
+    research_responses: Vec<String>,
     // Interior-mutable tracking state
     spawn_count: Mutex<usize>,
     send_count: Mutex<usize>,
+    /// Next index into `research_responses` to return.
+    research_turn: Mutex<usize>,
     last_spawn_config: Mutex<Option<AgentConfig>>,
     last_send_message: Mutex<Option<String>>,
 }
@@ -38,6 +46,7 @@ pub struct MockAgentBuilder {
     hypotheses: Vec<HypothesisEntry>,
     impl_behavior: ImplBehavior,
     init_responses: Vec<String>,
+    research_responses: Vec<String>,
 }
 
 impl MockAgentBuilder {
@@ -70,14 +79,25 @@ impl MockAgentBuilder {
         self
     }
 
+    /// Queue a raw verbatim research-agent response (e.g. a `<plan>` or
+    /// `<request-tool>` XML fragment, or arbitrary text). Responses are
+    /// consumed in order across the research agent's `spawn()` + `send()`
+    /// calls. When any are set, they take precedence over `hypothesis()`.
+    pub fn research_response(mut self, raw: &str) -> Self {
+        self.research_responses.push(raw.to_string());
+        self
+    }
+
     /// Build the [`MockAgent`].
     pub fn build(self) -> MockAgent {
         MockAgent {
             hypotheses: self.hypotheses,
             impl_behavior: self.impl_behavior,
             init_responses: self.init_responses,
+            research_responses: self.research_responses,
             spawn_count: Mutex::new(0),
             send_count: Mutex::new(0),
+            research_turn: Mutex::new(0),
             last_spawn_config: Mutex::new(None),
             last_send_message: Mutex::new(None),
         }
@@ -91,6 +111,7 @@ impl MockAgent {
             hypotheses: Vec::new(),
             impl_behavior: ImplBehavior::CommitDummy,
             init_responses: Vec::new(),
+            research_responses: Vec::new(),
         }
     }
 
@@ -133,7 +154,17 @@ impl Agent for MockAgent {
         let is_worktree = wd.join(".git").is_file();
 
         if idx == 0 && !is_worktree {
-            let text = if !self.init_responses.is_empty() {
+            // Priority order for the research-agent's initial spawn response:
+            // 1. Programmable `research_response()` queue (lets tests inject
+            //    `<request-tool>` fragments, malformed XML, etc. verbatim).
+            // 2. Legacy `init_response()` queue (used by the init flow).
+            // 3. Plain "ready".
+            let text = if !self.research_responses.is_empty() {
+                let mut turn = self.research_turn.lock().unwrap();
+                let t = *turn;
+                *turn += 1;
+                self.research_responses[t.min(self.research_responses.len() - 1)].clone()
+            } else if !self.init_responses.is_empty() {
                 self.init_responses[0].clone()
             } else {
                 "ready".to_string()
@@ -171,6 +202,20 @@ impl Agent for MockAgent {
         *count += 1;
         drop(count);
 
+        // Programmable research script takes priority — consume the next
+        // entry in the research_responses queue (repeating the last one if
+        // the queue is drained so long runs don't explode).
+        if !self.research_responses.is_empty() {
+            let mut turn = self.research_turn.lock().unwrap();
+            let t = *turn;
+            *turn += 1;
+            let pick = t.min(self.research_responses.len() - 1);
+            return Ok(AgentResponse {
+                text: self.research_responses[pick].clone(),
+                session_id: "mock-session-001".to_string(),
+            });
+        }
+
         // In init mode, cycle through init_responses. The +1 offset accounts for
         // spawn() having consumed index 0.
         if !self.init_responses.is_empty() {
@@ -186,20 +231,34 @@ impl Agent for MockAgent {
 
         if self.hypotheses.is_empty() {
             return Ok(AgentResponse {
-                text: r#"{"approach":"default","hypothesis":"no hypothesis configured","files_to_modify":[]}"#.to_string(),
+                text: "<plan><approach>default</approach>\
+                       <hypothesis>no hypothesis configured</hypothesis>\
+                       <files-to-modify></files-to-modify></plan>"
+                    .to_string(),
                 session_id: "mock-session-001".to_string(),
             });
         }
 
         let entry = &self.hypotheses[hyp_idx];
-        let json = serde_json::json!({
-            "approach": entry.approach,
-            "hypothesis": entry.hypothesis,
-            "files_to_modify": entry.files_to_modify,
-        });
+        let mut xml = String::new();
+        xml.push_str("<plan>");
+        xml.push_str("<approach>");
+        xml.push_str(&xml_escape(&entry.approach));
+        xml.push_str("</approach>");
+        xml.push_str("<hypothesis>");
+        xml.push_str(&xml_escape(&entry.hypothesis));
+        xml.push_str("</hypothesis>");
+        xml.push_str("<files-to-modify>");
+        for f in &entry.files_to_modify {
+            xml.push_str("<file>");
+            xml.push_str(&xml_escape(f));
+            xml.push_str("</file>");
+        }
+        xml.push_str("</files-to-modify>");
+        xml.push_str("</plan>");
 
         Ok(AgentResponse {
-            text: json.to_string(),
+            text: xml,
             session_id: "mock-session-001".to_string(),
         })
     }
@@ -211,6 +270,12 @@ impl Agent for MockAgent {
     fn handover_command(&self, _session: &AgentSession) -> String {
         "mock-handover".to_string()
     }
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn create_dummy_commit(dir: &Path, idx: usize) {

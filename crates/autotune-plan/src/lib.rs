@@ -142,11 +142,15 @@ pub fn build_planning_prompt(
 ) -> Result<String, PlanError> {
     let mut prompt = String::new();
 
-    prompt.push_str("# Task Goal\n\n");
-    prompt.push_str(description);
-    prompt.push_str("\n\n");
-
-    prompt.push_str(&format!("# Current Iteration: {}\n\n", iteration_count));
+    // NOTE: the research agent session is persistent — the initial spawn
+    // already told the agent the task goal, measure/scoring configuration,
+    // baseline metrics, and the `<plan>` response schema. We only re-emit
+    // iteration-delta info here plus a one-line task recall as cheap
+    // insurance against session compaction on long runs.
+    prompt.push_str(&format!(
+        "# Iteration {} — plan next approach\n\nTask (recall): {}\n\n",
+        iteration_count, description
+    ));
 
     if let Some(last) = last_iteration {
         prompt.push_str("# Last Iteration Results\n\n");
@@ -181,40 +185,25 @@ pub fn build_planning_prompt(
         prompt.push('\n');
     }
 
-    // Advertise raw measure output files as on-demand references. The agent
-    // gets to see summary metrics and ledger history up front; these files
-    // (e.g. coverage reports, verbose benchmark logs) are only worth reading
-    // when that summary isn't enough.
-    let mut detail_sources: Vec<(String, Vec<std::path::PathBuf>)> = Vec::new();
-    if let Some(files) = collect_measure_output_files(store, 0, "baseline")
-        && !files.is_empty()
-    {
-        detail_sources.push(("baseline".to_string(), files));
-    }
+    // Advertise raw measure output files for the LATEST iteration as on-demand
+    // references. (Baseline files were already advertised in the initial spawn
+    // prompt — the persistent session means the agent still knows those paths.)
     if let Some(last) = last_iteration
         && let Some(files) = collect_measure_output_files(store, last.iteration, &last.approach)
         && !files.is_empty()
     {
-        detail_sources.push((
-            format!("iteration {} ({})", last.iteration, last.approach),
-            files,
-        ));
-    }
-    if !detail_sources.is_empty() {
         prompt.push_str("# Raw Measure Output (on-demand reference)\n\n");
         prompt.push_str(
-            "The files below contain the full stdout/stderr captured when each measure \
-             ran. They are NOT part of the metric values above — scoring already used \
-             whatever the adaptor extracted. Only open a file here if the headline \
-             metrics and ledger history leave you unable to form a concrete hypothesis \
-             (e.g. you need to see which code paths a coverage report flagged, or which \
-             benchmark case regressed). Most iterations should not need these.\n\n",
+            "Full stdout/stderr captured for this iteration's measures. Scoring \
+             already consumed the extracted metrics; open these only if you need \
+             more detail than the headline metrics convey.\n\n",
         );
-        for (label, files) in &detail_sources {
-            prompt.push_str(&format!("- {}:\n", label));
-            for path in files {
-                prompt.push_str(&format!("  - `{}`\n", path.display()));
-            }
+        prompt.push_str(&format!(
+            "- iteration {} ({}):\n",
+            last.iteration, last.approach
+        ));
+        for path in &files {
+            prompt.push_str(&format!("  - `{}`\n", path.display()));
         }
         prompt.push('\n');
     }
@@ -227,14 +216,11 @@ pub fn build_planning_prompt(
         prompt.push_str("\n\n");
     }
 
-    prompt.push_str("# Instructions\n\n");
     prompt.push_str(
-        "Based on the task goal and history above, propose the next approach to try.\n\
-         Output your response as a JSON object with the following fields:\n\
-         - \"approach\": a short name for the approach\n\
-         - \"hypothesis\": what you expect this approach to achieve and why\n\
-         - \"files_to_modify\": list of file paths that will need changes\n\n\
-         You may include explanation before or after the JSON, but the JSON must be present.\n",
+        "# Instructions\n\n\
+         Propose the next approach. Emit a `<plan>` fragment in the schema \
+         you were given at session start. If you need a tool you don't yet \
+         have, emit `<request-tool>` and end your turn.\n",
     );
 
     Ok(prompt)
@@ -260,39 +246,261 @@ fn collect_measure_output_files(
 }
 
 /// Parses a `Hypothesis` from an agent response that may contain surrounding prose.
+///
+/// Expects a `<plan>` XML fragment with `<approach>`, `<hypothesis>`, and
+/// `<files-to-modify>` children. Prose outside the fragment is ignored.
 pub fn parse_hypothesis(response: &str) -> Result<Hypothesis, PlanError> {
-    // Try to find JSON object in the response
-    // Look for the outermost { ... } that parses as a valid Hypothesis
-    let mut depth = 0i32;
-    let mut start = None;
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
 
-    for (i, ch) in response.char_indices() {
-        match ch {
-            '{' => {
-                if depth == 0 {
-                    start = Some(i);
+    let mut reader = Reader::from_str(response);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = std::str::from_utf8(e.name().as_ref())
+                    .map_err(|err| PlanError::ParseHypothesis {
+                        message: format!("non-utf8 tag name: {err}"),
+                    })?
+                    .to_string();
+                if name == "plan" {
+                    return parse_plan(&mut reader);
                 }
-                depth += 1;
+                skip_element(&mut reader, &name)?;
             }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    if let Some(s) = start {
-                        let candidate = &response[s..=i];
-                        if let Ok(hypothesis) = serde_json::from_str::<Hypothesis>(candidate) {
-                            return Ok(hypothesis);
-                        }
-                    }
-                    start = None;
-                }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("XML parse error: {e}"),
+                });
             }
-            _ => {}
         }
+        buf.clear();
     }
 
     Err(PlanError::ParseHypothesis {
-        message: "no valid JSON hypothesis found in agent response".to_string(),
+        message: "no <plan> fragment found in agent response".to_string(),
     })
+}
+
+fn parse_plan(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Hypothesis, PlanError> {
+    use quick_xml::events::Event;
+
+    let mut approach = String::new();
+    let mut hypothesis = String::new();
+    let mut files_to_modify: Vec<String> = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = std::str::from_utf8(e.name().as_ref())
+                    .map_err(|err| PlanError::ParseHypothesis {
+                        message: format!("non-utf8 tag name: {err}"),
+                    })?
+                    .to_string();
+                match name.as_str() {
+                    "approach" => approach = read_text(reader, "approach")?,
+                    "hypothesis" => hypothesis = read_text(reader, "hypothesis")?,
+                    "files-to-modify" => files_to_modify = parse_files_to_modify(reader)?,
+                    other => skip_element(reader, other)?,
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = std::str::from_utf8(e.name().as_ref())
+                    .map_err(|err| PlanError::ParseHypothesis {
+                        message: format!("non-utf8 tag name: {err}"),
+                    })?
+                    .to_string();
+                if name == "plan" {
+                    break;
+                }
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("unexpected closing tag </{name}> while in <plan>"),
+                });
+            }
+            Ok(Event::Eof) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: "unexpected EOF inside <plan>".to_string(),
+                });
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("XML parse error inside <plan>: {e}"),
+                });
+            }
+        }
+        buf.clear();
+    }
+
+    if approach.is_empty() {
+        return Err(PlanError::ParseHypothesis {
+            message: "<plan> missing <approach>".to_string(),
+        });
+    }
+    if hypothesis.is_empty() {
+        return Err(PlanError::ParseHypothesis {
+            message: "<plan> missing <hypothesis>".to_string(),
+        });
+    }
+
+    Ok(Hypothesis {
+        approach,
+        hypothesis,
+        files_to_modify,
+    })
+}
+
+fn parse_files_to_modify(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Vec<String>, PlanError> {
+    use quick_xml::events::Event;
+
+    let mut files: Vec<String> = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = std::str::from_utf8(e.name().as_ref())
+                    .map_err(|err| PlanError::ParseHypothesis {
+                        message: format!("non-utf8 tag name: {err}"),
+                    })?
+                    .to_string();
+                if name == "file" {
+                    files.push(read_text(reader, "file")?);
+                } else {
+                    skip_element(reader, &name)?;
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = std::str::from_utf8(e.name().as_ref())
+                    .map_err(|err| PlanError::ParseHypothesis {
+                        message: format!("non-utf8 tag name: {err}"),
+                    })?
+                    .to_string();
+                if name == "files-to-modify" {
+                    break;
+                }
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("unexpected closing tag </{name}> while in <files-to-modify>"),
+                });
+            }
+            Ok(Event::Eof) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: "unexpected EOF inside <files-to-modify>".to_string(),
+                });
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("XML parse error inside <files-to-modify>: {e}"),
+                });
+            }
+        }
+        buf.clear();
+    }
+
+    Ok(files)
+}
+
+fn read_text(reader: &mut quick_xml::Reader<&[u8]>, tag: &str) -> Result<String, PlanError> {
+    use quick_xml::events::Event;
+
+    let mut out = String::new();
+    let mut buf = Vec::new();
+    let mut depth = 0i32;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(_)) => depth += 1,
+            Ok(Event::End(e)) => {
+                let name = std::str::from_utf8(e.name().as_ref())
+                    .map_err(|err| PlanError::ParseHypothesis {
+                        message: format!("non-utf8 tag name: {err}"),
+                    })?
+                    .to_string();
+                if depth == 0 {
+                    if name == tag {
+                        return Ok(out.trim().to_string());
+                    }
+                    return Err(PlanError::ParseHypothesis {
+                        message: format!("unexpected closing tag </{name}> while reading <{tag}>"),
+                    });
+                }
+                depth -= 1;
+            }
+            Ok(Event::Empty(_)) => {}
+            Ok(Event::Text(t)) => {
+                let s = t.unescape().map_err(|e| PlanError::ParseHypothesis {
+                    message: format!("text unescape failed in <{tag}>: {e}"),
+                })?;
+                out.push_str(&s);
+            }
+            Ok(Event::CData(c)) => {
+                let s =
+                    std::str::from_utf8(c.as_ref()).map_err(|e| PlanError::ParseHypothesis {
+                        message: format!("CDATA utf8 error in <{tag}>: {e}"),
+                    })?;
+                out.push_str(s);
+            }
+            Ok(Event::Eof) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("unexpected EOF inside <{tag}>"),
+                });
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("XML parse error inside <{tag}>: {e}"),
+                });
+            }
+        }
+        buf.clear();
+    }
+}
+
+fn skip_element(reader: &mut quick_xml::Reader<&[u8]>, tag: &str) -> Result<(), PlanError> {
+    use quick_xml::events::Event;
+
+    let mut depth = 0i32;
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(_)) => depth += 1,
+            Ok(Event::End(e)) => {
+                if depth == 0 {
+                    let name = std::str::from_utf8(e.name().as_ref())
+                        .map_err(|err| PlanError::ParseHypothesis {
+                            message: format!("non-utf8 tag name: {err}"),
+                        })?
+                        .to_string();
+                    if name == tag {
+                        return Ok(());
+                    }
+                    return Err(PlanError::ParseHypothesis {
+                        message: format!("unexpected closing tag </{name}> while skipping <{tag}>"),
+                    });
+                }
+                depth -= 1;
+            }
+            Ok(Event::Empty(_)) => {}
+            Ok(Event::Eof) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("unexpected EOF while skipping <{tag}>"),
+                });
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(PlanError::ParseHypothesis {
+                    message: format!("XML parse error while skipping <{tag}>: {e}"),
+                });
+            }
+        }
+        buf.clear();
+    }
 }
 
 /// Calls the agent to plan the next iteration and parses the hypothesis.
@@ -323,9 +531,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_hypothesis_clean_json() {
-        let json = r#"{"approach": "inline-cache", "hypothesis": "Inlining the cache will reduce overhead", "files_to_modify": ["src/cache.rs", "src/main.rs"]}"#;
-        let h = parse_hypothesis(json).unwrap();
+    fn parse_hypothesis_clean_xml() {
+        let xml = r#"<plan>
+  <approach>inline-cache</approach>
+  <hypothesis>Inlining the cache will reduce overhead</hypothesis>
+  <files-to-modify>
+    <file>src/cache.rs</file>
+    <file>src/main.rs</file>
+  </files-to-modify>
+</plan>"#;
+        let h = parse_hypothesis(xml).unwrap();
         assert_eq!(h.approach, "inline-cache");
         assert_eq!(h.hypothesis, "Inlining the cache will reduce overhead");
         assert_eq!(h.files_to_modify, vec!["src/cache.rs", "src/main.rs"]);
@@ -337,7 +552,13 @@ mod tests {
 
 Based on the results, I suggest the following approach:
 
-{"approach": "loop-unroll", "hypothesis": "Unrolling the inner loop should improve throughput", "files_to_modify": ["src/engine.rs"]}
+<plan>
+  <approach>loop-unroll</approach>
+  <hypothesis>Unrolling the inner loop should improve throughput</hypothesis>
+  <files-to-modify>
+    <file>src/engine.rs</file>
+  </files-to-modify>
+</plan>
 
 This should give us a 10% improvement."#;
         let h = parse_hypothesis(response).unwrap();
@@ -346,7 +567,7 @@ This should give us a 10% improvement."#;
     }
 
     #[test]
-    fn parse_hypothesis_no_json() {
+    fn parse_hypothesis_no_plan() {
         let response = "I don't have a specific suggestion right now.";
         let err = parse_hypothesis(response).unwrap_err();
         assert!(matches!(err, PlanError::ParseHypothesis { .. }));

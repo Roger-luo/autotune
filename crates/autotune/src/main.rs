@@ -66,15 +66,31 @@ fn build_agent(_config: &AutotuneConfig) -> Box<dyn Agent> {
     #[cfg(feature = "mock")]
     if std::env::var("AUTOTUNE_MOCK").is_ok() {
         eprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
-        return Box::new(
-            autotune_mock::MockAgent::builder()
-                .hypothesis(
-                    "mock-approach",
-                    "mock hypothesis for testing",
-                    &["src/lib.rs"],
-                )
-                .build(),
-        );
+        let mut builder = autotune_mock::MockAgent::builder();
+
+        // Scenario tests can drive the research agent by pointing
+        // `AUTOTUNE_MOCK_RESEARCH_SCRIPT` at a file whose contents are the
+        // verbatim response texts for spawn+send calls, separated by a line
+        // containing only `---`. This lets tests inject arbitrary XML
+        // (`<plan>`, `<request-tool>`, malformed, etc.) to exercise the
+        // CLI's parsing + approval logic end-to-end.
+        if let Ok(path) = std::env::var("AUTOTUNE_MOCK_RESEARCH_SCRIPT")
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            for entry in content.split("\n---\n") {
+                let entry = entry.trim_end_matches('\n');
+                if !entry.is_empty() {
+                    builder = builder.research_response(entry);
+                }
+            }
+        } else {
+            builder = builder.hypothesis(
+                "mock-approach",
+                "mock hypothesis for testing",
+                &["src/lib.rs"],
+            );
+        }
+        return Box::new(builder.build());
     }
     Box::new(ClaudeAgent::new())
 }
@@ -226,10 +242,15 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Persist raw baseline stdout/stderr per measure so the research agent
     // can look up detailed reports (e.g. coverage output) on demand.
+    let mut baseline_output_files: Vec<std::path::PathBuf> = Vec::new();
     for report in &baseline_reports {
-        let _ =
-            store.save_measure_output(0, "baseline", &report.name, &report.stdout, &report.stderr);
+        if let Ok(written) =
+            store.save_measure_output(0, "baseline", &report.name, &report.stdout, &report.stderr)
+        {
+            baseline_output_files.extend(written.into_iter().map(|(_stream, path)| path));
+        }
     }
+    baseline_output_files.sort();
 
     // Score baseline against itself (rank=0)
     let baseline_record = IterationRecord {
@@ -249,7 +270,8 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Spawn research agent
     println!("[autotune] spawning research agent...");
-    let research_prompt = build_research_agent_prompt(&config, &baseline_metrics);
+    let research_prompt =
+        build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files);
 
     let research_permissions = autotune_plan::research_agent_permissions();
     let research_config = autotune_agent::AgentConfig {
@@ -261,14 +283,13 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     };
 
     // Forward streaming events (text, tool use) to stderr.
-    let research_handler =
-        autotune::stream_ui::make_research_event_handler("exploring codebase...");
+    let research_stream = autotune::stream_ui::Stream::research("exploring codebase...");
     let research_config_with_events = autotune_agent::AgentConfigWithEvents::new(research_config)
-        .with_event_handler(research_handler);
+        .with_event_handler(research_stream.handler());
     let research_response = agent
         .spawn_streaming(research_config_with_events)
         .context("failed to spawn research agent")?;
-    autotune::stream_ui::clear_status();
+    research_stream.finish();
 
     // Handle any tool-access requests the agent emitted during initial exploration.
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
@@ -276,7 +297,8 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         session_id: research_response.session_id.clone(),
         backend: agent.backend_name().to_string(),
     };
-    let spawn_handler = autotune::stream_ui::make_research_event_handler("processing...");
+    let spawn_stream = autotune::stream_ui::Stream::research("processing...");
+    let spawn_handler = spawn_stream.handler();
     let _research_response = autotune_plan::handle_tool_requests(
         agent.as_ref(),
         &initial_session,
@@ -285,7 +307,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         Some(&tool_approver),
     )
     .context("failed to handle research agent tool requests")?;
-    autotune::stream_ui::clear_status();
+    spawn_stream.finish();
     let research_response = _research_response;
 
     println!(
@@ -572,6 +594,7 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
 fn build_research_agent_prompt(
     config: &autotune_config::AutotuneConfig,
     baseline_metrics: &std::collections::HashMap<String, f64>,
+    baseline_output_files: &[std::path::PathBuf],
 ) -> String {
     use std::fmt::Write as _;
 
@@ -712,6 +735,20 @@ fn build_research_agent_prompt(
         }
     }
 
+    if !baseline_output_files.is_empty() {
+        p.push_str("\n## Baseline raw measure output (on-demand reference)\n\n");
+        p.push_str(
+            "The full stdout/stderr from each baseline measure was captured \
+             to the files below. Read them if the headline metrics above \
+             don't give you enough detail (e.g. you need the per-file coverage \
+             breakdown from a `cargo llvm-cov` run). Do NOT re-run the measure \
+             commands — read the captured output instead.\n\n",
+        );
+        for path in baseline_output_files {
+            writeln!(p, "- `{}`", path.display()).ok();
+        }
+    }
+
     p.push_str("\n# What to do\n\n");
     p.push_str(
         "- Do NOT run the measure, test, or build commands listed above. The CLI owns that.\n",
@@ -719,7 +756,7 @@ fn build_research_agent_prompt(
     p.push_str("- Do NOT re-collect the baseline — it's already done.\n");
     p.push_str("- Use Read/Glob/Grep to understand the code that produces the target metric(s).\n");
     p.push_str("- When the CLI asks you to plan the next iteration, propose a concrete, scoped hypothesis with specific files to modify.\n");
-    p.push_str("- Your planning response format is JSON: `{\"approach\": \"...\", \"hypothesis\": \"...\", \"files_to_modify\": [\"...\"]}`. The CLI will tell you when to emit one.\n");
+    p.push_str("- Your planning response format is an XML `<plan>` fragment with `<approach>`, `<hypothesis>`, and a `<files-to-modify>` list of `<file>` entries. The CLI will tell you when to emit one.\n");
     p.push_str("- The `hypothesis` string is the main prompt passed to the implementation agent, along with the `files_to_modify` list. Write it as concrete instructions: what to change and why. Anything you want the implementer to know must go there.\n");
 
     p.push_str("\n# Requesting additional tools\n\n");
@@ -734,8 +771,10 @@ fn build_research_agent_prompt(
     p.push_str("- `<tool>`: the tool name (e.g., `Bash`, `WebFetch`). `Edit`, `Write`, and `Agent` are hard-denied for the research role and will be rejected.\n");
     p.push_str("- `<scope>`: optional scope string (e.g., `cargo tree:*` to narrow Bash). Always prefer the narrowest scope that meets your need; the user is more likely to approve.\n");
     p.push_str("- `<reason>`: required — one sentence the user reads to decide. Be specific.\n\n");
-    p.push_str("You may emit multiple `<request-tool>` fragments in one response. The CLI will prompt the user for each and reply with a summary of what was granted/denied. Once granted, the tool is available for the rest of this task run. If denied, do NOT re-request the same tool — find another path.\n");
-    p.push_str("When you emit tool requests, do NOT also emit a hypothesis in the same response — wait for approval first, then produce the hypothesis with the new tools.\n");
+    p.push_str("You may emit multiple `<request-tool>` fragments in one response. The CLI will prompt the user for each and reply with a summary of what was granted/denied. Once granted, the tool is available for the rest of this task run. If denied, do NOT re-request the same tool — find another path.\n\n");
+    p.push_str(
+        "**Critical**: after emitting one or more `<request-tool>` fragments you MUST end your turn immediately. Do not continue using other tools (no more Read/Glob/Grep calls), do not keep typing prose like \"while waiting...\", and do not emit a `<plan>`. The CLI only parses tool requests once your turn ends, so anything you do after the fragments delays approval and wastes work. Emit the request(s), then stop — the CLI will reply with what was granted and you can continue in the next turn.\n",
+    );
 
     p
 }

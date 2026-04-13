@@ -133,10 +133,11 @@ fn run_planning(
         .as_deref()
         .unwrap_or(&config.task.name);
 
-    let planning_handler = crate::stream_ui::make_research_event_handler(&format!(
+    let planning_stream = crate::stream_ui::Stream::research(&format!(
         "planning iteration {}...",
         state.current_iteration
     ));
+    let planning_handler = planning_stream.handler();
     let hypothesis = autotune_plan::plan_next(
         agent,
         research_session,
@@ -148,7 +149,7 @@ fn run_planning(
         approver,
     )
     .context("planning failed")?;
-    crate::stream_ui::clear_status();
+    planning_stream.finish();
 
     // Set up worktree
     let worktree_parent = store.root().join("worktrees");
@@ -207,7 +208,12 @@ fn run_implementing(
         .as_ref()
         .and_then(|c| c.max_turns);
 
-    match autotune_implement::run_implementation(
+    let impl_stream = crate::stream_ui::Stream::implementation(&format!(
+        "iteration {} — implementing '{}'...",
+        state.current_iteration, approach.name
+    ));
+
+    let result = autotune_implement::run_implementation(
         agent,
         &impl_hypothesis,
         &approach.worktree_path,
@@ -216,7 +222,11 @@ fn run_implementing(
         &log_content,
         impl_model,
         impl_max_turns,
-    ) {
+        Some(impl_stream.handler()),
+    );
+    impl_stream.finish();
+
+    match result {
         Ok(result) => {
             let approach_mut = state.current_approach.as_mut().unwrap();
             approach_mut.commit_sha = Some(result.commit_sha);
