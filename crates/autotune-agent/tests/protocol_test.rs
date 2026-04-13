@@ -40,12 +40,12 @@ fn parse_question_request() {
 }
 
 #[test]
-fn parse_config_experiment_section() {
+fn parse_config_task_section() {
     let json = r#"{
         "type": "config",
         "section": {
-            "type": "experiment",
-            "name": "my-experiment",
+            "type": "task",
+            "name": "my-task",
             "max_iterations": "10",
             "canonical_branch": "main"
         }
@@ -53,10 +53,10 @@ fn parse_config_experiment_section() {
     let req = parse_agent_request(json).unwrap();
     match req {
         AgentRequest::Config { section } => match section {
-            ConfigSection::Experiment(exp) => {
-                assert_eq!(exp.name, "my-experiment");
+            ConfigSection::Task(task) => {
+                assert_eq!(task.name, "my-task");
             }
-            _ => panic!("expected Experiment section"),
+            _ => panic!("expected Task section"),
         },
         _ => panic!("expected Config"),
     }
@@ -104,11 +104,11 @@ fn parse_config_test_section() {
 }
 
 #[test]
-fn parse_config_benchmark_section() {
+fn parse_config_measure_section() {
     let json = r#"{
         "type": "config",
         "section": {
-            "type": "benchmark",
+            "type": "measure",
             "name": "perf",
             "command": ["cargo", "bench"],
             "adaptor": {
@@ -120,7 +120,7 @@ fn parse_config_benchmark_section() {
     let req = parse_agent_request(json).unwrap();
     match req {
         AgentRequest::Config { section } => {
-            assert!(matches!(section, ConfigSection::Benchmark(_)));
+            assert!(matches!(section, ConfigSection::Measure(_)));
         }
         _ => panic!("expected Config"),
     }

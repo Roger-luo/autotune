@@ -1,23 +1,23 @@
-use crate::{AdaptorError, BenchmarkOutput, MetricAdaptor, Metrics};
+use crate::{AdaptorError, MeasureOutput, MetricAdaptor, Metrics};
 use std::path::{Path, PathBuf};
 
-/// Reads Criterion's estimates.json for a named benchmark.
+/// Reads Criterion's estimates.json for a named measure.
 pub struct CriterionAdaptor {
     criterion_dir: PathBuf,
-    benchmark_name: String,
+    measure_name: String,
 }
 
 impl CriterionAdaptor {
-    pub fn new(criterion_dir: &Path, benchmark_name: &str) -> Self {
+    pub fn new(criterion_dir: &Path, measure_name: &str) -> Self {
         Self {
             criterion_dir: criterion_dir.to_path_buf(),
-            benchmark_name: benchmark_name.to_string(),
+            measure_name: measure_name.to_string(),
         }
     }
 
     fn estimates_path(&self) -> PathBuf {
         self.criterion_dir
-            .join(&self.benchmark_name)
+            .join(&self.measure_name)
             .join("new")
             .join("estimates.json")
     }
@@ -36,7 +36,7 @@ struct CriterionStat {
 }
 
 impl MetricAdaptor for CriterionAdaptor {
-    fn extract(&self, _output: &BenchmarkOutput) -> Result<Metrics, AdaptorError> {
+    fn extract(&self, _output: &MeasureOutput) -> Result<Metrics, AdaptorError> {
         let path = self.estimates_path();
         let content =
             std::fs::read_to_string(&path).map_err(|_| AdaptorError::CriterionNotFound {

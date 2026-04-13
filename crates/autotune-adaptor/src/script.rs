@@ -1,8 +1,8 @@
-use crate::{AdaptorError, BenchmarkOutput, MetricAdaptor, Metrics};
+use crate::{AdaptorError, MeasureOutput, MetricAdaptor, Metrics};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Runs a user-provided script that reads benchmark output from stdin
+/// Runs a user-provided script that reads measure output from stdin
 /// and writes JSON metrics to stdout.
 pub struct ScriptAdaptor {
     command: Vec<String>,
@@ -15,7 +15,7 @@ impl ScriptAdaptor {
 }
 
 impl MetricAdaptor for ScriptAdaptor {
-    fn extract(&self, output: &BenchmarkOutput) -> Result<Metrics, AdaptorError> {
+    fn extract(&self, output: &MeasureOutput) -> Result<Metrics, AdaptorError> {
         let Some((program, args)) = self.command.split_first() else {
             return Err(AdaptorError::ScriptEmptyCommand);
         };

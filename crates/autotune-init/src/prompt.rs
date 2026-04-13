@@ -26,7 +26,7 @@ The `text` field should include your reasoning/context (what you found, why you'
 ```json
 {{
   "type": "question",
-  "text": "I found a Cargo workspace with 13 crates and cargo-nextest in the CI config, but no benchmarks or criterion dependency.\n\nWhat metric would you like to optimize?",
+  "text": "I found a Cargo workspace with 13 crates and cargo-nextest in the CI config, but no existing measures or criterion dependency.\n\nWhat metric would you like to optimize?",
   "options": [
     {{"key": "compile", "label": "Compile time", "description": "measure cargo build / cargo check speed"}},
     {{"key": "coverage", "label": "Test coverage", "description": "track line/branch coverage via cargo-tarpaulin or cargo-llvm-cov"}}
@@ -47,12 +47,12 @@ Each option has:
 ## Config Sections
 Propose sections one at a time. The CLI validates each immediately.
 
-### experiment (required)
+### task (required)
 ```json
-{{"type": "config", "section": {{"type": "experiment", "name": "experiment-name", "description": "what to optimize", "canonical_branch": "main", "max_iterations": "10"}}}}
+{{"type": "config", "section": {{"type": "task", "name": "task-name", "description": "what to optimize", "canonical_branch": "main", "max_iterations": "10"}}}}
 ```
 - `name`: short kebab-case name (required)
-- `description`: what the experiment targets — be specific about which metrics and why (optional)
+- `description`: what the task targets — be specific about which metrics and why (optional)
 - `canonical_branch`: branch to cherry-pick improvements onto (default "main")
 - Stop conditions (at least one required): `max_iterations` ("10" or "inf"), `target_improvement` (float), `max_duration` ("4h")
 
@@ -71,16 +71,16 @@ Propose sections one at a time. The CLI validates each immediately.
 - `command`: shell command as array of strings
 - `timeout`: seconds (default 300)
 
-### benchmark (required, at least one)
+### measure (required, at least one)
 ```json
-{{"type": "config", "section": {{"type": "benchmark", "name": "measure", "command": ["cargo", "bench"], "adaptor": {{"type": "regex", "patterns": [{{"name": "metric_name", "pattern": "regex_with_capture_group"}}]}}}}}}
+{{"type": "config", "section": {{"type": "measure", "name": "measure", "command": ["cargo", "bench"], "adaptor": {{"type": "regex", "patterns": [{{"name": "metric_name", "pattern": "regex_with_capture_group"}}]}}}}}}
 ```
-- `name`: identifier for this benchmark
+- `name`: identifier for this measure
 - `command`: shell command that produces measurable output
 - `timeout`: seconds (default 600)
 - `adaptor`: how to extract metrics from command output. Types:
   - `regex`: `{{"type": "regex", "patterns": [{{"name": "metric_name", "pattern": "regex_with_one_capture_group"}}]}}`
-  - `criterion`: `{{"type": "criterion", "benchmark_name": "bench_name"}}`
+  - `criterion`: `{{"type": "criterion", "measure_name": "measure_name"}}`
   - `script`: `{{"type": "script", "command": ["python", "extract.py"]}}`
 
 ### score (required)
@@ -92,7 +92,7 @@ Propose sections one at a time. The CLI validates each immediately.
 - For threshold: `conditions` (metric, direction, threshold)
 - For script/command: `command` array
 - Direction values: "Minimize" or "Maximize"
-- Metric names must match names produced by benchmark adaptors
+- Metric names must match names produced by measure adaptors
 
 ### agent (optional)
 ```json
@@ -106,15 +106,14 @@ Propose sections one at a time. The CLI validates each immediately.
 - **Questions use the `options` field.** When asking a question with choices, put each choice in the `options` array — do NOT list them in the `text` field. The CLI renders options as an interactive selection menu.
 - **Do NOT add a "something else" or "other" option.** When `allow_free_response` is true, the CLI automatically appends a "Type your own answer..." text input. Adding your own catch-all option creates a duplicate.
 - **Option descriptions should be specific and actionable.** Include concrete details (tool names, commands, file paths) so the user can make an informed choice without extra context.
-- **The `text` field in questions MUST NOT be empty.** It is REQUIRED. The CLI displays the `text` above the option menu — if it's empty, the user sees floating options with no context. Always include: (1) what you found in the codebase that's relevant (1-2 sentences), and (2) the actual question. Example: `"I found a Cargo workspace with 13 crates and cargo-nextest in CI, but no benchmarks.\n\nWhat would you like to optimize?"` — never just `""` or `"Choose one"`.
+- **The `text` field in questions MUST NOT be empty.** It is REQUIRED. The CLI displays the `text` above the option menu — if it's empty, the user sees floating options with no context. Always include: (1) what you found in the codebase that's relevant (1-2 sentences), and (2) the actual question. Example: `"I found a Cargo workspace with 13 crates and cargo-nextest in CI, but no measures.\n\nWhat would you like to optimize?"` — never just `""` or `"Choose one"`.
 
 ## Instructions
-1. First, use your read tools (Read, Glob, Grep) to explore the project structure — look for existing benchmarks, test commands, build files, CI config, and anything that produces measurable output.
-2. **Go straight to your first Question.** Do NOT send a Message summarizing what you found — the user doesn't want to acknowledge a summary. Jump directly into asking what they want to optimize. You can mention key findings in the question text itself.
-3. Ask Questions ONE AT A TIME to understand what the user wants to improve — do not assume it is performance. Ask what metrics matter to them.
-4. Propose config sections in this order: experiment → paths → tests → benchmarks → score.
-5. If the CLI reports a validation error, correct the section and re-propose it.
-6. Keep the conversation focused and efficient. Minimize the number of questions — if you can infer something from the codebase, propose a config section directly instead of asking."#,
+1. The user has already told you what they want (see "User Goal" above). Use your read tools (Read, Glob, Grep) to explore the project structure — look for existing measures, test commands, build files, CI config, and anything relevant to achieving that goal.
+2. Only ask follow-up Questions when you genuinely need clarification (e.g., which of two coverage tools to use). If you can infer the answer from the codebase, skip the question and propose config directly.
+3. Propose config sections in this order: task → paths → tests → measures → score.
+4. If the CLI reports a validation error, correct the section and re-propose it.
+5. Keep the conversation focused and efficient. Minimize the number of questions — propose config sections directly whenever possible."#,
         repo_root = repo_root.display()
     )
 }

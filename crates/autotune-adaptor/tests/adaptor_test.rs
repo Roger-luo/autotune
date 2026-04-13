@@ -1,6 +1,6 @@
 use autotune_adaptor::regex::{RegexAdaptor, RegexPatternConfig};
 use autotune_adaptor::script::ScriptAdaptor;
-use autotune_adaptor::{BenchmarkOutput, MetricAdaptor};
+use autotune_adaptor::{MeasureOutput, MetricAdaptor};
 use std::fs;
 
 #[test]
@@ -21,7 +21,7 @@ fn criterion_extracts_estimates() {
 
     let adaptor =
         autotune_adaptor::criterion::CriterionAdaptor::new(&criterion_dir, "my-benchmark");
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: String::new(),
         stderr: String::new(),
     };
@@ -39,8 +39,8 @@ fn regex_extracts_single_metric() {
         pattern: r"time:\s+([0-9.]+)\s+µs".to_string(),
     }]);
 
-    let output = BenchmarkOutput {
-        stdout: "benchmark result\ntime: 149.83 µs\nother stuff".to_string(),
+    let output = MeasureOutput {
+        stdout: "task result\ntime: 149.83 µs\nother stuff".to_string(),
         stderr: String::new(),
     };
 
@@ -55,7 +55,7 @@ fn regex_extracts_named_group() {
         pattern: r"throughput=(?P<value>[0-9.]+)".to_string(),
     }]);
 
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: "throughput=1234.5".to_string(),
         stderr: String::new(),
     };
@@ -77,7 +77,7 @@ fn regex_extracts_multiple_metrics() {
         },
     ]);
 
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: "time: 100.5\nmemory: 256.0".to_string(),
         stderr: String::new(),
     };
@@ -94,7 +94,7 @@ fn regex_no_match_returns_error() {
         pattern: r"nonexistent:\s+([0-9.]+)".to_string(),
     }]);
 
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: "no match here".to_string(),
         stderr: String::new(),
     };
@@ -109,7 +109,7 @@ fn regex_searches_stderr_too() {
         pattern: r"result=([0-9.]+)".to_string(),
     }]);
 
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: String::new(),
         stderr: "result=42.0".to_string(),
     };
@@ -126,7 +126,7 @@ fn script_adaptor_echo_json() {
         r#"echo '{"metric1": 42.0, "metric2": 3.14}'"#.to_string(),
     ]);
 
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: "ignored input".to_string(),
         stderr: String::new(),
     };
@@ -137,14 +137,14 @@ fn script_adaptor_echo_json() {
 }
 
 #[test]
-fn script_adaptor_pipes_benchmark_output_to_stdin() {
+fn script_adaptor_pipes_task_output_to_stdin() {
     let adaptor = ScriptAdaptor::new(vec![
         "sh".to_string(),
         "-c".to_string(),
         r#"bytes=$(cat | wc -c | tr -d ' '); echo "{\"stdin_bytes\": $bytes}""#.to_string(),
     ]);
 
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: "abc".to_string(),
         stderr: "de".to_string(),
     };
@@ -161,7 +161,7 @@ fn script_adaptor_nonzero_exit_returns_error() {
         "exit 1".to_string(),
     ]);
 
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: String::new(),
         stderr: String::new(),
     };
@@ -172,7 +172,7 @@ fn script_adaptor_nonzero_exit_returns_error() {
 #[test]
 fn script_adaptor_empty_command_returns_error() {
     let adaptor = ScriptAdaptor::new(vec![]);
-    let output = BenchmarkOutput {
+    let output = MeasureOutput {
         stdout: String::new(),
         stderr: String::new(),
     };

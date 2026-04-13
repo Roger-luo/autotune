@@ -8,18 +8,18 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutotuneConfig {
-    pub experiment: ExperimentConfig,
+    pub task: TaskConfig,
     pub paths: PathsConfig,
     #[serde(default)]
     pub test: Vec<TestConfig>,
-    pub benchmark: Vec<BenchmarkConfig>,
+    pub measure: Vec<MeasureConfig>,
     pub score: ScoreConfig,
     #[serde(default)]
     pub agent: AgentConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExperimentConfig {
+pub struct TaskConfig {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -92,15 +92,15 @@ fn default_test_timeout() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkConfig {
+pub struct MeasureConfig {
     pub name: String,
     pub command: Vec<String>,
-    #[serde(default = "default_benchmark_timeout")]
+    #[serde(default = "default_measure_timeout")]
     pub timeout: u64,
     pub adaptor: AdaptorConfig,
 }
 
-fn default_benchmark_timeout() -> u64 {
+fn default_measure_timeout() -> u64 {
     600
 }
 
@@ -110,7 +110,7 @@ pub enum AdaptorConfig {
     #[serde(rename = "regex")]
     Regex { patterns: Vec<RegexPattern> },
     #[serde(rename = "criterion")]
-    Criterion { benchmark_name: String },
+    Criterion { measure_name: String },
     #[serde(rename = "script")]
     Script { command: Vec<String> },
 }
@@ -227,34 +227,34 @@ impl AutotuneConfig {
     /// Validate all config constraints. Called automatically by `load`.
     pub fn validate(&self) -> Result<(), ConfigError> {
         // At least one stop condition
-        if self.experiment.max_iterations.is_none()
-            && self.experiment.target_improvement.is_none()
-            && self.experiment.max_duration.is_none()
+        if self.task.max_iterations.is_none()
+            && self.task.target_improvement.is_none()
+            && self.task.max_duration.is_none()
         {
             return Err(ConfigError::Validation {
                 message: "at least one stop condition required (max_iterations, target_improvement, or max_duration)".to_string(),
             });
         }
 
-        // Benchmarks non-empty
-        if self.benchmark.is_empty() {
+        // Measures non-empty
+        if self.measure.is_empty() {
             return Err(ConfigError::Validation {
-                message: "at least one [[benchmark]] entry required".to_string(),
+                message: "at least one [[measure]] entry required".to_string(),
             });
         }
 
-        // Each benchmark command non-empty
-        for b in &self.benchmark {
+        // Each measure command non-empty
+        for b in &self.measure {
             if b.command.is_empty() {
                 return Err(ConfigError::Validation {
-                    message: format!("benchmark '{}' has empty command", b.name),
+                    message: format!("measure '{}' has empty command", b.name),
                 });
             }
             if let AdaptorConfig::Script { command } = &b.adaptor
                 && command.is_empty()
             {
                 return Err(ConfigError::Validation {
-                    message: format!("benchmark '{}' has empty script adaptor command", b.name),
+                    message: format!("measure '{}' has empty script adaptor command", b.name),
                 });
             }
         }
@@ -287,14 +287,14 @@ impl AutotuneConfig {
             })?;
         }
 
-        // Validate metric name uniqueness across benchmarks
+        // Validate metric name uniqueness across measures
         let mut metric_names = std::collections::HashSet::new();
-        for b in &self.benchmark {
+        for b in &self.measure {
             let names = self.adaptor_metric_names(&b.adaptor);
             for name in names {
                 if !metric_names.insert(name.clone()) {
                     return Err(ConfigError::Validation {
-                        message: format!("duplicate metric name '{}' across benchmarks", name),
+                        message: format!("duplicate metric name '{}' across measures", name),
                     });
                 }
             }
@@ -310,7 +310,7 @@ impl AutotuneConfig {
                     if !metric_names.contains(&pm.name) {
                         return Err(ConfigError::Validation {
                             message: format!(
-                                "primary metric '{}' not produced by any benchmark adaptor",
+                                "primary metric '{}' not produced by any measure adaptor",
                                 pm.name
                             ),
                         });
@@ -320,7 +320,7 @@ impl AutotuneConfig {
                     if !metric_names.contains(&gm.name) {
                         return Err(ConfigError::Validation {
                             message: format!(
-                                "guardrail metric '{}' not produced by any benchmark adaptor",
+                                "guardrail metric '{}' not produced by any measure adaptor",
                                 gm.name
                             ),
                         });
@@ -332,7 +332,7 @@ impl AutotuneConfig {
                     if !metric_names.contains(&c.metric) {
                         return Err(ConfigError::Validation {
                             message: format!(
-                                "threshold metric '{}' not produced by any benchmark adaptor",
+                                "threshold metric '{}' not produced by any measure adaptor",
                                 c.metric
                             ),
                         });
@@ -367,10 +367,8 @@ impl AutotuneConfig {
         }
     }
 
-    /// Resolve the experiment directory path: `.autotune/experiments/<name>/`
-    pub fn experiment_dir(&self, root: &Path) -> PathBuf {
-        root.join(".autotune")
-            .join("experiments")
-            .join(&self.experiment.name)
+    /// Resolve the task directory path: `.autotune/tasks/<name>/`
+    pub fn task_dir(&self, root: &Path) -> PathBuf {
+        root.join(".autotune").join("tasks").join(&self.task.name)
     }
 }

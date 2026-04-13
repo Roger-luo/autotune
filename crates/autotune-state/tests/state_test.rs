@@ -1,6 +1,6 @@
 use autotune_state::{
-    ApproachState, ExperimentState, ExperimentStore, IterationRecord, IterationStatus, Metrics,
-    Phase, StateError, TestResult,
+    ApproachState, IterationRecord, IterationStatus, Metrics, Phase, StateError, TaskState,
+    TaskStore, TestResult,
 };
 use chrono::{TimeZone, Utc};
 use std::fs;
@@ -12,9 +12,9 @@ fn metrics(pairs: &[(&str, f64)]) -> Metrics {
         .collect()
 }
 
-fn sample_state() -> ExperimentState {
-    ExperimentState {
-        experiment_name: "demo".to_string(),
+fn sample_state() -> TaskState {
+    TaskState {
+        task_name: "demo".to_string(),
         canonical_branch: "main".to_string(),
         research_session_id: "research-1".to_string(),
         current_iteration: 3,
@@ -58,13 +58,13 @@ fn sample_record(iteration: usize, approach: &str) -> IterationRecord {
 #[test]
 fn roundtrip_state() {
     let dir = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(dir.path()).unwrap();
+    let store = TaskStore::new(dir.path()).unwrap();
     let state = sample_state();
 
     store.save_state(&state).unwrap();
 
     let loaded = store.load_state().unwrap();
-    assert_eq!(loaded.experiment_name, state.experiment_name);
+    assert_eq!(loaded.task_name, state.task_name);
     assert_eq!(loaded.canonical_branch, state.canonical_branch);
     assert_eq!(loaded.research_session_id, state.research_session_id);
     assert_eq!(loaded.current_iteration, state.current_iteration);
@@ -75,7 +75,7 @@ fn roundtrip_state() {
 #[test]
 fn roundtrip_state_with_approach() {
     let dir = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(dir.path()).unwrap();
+    let store = TaskStore::new(dir.path()).unwrap();
     let mut state = sample_state();
     state.current_approach = Some(sample_approach());
 
@@ -86,21 +86,21 @@ fn roundtrip_state_with_approach() {
 }
 
 #[test]
-fn new_creates_experiment_and_iterations_directories() {
+fn new_creates_task_and_iterations_directories() {
     let dir = tempfile::tempdir().unwrap();
-    let experiment_dir = dir.path().join("experiments").join("demo");
+    let task_dir = dir.path().join("tasks").join("demo");
 
-    let store = ExperimentStore::new(&experiment_dir).unwrap();
+    let store = TaskStore::new(&task_dir).unwrap();
 
-    assert_eq!(store.root(), experiment_dir.as_path());
-    assert!(experiment_dir.exists());
-    assert!(experiment_dir.join("iterations").exists());
+    assert_eq!(store.root(), task_dir.as_path());
+    assert!(task_dir.exists());
+    assert!(task_dir.join("iterations").exists());
 }
 
 #[test]
 fn ledger_append_and_load() {
     let dir = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(dir.path()).unwrap();
+    let store = TaskStore::new(dir.path()).unwrap();
     let first = sample_record(1, "baseline");
     let second = sample_record(2, "candidate");
 
@@ -114,7 +114,7 @@ fn ledger_append_and_load() {
 #[test]
 fn log_append_and_read() {
     let dir = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(dir.path()).unwrap();
+    let store = TaskStore::new(dir.path()).unwrap();
 
     assert_eq!(store.read_log().unwrap(), "");
     store.append_log("first entry").unwrap();
@@ -126,7 +126,7 @@ fn log_append_and_read() {
 #[test]
 fn iteration_artifacts_are_written() {
     let dir = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(dir.path()).unwrap();
+    let store = TaskStore::new(dir.path()).unwrap();
     let iteration_dir = store.iteration_dir(7, "candidate");
 
     store
@@ -157,35 +157,35 @@ fn iteration_artifacts_are_written() {
 #[test]
 fn config_snapshot_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(dir.path()).unwrap();
+    let store = TaskStore::new(dir.path()).unwrap();
 
     store
-        .save_config_snapshot("[experiment]\nname = \"demo\"\n")
+        .save_config_snapshot("[task]\nname = \"demo\"\n")
         .unwrap();
 
     assert_eq!(
         store.load_config_snapshot().unwrap(),
-        "[experiment]\nname = \"demo\"\n"
+        "[task]\nname = \"demo\"\n"
     );
 }
 
 #[test]
-fn list_experiments_sorts_directories() {
+fn list_tasks_sorts_directories() {
     let dir = tempfile::tempdir().unwrap();
     let autotune_dir = dir.path();
-    fs::create_dir_all(autotune_dir.join("experiments").join("zeta")).unwrap();
-    fs::create_dir_all(autotune_dir.join("experiments").join("alpha")).unwrap();
-    fs::create_dir_all(autotune_dir.join("experiments").join("middle")).unwrap();
-    fs::write(autotune_dir.join("experiments").join("ignore.txt"), "nope").unwrap();
+    fs::create_dir_all(autotune_dir.join("tasks").join("zeta")).unwrap();
+    fs::create_dir_all(autotune_dir.join("tasks").join("alpha")).unwrap();
+    fs::create_dir_all(autotune_dir.join("tasks").join("middle")).unwrap();
+    fs::write(autotune_dir.join("tasks").join("ignore.txt"), "nope").unwrap();
 
-    let names = ExperimentStore::list_experiments(autotune_dir).unwrap();
+    let names = TaskStore::list_tasks(autotune_dir).unwrap();
     assert_eq!(names, vec!["alpha", "middle", "zeta"]);
 }
 
 #[test]
-fn open_nonexistent_experiment_fails() {
+fn open_nonexistent_task_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let err = ExperimentStore::open(&dir.path().join("missing")).unwrap_err();
+    let err = TaskStore::open(&dir.path().join("missing")).unwrap_err();
 
     assert!(matches!(err, StateError::NotFound { .. }));
 }

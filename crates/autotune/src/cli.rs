@@ -12,17 +12,17 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start a fresh experiment
+    /// Start a fresh task
     Run {
-        /// Override the experiment name from config
+        /// Override the task name from config
         #[arg(long)]
-        experiment: Option<String>,
+        task: Option<String>,
     },
-    /// Resume an existing experiment
+    /// Resume an existing task
     Resume {
-        /// Experiment name to resume
+        /// Task name to resume
         #[arg(long)]
-        experiment: String,
+        task: String,
         /// Override max iterations stop condition
         #[arg(long)]
         max_iterations: Option<u64>,
@@ -33,67 +33,67 @@ pub enum Commands {
         #[arg(long)]
         target_improvement: Option<f64>,
     },
-    /// Show experiment progress
+    /// Show task progress
     Report {
-        /// Experiment name
+        /// Task name
         #[arg(long)]
-        experiment: Option<String>,
+        task: Option<String>,
         /// Output format
         #[arg(long, default_value = "table")]
         format: ReportFormat,
     },
-    /// List all experiments
+    /// List all tasks
     List,
-    /// Initialize experiment (run sanity tests and baseline benchmarks)
+    /// Initialize task (run sanity tests and baseline measures)
     Init {
-        /// Override the experiment name from config
+        /// Override the task name from config
         #[arg(long)]
         name: Option<String>,
     },
     /// Run planning phase for a single iteration
     Plan {
-        /// Experiment name
+        /// Task name
         #[arg(long)]
-        experiment: String,
+        task: String,
     },
     /// Run implementation phase for a single iteration
     Implement {
-        /// Experiment name
+        /// Task name
         #[arg(long)]
-        experiment: String,
+        task: String,
     },
     /// Run test phase for a single iteration
     Test {
-        /// Experiment name
+        /// Task name
         #[arg(long)]
-        experiment: String,
+        task: String,
     },
-    /// Run benchmark phase for a single iteration
-    Benchmark {
-        /// Experiment name
+    /// Run measurement phase for a single iteration
+    Measure {
+        /// Task name
         #[arg(long)]
-        experiment: String,
+        task: String,
     },
     /// Score and record iteration results
     Record {
-        /// Experiment name
+        /// Task name
         #[arg(long)]
-        experiment: String,
+        task: String,
     },
     /// Apply best result (cherry-pick onto canonical branch)
     Apply {
-        /// Experiment name
+        /// Task name
         #[arg(long)]
-        experiment: String,
+        task: String,
     },
     /// Manage global user config
     #[command(subcommand)]
     Config(ConfigCommands),
-    /// Export experiment data to a JSON file
+    /// Export task data to a JSON file
     Export {
-        /// Experiment name
+        /// Task name
         #[arg(long)]
-        experiment: String,
+        task: String,
         /// Output file path
         #[arg(long)]
         output: String,

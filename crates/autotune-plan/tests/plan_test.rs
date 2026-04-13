@@ -1,5 +1,5 @@
 use autotune_plan::{PlanError, build_planning_prompt, parse_hypothesis};
-use autotune_state::{ExperimentStore, IterationRecord, IterationStatus, Metrics};
+use autotune_state::{IterationRecord, IterationStatus, Metrics, TaskStore};
 use chrono::Utc;
 
 #[test]
@@ -33,7 +33,7 @@ fn parse_hypothesis_no_json_errors() {
 #[test]
 fn build_planning_prompt_includes_description() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(tmp.path()).unwrap();
+    let store = TaskStore::new(tmp.path()).unwrap();
     let prompt = build_planning_prompt(&store, None, 1, "Optimize compile times").unwrap();
     assert!(prompt.contains("Optimize compile times"));
 }
@@ -41,7 +41,7 @@ fn build_planning_prompt_includes_description() {
 #[test]
 fn build_planning_prompt_includes_last_iteration() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(tmp.path()).unwrap();
+    let store = TaskStore::new(tmp.path()).unwrap();
 
     let mut metrics = Metrics::new();
     metrics.insert("latency_ms".to_string(), 42.0);
@@ -69,7 +69,7 @@ fn build_planning_prompt_includes_last_iteration() {
 #[test]
 fn build_planning_prompt_includes_log_content() {
     let tmp = tempfile::tempdir().unwrap();
-    let store = ExperimentStore::new(tmp.path()).unwrap();
+    let store = TaskStore::new(tmp.path()).unwrap();
     store
         .append_log("## Iteration 0\nBaseline established.")
         .unwrap();

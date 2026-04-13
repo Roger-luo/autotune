@@ -9,20 +9,20 @@ use autotune_config::AutotuneConfig;
 use autotune_implement::ImplementError;
 use autotune_score::{ScoreCalculator, ScoreInput};
 use autotune_state::{
-    ApproachState, ExperimentState, ExperimentStore, IterationRecord, IterationStatus, Phase,
+    ApproachState, IterationRecord, IterationStatus, Phase, TaskState, TaskStore,
 };
 
 pub type ShutdownFlag = AtomicBool;
 
 /// Execute exactly one phase transition, returning the expected phase that was
-/// executed. Returns `Ok(true)` if the experiment has reached the Done phase.
+/// executed. Returns `Ok(true)` if the task has reached the Done phase.
 pub fn run_single_phase(
     config: &AutotuneConfig,
     agent: &dyn Agent,
     scorer: &dyn ScoreCalculator,
     repo_root: &Path,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
+    store: &TaskStore,
+    state: &mut TaskState,
 ) -> Result<bool> {
     let research_session = AgentSession {
         session_id: state.research_session_id.clone(),
@@ -39,8 +39,8 @@ pub fn run_single_phase(
         Phase::Testing => {
             run_testing(config, store, state)?;
         }
-        Phase::Benchmarking => {
-            run_benchmarking(config, store, state)?;
+        Phase::Measuring => {
+            run_measuring(config, store, state)?;
         }
         Phase::Scoring => {
             run_scoring(scorer, store, state)?;
@@ -52,7 +52,7 @@ pub fn run_single_phase(
             run_recorded(config, store, state)?;
         }
         Phase::Done => {
-            println!("[autotune] experiment complete");
+            println!("[autotune] task complete");
             return Ok(true);
         }
     }
@@ -60,17 +60,15 @@ pub fn run_single_phase(
     Ok(state.current_phase == Phase::Done)
 }
 
-pub fn run_experiment(
+pub fn run_task(
     config: &AutotuneConfig,
     agent: &dyn Agent,
     scorer: &dyn ScoreCalculator,
     repo_root: &Path,
-    store: &ExperimentStore,
+    store: &TaskStore,
     shutdown: &ShutdownFlag,
 ) -> Result<()> {
-    let mut state = store
-        .load_state()
-        .context("failed to load experiment state")?;
+    let mut state = store.load_state().context("failed to load task state")?;
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -91,8 +89,8 @@ pub fn run_experiment(
 fn run_planning(
     config: &AutotuneConfig,
     agent: &dyn Agent,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
+    store: &TaskStore,
+    state: &mut TaskState,
     research_session: &AgentSession,
 ) -> Result<()> {
     println!(
@@ -103,10 +101,10 @@ fn run_planning(
     let ledger = store.load_ledger()?;
     let last_iteration = ledger.last();
     let description = config
-        .experiment
+        .task
         .description
         .as_deref()
-        .unwrap_or(&config.experiment.name);
+        .unwrap_or(&config.task.name);
 
     let hypothesis = autotune_plan::plan_next(
         agent,
@@ -145,8 +143,8 @@ fn run_planning(
 fn run_implementing(
     config: &AutotuneConfig,
     agent: &dyn Agent,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
+    store: &TaskStore,
+    state: &mut TaskState,
 ) -> Result<()> {
     let approach = state
         .current_approach
@@ -205,11 +203,7 @@ fn run_implementing(
     Ok(())
 }
 
-fn run_testing(
-    config: &AutotuneConfig,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
-) -> Result<()> {
+fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
     let approach = state
         .current_approach
         .as_ref()
@@ -239,7 +233,7 @@ fn run_testing(
     approach_mut.test_results = state_test_results;
 
     if all_pass {
-        state.current_phase = Phase::Benchmarking;
+        state.current_phase = Phase::Measuring;
         store.save_state(state)?;
     } else {
         println!(
@@ -267,23 +261,18 @@ fn run_testing(
     Ok(())
 }
 
-fn run_benchmarking(
-    config: &AutotuneConfig,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
-) -> Result<()> {
+fn run_measuring(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
     let approach = state
         .current_approach
         .as_ref()
-        .context("no current approach in Benchmarking phase")?;
+        .context("no current approach in Measuring phase")?;
     println!(
-        "[autotune] iteration {} — benchmarking '{}'",
+        "[autotune] iteration {} — measuring '{}'",
         state.current_iteration, approach.name
     );
 
-    let metrics =
-        autotune_benchmark::run_all_benchmarks(&config.benchmark, &approach.worktree_path)
-            .context("benchmarking failed")?;
+    let metrics = autotune_benchmark::run_all_measures(&config.measure, &approach.worktree_path)
+        .context("measuring failed")?;
 
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.metrics = Some(metrics);
@@ -294,8 +283,8 @@ fn run_benchmarking(
 
 fn run_scoring(
     scorer: &dyn ScoreCalculator,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
+    store: &TaskStore,
+    state: &mut TaskState,
 ) -> Result<()> {
     let approach_name = state
         .current_approach
@@ -359,11 +348,7 @@ fn run_scoring(
     Ok(())
 }
 
-fn run_integrating(
-    repo_root: &Path,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
-) -> Result<()> {
+fn run_integrating(repo_root: &Path, store: &TaskStore, state: &mut TaskState) -> Result<()> {
     let approach = state
         .current_approach
         .as_ref()
@@ -410,11 +395,7 @@ fn run_integrating(
     Ok(())
 }
 
-fn run_recorded(
-    config: &AutotuneConfig,
-    store: &ExperimentStore,
-    state: &mut ExperimentState,
-) -> Result<()> {
+fn run_recorded(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
     println!(
         "[autotune] iteration {} — recorded",
         state.current_iteration
@@ -432,7 +413,7 @@ fn run_recorded(
     Ok(())
 }
 
-fn record_crash(state: &mut ExperimentState, store: &ExperimentStore) -> Result<()> {
+fn record_crash(state: &mut TaskState, store: &TaskStore) -> Result<()> {
     let approach = state
         .current_approach
         .as_ref()
@@ -463,11 +444,7 @@ fn record_crash(state: &mut ExperimentState, store: &ExperimentStore) -> Result<
     Ok(())
 }
 
-fn record_discard(
-    state: &mut ExperimentState,
-    store: &ExperimentStore,
-    reason: &str,
-) -> Result<()> {
+fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Result<()> {
     let approach = state
         .current_approach
         .as_ref()
@@ -501,11 +478,11 @@ fn record_discard(
     Ok(())
 }
 
-fn should_stop(config: &AutotuneConfig, store: &ExperimentStore) -> Result<bool> {
+fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
     let ledger = store.load_ledger()?;
 
     // Check max_iterations
-    if let Some(ref max_iter) = config.experiment.max_iterations {
+    if let Some(ref max_iter) = config.task.max_iterations {
         match max_iter {
             autotune_config::StopValue::Finite(max) => {
                 let non_baseline_count = ledger
@@ -522,7 +499,7 @@ fn should_stop(config: &AutotuneConfig, store: &ExperimentStore) -> Result<bool>
     }
 
     // Check target_improvement
-    if let Some(target) = config.experiment.target_improvement
+    if let Some(target) = config.task.target_improvement
         && let Some(last_kept) = ledger
             .iter()
             .rev()

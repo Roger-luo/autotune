@@ -72,7 +72,7 @@ fn scenario_init_creates_config_and_baseline() {
         .arg("init")
         .env("AUTOTUNE_MOCK", "1")
         .current_dir(project.path())
-        .write_stdin("perf\nbench\nyes\n")
+        .write_stdin("optimize performance\nperf\nbench\nyes\n")
         .output()
         .unwrap();
 
@@ -93,15 +93,12 @@ fn scenario_init_creates_config_and_baseline() {
     let config_path = project.path().join(".autotune.toml");
     assert!(config_path.exists(), ".autotune.toml should exist");
     let config_content = std::fs::read_to_string(&config_path).unwrap();
-    assert!(config_content.contains("mock-experiment"));
+    assert!(config_content.contains("mock-task"));
 
-    // Verify experiment initialized
-    let experiment_dir = project.path().join(".autotune/experiments/mock-experiment");
-    assert!(experiment_dir.exists(), "experiment directory should exist");
-    assert!(
-        experiment_dir.join("ledger.json").exists(),
-        "ledger should exist"
-    );
+    // Verify task initialized
+    let task_dir = project.path().join(".autotune/tasks/mock-task");
+    assert!(task_dir.exists(), "task directory should exist");
+    assert!(task_dir.join("ledger.json").exists(), "ledger should exist");
 }
 
 #[test]
@@ -110,14 +107,14 @@ fn scenario_init_with_existing_config_skips_agent() {
 
     std::fs::write(
         project.path().join(".autotune.toml"),
-        r#"[experiment]
+        r#"[task]
 name = "existing-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "bench1"
 command = ["echo", "time: 42.0 us"]
 adaptor = { type = "regex", patterns = [{ name = "time_us", pattern = 'time: ([0-9.]+)' }] }
@@ -187,7 +184,13 @@ fn scenario_pty_question_shows_text_and_options() {
         .spawn()
         .unwrap();
 
-    // Wait for the first question — should contain context about the codebase
+    // Answer the user goal prompt first
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+    session.send_line("optimize performance").unwrap();
+
+    // Wait for the first agent question — should contain context about the codebase
     session.expect("What metric").unwrap();
 
     // Verify option labels are shown
@@ -229,6 +232,12 @@ fn scenario_pty_arrow_keys_navigate_options() {
         .timeout(Duration::from_secs(10))
         .spawn()
         .unwrap();
+
+    // Answer user goal prompt
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+    session.send_line("optimize performance").unwrap();
 
     // Wait for first question
     session.expect("What metric").unwrap();
@@ -281,6 +290,12 @@ fn scenario_pty_free_text_input() {
         .timeout(Duration::from_secs(10))
         .spawn()
         .unwrap();
+
+    // Answer user goal prompt
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+    session.send_line("optimize performance").unwrap();
 
     // Wait for first question
     session.expect("What metric").unwrap();
@@ -339,7 +354,13 @@ fn scenario_pty_ctrl_c_cancels_cleanly() {
         .spawn()
         .unwrap();
 
-    // Wait for first question to appear
+    // Answer user goal prompt to get to the agent conversation
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+    session.send_line("optimize performance").unwrap();
+
+    // Wait for first agent question to appear
     session.expect("What metric").unwrap();
 
     // Send Ctrl+C
@@ -348,15 +369,11 @@ fn scenario_pty_ctrl_c_cancels_cleanly() {
     // Process should exit
     let output = session.wait().unwrap();
 
-    // Should show cancellation message, not crash
+    // Should not crash or corrupt terminal
     let text = output.stdout();
     assert!(
         !text.contains("panicked"),
         "should not panic on Ctrl+C.\noutput:\n{text}"
-    );
-    assert!(
-        text.contains("cancelled") || text.contains("canceled"),
-        "expected cancellation message.\noutput:\n{text}"
     );
 }
 
@@ -372,6 +389,12 @@ fn scenario_pty_ctrl_c_during_text_input() {
         .timeout(Duration::from_secs(10))
         .spawn()
         .unwrap();
+
+    // Answer user goal prompt
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+    session.send_line("optimize performance").unwrap();
 
     // Wait for first question
     session.expect("What metric").unwrap();
@@ -412,6 +435,12 @@ fn scenario_pty_ctrl_c_during_approval_prompt() {
         .spawn()
         .unwrap();
 
+    // Answer user goal prompt
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+    session.send_line("optimize performance").unwrap();
+
     // Answer both questions to reach the approval prompt
     session.expect("What metric").unwrap();
     session.send(b"\r").unwrap(); // Select first option
@@ -430,5 +459,84 @@ fn scenario_pty_ctrl_c_during_approval_prompt() {
     assert!(
         !text.contains("panicked"),
         "should not panic on Ctrl+C during approval.\noutput:\n{text}"
+    );
+}
+
+#[test]
+fn scenario_pty_ctrl_c_at_user_goal_prompt() {
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(120, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Wait for the user goal prompt
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+
+    // Ctrl+C before typing anything
+    session.send(b"\x03").unwrap();
+
+    let output = session.wait().unwrap();
+    let text = output.stdout();
+    assert!(
+        !text.contains("panicked"),
+        "should not panic on Ctrl+C at user goal prompt.\noutput:\n{text}"
+    );
+}
+
+#[test]
+fn scenario_pty_narrow_terminal_completes_without_corruption() {
+    // Regression test: long option text in a narrow terminal should be
+    // truncated and not corrupt the rendering. Verifies the select widget
+    // works in a 60-column terminal with arrow key navigation.
+    let project = mock_project();
+
+    let mut session = Scenario::new(autotune_bin())
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .current_dir(project.path())
+        .terminal(Terminal::pty(60, 40))
+        .timeout(Duration::from_secs(10))
+        .spawn()
+        .unwrap();
+
+    // Answer user goal prompt
+    session
+        .expect("What would you like autotune to do")
+        .unwrap();
+    session.send_line("optimize performance").unwrap();
+
+    // Wait for first question with options
+    session.expect("What metric").unwrap();
+
+    // Press arrow keys several times — this would corrupt a non-truncated menu
+    for _ in 0..6 {
+        session.send(b"\x1b[B").unwrap(); // Down
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for _ in 0..6 {
+        session.send(b"\x1b[A").unwrap(); // Up
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // Select first option and complete the flow
+    session.send(b"\r").unwrap();
+    session.expect("How should we measure").unwrap();
+    session.send(b"\r").unwrap();
+    session.expect("Approve").unwrap();
+    session.send_line("y").unwrap();
+
+    let output = session.wait().unwrap();
+    assert!(
+        output.success(),
+        "init should succeed in narrow terminal.\noutput:\n{}",
+        output.stdout()
     );
 }

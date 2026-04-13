@@ -19,7 +19,7 @@ use autotune_score::ScoreCalculator;
 use autotune_score::script::ScriptScorer;
 use autotune_score::threshold::{ThresholdConditionDef, ThresholdScorer};
 use autotune_score::weighted_sum::{GuardrailMetricDef, PrimaryMetricDef, WeightedSumScorer};
-use autotune_state::{ExperimentState, ExperimentStore, IterationRecord, IterationStatus, Phase};
+use autotune_state::{IterationRecord, IterationStatus, Phase, TaskState, TaskStore};
 
 use cli::{Cli, Commands, ConfigCommands, ReportFormat};
 
@@ -27,24 +27,24 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { experiment } => cmd_run(experiment),
+        Commands::Run { task } => cmd_run(task),
         Commands::Resume {
-            experiment,
+            task,
             max_iterations,
             max_duration,
             target_improvement,
-        } => cmd_resume(experiment, max_iterations, max_duration, target_improvement),
-        Commands::Report { experiment, format } => cmd_report(experiment, format),
+        } => cmd_resume(task, max_iterations, max_duration, target_improvement),
+        Commands::Report { task, format } => cmd_report(task, format),
         Commands::List => cmd_list(),
         Commands::Init { name } => cmd_init(name),
-        Commands::Plan { experiment } => cmd_step(experiment, Phase::Planning),
-        Commands::Implement { experiment } => cmd_step(experiment, Phase::Implementing),
-        Commands::Test { experiment } => cmd_step(experiment, Phase::Testing),
-        Commands::Benchmark { experiment } => cmd_step(experiment, Phase::Benchmarking),
-        Commands::Record { experiment } => cmd_step(experiment, Phase::Scoring),
-        Commands::Apply { experiment } => cmd_step(experiment, Phase::Integrating),
+        Commands::Plan { task } => cmd_step(task, Phase::Planning),
+        Commands::Implement { task } => cmd_step(task, Phase::Implementing),
+        Commands::Test { task } => cmd_step(task, Phase::Testing),
+        Commands::Measure { task } => cmd_step(task, Phase::Measuring),
+        Commands::Record { task } => cmd_step(task, Phase::Scoring),
+        Commands::Apply { task } => cmd_step(task, Phase::Integrating),
         Commands::Config(sub) => cmd_config(sub),
-        Commands::Export { experiment, output } => cmd_export(experiment, output),
+        Commands::Export { task, output } => cmd_export(task, output),
     }
 }
 
@@ -89,13 +89,13 @@ fn build_agent_from_global(_global_config: &GlobalConfig) -> Box<dyn Agent> {
 fn mock_init_agent() -> autotune_mock::MockAgent {
     autotune_mock::MockAgent::builder()
         // First: ask what the user wants to optimize
-        .init_response(r#"{"type":"question","text":"I found a Rust workspace with 13 crates under crates/, a state machine architecture in the main binary, and cargo-nextest for testing. There are no existing benchmarks or criterion dependency.\n\nWhat metric would you like autotune to improve?","options":[{"key":"perf","label":"Runtime performance","description":"execution speed and throughput of the state machine"},{"key":"size","label":"Binary size","description":"size of the compiled autotune CLI executable"},{"key":"coverage","label":"Test coverage","description":"line/branch coverage measured via cargo-tarpaulin or cargo-llvm-cov"},{"key":"compile","label":"Compilation time","description":"cargo build / cargo check wall-clock time"}],"allow_free_response":true}"#)
-        // Then: ask about the benchmark command
-        .init_response(r#"{"type":"question","text":"Since there are no existing benchmarks in the project, we need to set up a measurement command.\n\nHow should we measure the target metric?","options":[{"key":"bench","label":"cargo bench","description":"add a Criterion or built-in bench harness to the project"},{"key":"custom","label":"Custom command","description":"run a shell command that prints the metric to stdout"},{"key":"script","label":"External script","description":"use a Python/shell script that extracts metrics from command output"}],"allow_free_response":true}"#)
+        .init_response(r#"{"type":"question","text":"I found a Rust workspace with 13 crates under crates/, a state machine architecture in the main binary, and cargo-nextest for testing. There are no existing measures or criterion dependency.\n\nWhat metric would you like autotune to improve?","options":[{"key":"perf","label":"Runtime performance","description":"execution speed and throughput of the state machine"},{"key":"size","label":"Binary size","description":"size of the compiled autotune CLI executable"},{"key":"coverage","label":"Test coverage","description":"line/branch coverage measured via cargo-tarpaulin or cargo-llvm-cov"},{"key":"compile","label":"Compilation time","description":"cargo build / cargo check wall-clock time"}],"allow_free_response":true}"#)
+        // Then: ask about the measure command
+        .init_response(r#"{"type":"question","text":"Since there are no existing measures in the project, we need to set up a measure command.\n\nHow should we measure the target metric?","options":[{"key":"bench","label":"cargo bench","description":"add a Criterion or built-in bench harness to the project"},{"key":"custom","label":"Custom command","description":"run a shell command that prints the metric to stdout"},{"key":"script","label":"External script","description":"use a Python/shell script that extracts metrics from command output"}],"allow_free_response":true}"#)
         // Propose config sections based on "answers"
-        .init_response(r#"{"type":"config","section":{"type":"experiment","name":"mock-experiment","description":"Mock experiment for testing","max_iterations":"5","canonical_branch":"main"}}"#)
+        .init_response(r#"{"type":"config","section":{"type":"task","name":"mock-task","description":"Mock task for testing","max_iterations":"5","canonical_branch":"main"}}"#)
         .init_response(r#"{"type":"config","section":{"type":"paths","tunable":["src/**"]}}"#)
-        .init_response(r#"{"type":"config","section":{"type":"benchmark","name":"mock-bench","command":["echo","time: 100.0 us"],"adaptor":{"type":"regex","patterns":[{"name":"time_us","pattern":"time: ([0-9.]+)"}]}}}"#)
+        .init_response(r#"{"type":"config","section":{"type":"measure","name":"mock-bench","command":["echo","time: 100.0 us"],"adaptor":{"type":"regex","patterns":[{"name":"time_us","pattern":"time: ([0-9.]+)"}]}}}"#)
         .init_response(r#"{"type":"config","section":{"type":"score","value":{"type":"weighted_sum","primary_metrics":[{"name":"time_us","direction":"Minimize"}]}}}"#)
         .build()
 }
@@ -157,26 +157,25 @@ fn build_scorer(config: &AutotuneConfig) -> Box<dyn ScoreCalculator> {
     }
 }
 
-fn cmd_run(experiment_name_override: Option<String>) -> Result<()> {
+fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let mut config = load_config(&repo_root)?;
 
-    // Apply experiment name override
-    if let Some(name) = experiment_name_override {
-        config.experiment.name = name;
+    // Apply task name override
+    if let Some(name) = task_name_override {
+        config.task.name = name;
     }
 
-    let experiment_dir = config.experiment_dir(&repo_root);
-    if experiment_dir.exists() {
+    let task_dir = config.task_dir(&repo_root);
+    if task_dir.exists() {
         bail!(
-            "experiment '{}' already exists at {}. Use 'resume' to continue it.",
-            config.experiment.name,
-            experiment_dir.display()
+            "task '{}' already exists at {}. Use 'resume' to continue it.",
+            config.task.name,
+            task_dir.display()
         );
     }
 
-    let store =
-        ExperimentStore::new(&experiment_dir).context("failed to create experiment store")?;
+    let store = TaskStore::new(&task_dir).context("failed to create task store")?;
 
     // Snapshot config
     let config_content = std::fs::read_to_string(repo_root.join(".autotune.toml"))
@@ -204,10 +203,10 @@ fn cmd_run(experiment_name_override: Option<String>) -> Result<()> {
         println!("[autotune] sanity tests passed");
     }
 
-    // Take baseline benchmarks
-    println!("[autotune] running baseline benchmarks...");
-    let baseline_metrics = autotune_benchmark::run_all_benchmarks(&config.benchmark, &repo_root)
-        .context("baseline benchmarks failed")?;
+    // Take baseline measurements
+    println!("[autotune] collecting baseline metrics...");
+    let baseline_metrics = autotune_benchmark::run_all_measures(&config.measure, &repo_root)
+        .context("baseline measures failed")?;
     println!("[autotune] baseline metrics: {:?}", baseline_metrics);
 
     // Score baseline against itself (rank=0)
@@ -229,16 +228,16 @@ fn cmd_run(experiment_name_override: Option<String>) -> Result<()> {
     // Spawn research agent
     println!("[autotune] spawning research agent...");
     let description = config
-        .experiment
+        .task
         .description
         .as_deref()
-        .unwrap_or(&config.experiment.name);
+        .unwrap_or(&config.task.name);
     let research_prompt = format!(
         "You are a research agent for the autotune performance tuning system.\n\
-         Experiment: {}\n\
+         Task: {}\n\
          Description: {}\n\
          You will be asked to analyze code and propose optimization approaches.",
-        config.experiment.name, description
+        config.task.name, description
     );
 
     let research_permissions = autotune_plan::research_agent_permissions();
@@ -260,9 +259,9 @@ fn cmd_run(experiment_name_override: Option<String>) -> Result<()> {
     );
 
     // Initialize state
-    let initial_state = ExperimentState {
-        experiment_name: config.experiment.name.clone(),
-        canonical_branch: config.experiment.canonical_branch.clone(),
+    let initial_state = TaskState {
+        task_name: config.task.name.clone(),
+        canonical_branch: config.task.canonical_branch.clone(),
         research_session_id: research_response.session_id.clone(),
         current_iteration: 1,
         current_phase: Phase::Planning,
@@ -280,7 +279,7 @@ fn cmd_run(experiment_name_override: Option<String>) -> Result<()> {
     .context("failed to set Ctrl+C handler")?;
 
     // Run state machine
-    machine::run_experiment(
+    machine::run_task(
         &config,
         agent.as_ref(),
         scorer.as_ref(),
@@ -295,36 +294,28 @@ fn cmd_run(experiment_name_override: Option<String>) -> Result<()> {
         session_id: final_state.research_session_id.clone(),
         backend: agent.backend_name().to_string(),
     };
-    println!(
-        "\n[autotune] experiment '{}' complete",
-        config.experiment.name
-    );
+    println!("\n[autotune] task '{}' complete", config.task.name);
     println!(
         "[autotune] research agent handover: {}",
         agent.handover_command(&research_session)
     );
-    println!("[autotune] results at: {}", experiment_dir.display());
+    println!("[autotune] results at: {}", task_dir.display());
 
     Ok(())
 }
 
 fn cmd_resume(
-    experiment_name: String,
+    task_name: String,
     max_iterations: Option<u64>,
     max_duration: Option<String>,
     target_improvement: Option<f64>,
 ) -> Result<()> {
     let repo_root = find_repo_root()?;
     let autotune_dir = repo_root.join(".autotune");
-    let experiment_dir = autotune_dir.join("experiments").join(&experiment_name);
+    let task_dir = autotune_dir.join("tasks").join(&task_name);
 
-    let store = ExperimentStore::open(&experiment_dir).with_context(|| {
-        format!(
-            "experiment '{}' not found at {}",
-            experiment_name,
-            experiment_dir.display()
-        )
-    })?;
+    let store = TaskStore::open(&task_dir)
+        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
 
     // Load frozen config from snapshot
     let config_snapshot = store
@@ -335,13 +326,13 @@ fn cmd_resume(
 
     // Apply transient stop-condition overrides
     if let Some(max) = max_iterations {
-        config.experiment.max_iterations = Some(autotune_config::StopValue::Finite(max));
+        config.task.max_iterations = Some(autotune_config::StopValue::Finite(max));
     }
     if let Some(duration) = max_duration {
-        config.experiment.max_duration = Some(duration);
+        config.task.max_duration = Some(duration);
     }
     if let Some(target) = target_improvement {
-        config.experiment.target_improvement = Some(target);
+        config.task.target_improvement = Some(target);
     }
 
     let agent = build_agent(&config);
@@ -360,7 +351,7 @@ fn cmd_resume(
     .context("failed to set Ctrl+C handler")?;
 
     // Run state machine
-    machine::run_experiment(
+    machine::run_task(
         &config,
         agent.as_ref(),
         scorer.as_ref(),
@@ -375,10 +366,7 @@ fn cmd_resume(
         session_id: final_state.research_session_id.clone(),
         backend: agent.backend_name().to_string(),
     };
-    println!(
-        "\n[autotune] experiment '{}' resumed and complete",
-        experiment_name
-    );
+    println!("\n[autotune] task '{}' resumed and complete", task_name);
     println!(
         "[autotune] research agent handover: {}",
         agent.handover_command(&research_session)
@@ -387,22 +375,21 @@ fn cmd_resume(
     Ok(())
 }
 
-fn cmd_report(experiment_name: Option<String>, format: ReportFormat) -> Result<()> {
+fn cmd_report(task_name: Option<String>, format: ReportFormat) -> Result<()> {
     let repo_root = find_repo_root()?;
     let autotune_dir = repo_root.join(".autotune");
 
-    let name = match experiment_name {
+    let name = match task_name {
         Some(n) => n,
         None => {
             // Try to load from config
             let config = load_config(&repo_root)?;
-            config.experiment.name
+            config.task.name
         }
     };
 
-    let experiment_dir = autotune_dir.join("experiments").join(&name);
-    let store = ExperimentStore::open(&experiment_dir)
-        .with_context(|| format!("experiment '{}' not found", name))?;
+    let task_dir = autotune_dir.join("tasks").join(&name);
+    let store = TaskStore::open(&task_dir).with_context(|| format!("task '{}' not found", name))?;
 
     let ledger = store.load_ledger().context("failed to load ledger")?;
     let state = store.load_state().context("failed to load state")?;
@@ -410,7 +397,7 @@ fn cmd_report(experiment_name: Option<String>, format: ReportFormat) -> Result<(
     match format {
         ReportFormat::Json => {
             let report = serde_json::json!({
-                "experiment": name,
+                "task": name,
                 "phase": format!("{}", state.current_phase),
                 "iteration": state.current_iteration,
                 "ledger": ledger,
@@ -418,7 +405,7 @@ fn cmd_report(experiment_name: Option<String>, format: ReportFormat) -> Result<(
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         ReportFormat::Table => {
-            println!("Experiment: {}", name);
+            println!("Task: {}", name);
             println!("Phase: {}", state.current_phase);
             println!("Iteration: {}", state.current_iteration);
             println!();
@@ -447,19 +434,18 @@ fn cmd_list() -> Result<()> {
     let repo_root = find_repo_root()?;
     let autotune_dir = repo_root.join(".autotune");
 
-    let experiments =
-        ExperimentStore::list_experiments(&autotune_dir).context("failed to list experiments")?;
+    let tasks = TaskStore::list_tasks(&autotune_dir).context("failed to list tasks")?;
 
-    if experiments.is_empty() {
-        println!("No experiments found.");
+    if tasks.is_empty() {
+        println!("No tasks found.");
         return Ok(());
     }
 
     println!("{:<30} {:<15} {:<6}", "Name", "Phase", "Iter");
     println!("{}", "-".repeat(55));
-    for name in &experiments {
-        let dir = autotune_dir.join("experiments").join(name);
-        let store = ExperimentStore::open(&dir);
+    for name in &tasks {
+        let dir = autotune_dir.join("tasks").join(name);
+        let store = TaskStore::open(&dir);
         match store.and_then(|s| s.load_state().map(|st| (s, st))) {
             Ok((_store, state)) => {
                 println!(
@@ -480,8 +466,8 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let config_path = repo_root.join(".autotune.toml");
 
-    let mut config = if config_path.exists() {
-        load_config(&repo_root)?
+    let (mut config, cached_baseline) = if config_path.exists() {
+        (load_config(&repo_root)?, None)
     } else {
         // Agent-assisted init
         println!("[autotune] no .autotune.toml found — starting agent-assisted init");
@@ -490,40 +476,52 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
 
         let agent = build_agent_from_global(&global_config);
 
-        let terminal_input = autotune_init::TerminalInput;
-        let config =
-            match autotune_init::run_init(&*agent, &global_config, &repo_root, &terminal_input) {
-                Ok(config) => config,
-                Err(autotune_init::InitError::UserAborted) => {
-                    println!("\n[autotune] init cancelled");
-                    return Ok(());
-                }
-                Err(e) => return Err(e).context("agent-assisted init failed"),
+        // Build a validator that trial-runs tasks so the agent can fix bad config
+        let validator_root = repo_root.clone();
+        let validator =
+            move |config: &AutotuneConfig| -> Result<std::collections::HashMap<String, f64>, String> {
+                validate_measure_config(&config.measure, &validator_root)
             };
 
+        let terminal_input = autotune_init::TerminalInput;
+        let result = match autotune_init::run_init(
+            &*agent,
+            &global_config,
+            &repo_root,
+            &terminal_input,
+            Some(&validator),
+        ) {
+            Ok(result) => result,
+            Err(autotune_init::InitError::UserAborted) => {
+                println!("\n[autotune] init cancelled");
+                return Ok(());
+            }
+            Err(e) => return Err(e).context("agent-assisted init failed"),
+        };
+
         // Write .autotune.toml
-        let toml_content = toml::to_string_pretty(&config).context("failed to serialize config")?;
+        let toml_content =
+            toml::to_string_pretty(&result.config).context("failed to serialize config")?;
         std::fs::write(&config_path, &toml_content).context("failed to write .autotune.toml")?;
         println!("[autotune] wrote .autotune.toml");
 
-        config
+        (result.config, result.baseline_metrics)
     };
 
     if let Some(name) = name_override {
-        config.experiment.name = name;
+        config.task.name = name;
     }
 
-    let experiment_dir = config.experiment_dir(&repo_root);
-    if experiment_dir.exists() {
+    let task_dir = config.task_dir(&repo_root);
+    if task_dir.exists() {
         bail!(
-            "experiment '{}' already exists at {}. Use 'resume' to continue it.",
-            config.experiment.name,
-            experiment_dir.display()
+            "task '{}' already exists at {}. Use 'resume' to continue it.",
+            config.task.name,
+            task_dir.display()
         );
     }
 
-    let store =
-        ExperimentStore::new(&experiment_dir).context("failed to create experiment store")?;
+    let store = TaskStore::new(&task_dir).context("failed to create task store")?;
 
     // Snapshot config
     let config_content = std::fs::read_to_string(&config_path).context("failed to read config")?;
@@ -547,11 +545,17 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
         println!("[autotune] sanity tests passed");
     }
 
-    // Take baseline benchmarks
-    println!("[autotune] running baseline benchmarks...");
-    let baseline_metrics = autotune_benchmark::run_all_benchmarks(&config.benchmark, &repo_root)
-        .context("baseline benchmarks failed")?;
-    println!("[autotune] baseline metrics: {:?}", baseline_metrics);
+    // Take baseline measurements (reuse validated metrics from init if available)
+    let baseline_metrics = if let Some(metrics) = cached_baseline {
+        println!("[autotune] using baseline metrics from config validation");
+        metrics
+    } else {
+        println!("[autotune] collecting baseline metrics...");
+        let metrics = autotune_benchmark::run_all_measures(&config.measure, &repo_root)
+            .context("baseline measures failed")?;
+        println!("[autotune] baseline metrics: {:?}", metrics);
+        metrics
+    };
 
     // Record baseline in ledger
     let baseline_record = IterationRecord {
@@ -570,14 +574,69 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
         .context("failed to record baseline")?;
 
     println!();
-    println!(
-        "[autotune] experiment '{}' initialized",
-        config.experiment.name
-    );
-    println!("[autotune] results at: {}", experiment_dir.display());
+    println!("[autotune] task '{}' initialized", config.task.name);
+    println!("[autotune] results at: {}", task_dir.display());
     println!("[autotune] run `autotune run` to start the tune loop or use step commands");
 
     Ok(())
+}
+
+/// Run each measure command and try metric extraction, returning detailed
+/// errors (including the actual command output) so the init agent can fix the config.
+fn validate_measure_config(
+    measures: &[autotune_config::MeasureConfig],
+    working_dir: &Path,
+) -> Result<std::collections::HashMap<String, f64>, String> {
+    use autotune_benchmark::MeasureOutput;
+    use std::process::{Command, Stdio};
+
+    let mut all_metrics = std::collections::HashMap::new();
+
+    for measure in measures {
+        let program = measure
+            .command
+            .first()
+            .ok_or_else(|| format!("measure '{}' has empty command", measure.name))?;
+        let args = &measure.command[1..];
+
+        let output = Command::new(program)
+            .args(args)
+            .current_dir(working_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("failed to run measure '{}': {}", measure.name, e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            return Err(format!(
+                "measure '{}' command failed (exit code {})\n\nstdout:\n{}\n\nstderr:\n{}",
+                measure.name,
+                output.status.code().unwrap_or(-1),
+                stdout,
+                stderr,
+            ));
+        }
+
+        let measure_output = MeasureOutput {
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+        };
+
+        let adaptor = autotune_benchmark::build_adaptor(&measure.adaptor, working_dir);
+        let metrics = adaptor.extract(&measure_output).map_err(|e| {
+            format!(
+                "metric extraction failed for measure '{}': {}\n\nMeasure command output (stdout):\n{}\n\nMeasure command output (stderr):\n{}",
+                measure.name, e, stdout, stderr,
+            )
+        })?;
+
+        all_metrics.extend(metrics);
+    }
+
+    Ok(all_metrics)
 }
 
 fn cmd_config(sub: ConfigCommands) -> Result<()> {
@@ -642,7 +701,7 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
 }
 
 const CONFIG_TEMPLATE: &str = r#"# Autotune global config
-# Default agent settings used across all experiments.
+# Default agent settings used across all tasks.
 # Uncomment and edit the values you want to set.
 
 # [agent]
@@ -816,18 +875,13 @@ fn unset_toml_value(doc: &mut toml_edit::DocumentMut, key: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_step(experiment_name: String, expected_phase: Phase) -> Result<()> {
+fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
     let repo_root = find_repo_root()?;
     let autotune_dir = repo_root.join(".autotune");
-    let experiment_dir = autotune_dir.join("experiments").join(&experiment_name);
+    let task_dir = autotune_dir.join("tasks").join(&task_name);
 
-    let store = ExperimentStore::open(&experiment_dir).with_context(|| {
-        format!(
-            "experiment '{}' not found at {}",
-            experiment_name,
-            experiment_dir.display()
-        )
-    })?;
+    let store = TaskStore::open(&task_dir)
+        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
 
     // Load frozen config from snapshot
     let config_snapshot = store
@@ -836,15 +890,13 @@ fn cmd_step(experiment_name: String, expected_phase: Phase) -> Result<()> {
     let config: AutotuneConfig =
         toml::from_str(&config_snapshot).context("failed to parse frozen config")?;
 
-    let mut state = store
-        .load_state()
-        .context("failed to load experiment state")?;
+    let mut state = store.load_state().context("failed to load task state")?;
 
     // Validate phase
     if state.current_phase != expected_phase {
         bail!(
-            "experiment '{}' is in phase {}, but this command requires phase {}",
-            experiment_name,
+            "task '{}' is in phase {}, but this command requires phase {}",
+            task_name,
             state.current_phase,
             expected_phase,
         );
@@ -863,25 +915,20 @@ fn cmd_step(experiment_name: String, expected_phase: Phase) -> Result<()> {
     )?;
 
     println!(
-        "[autotune] step complete — experiment '{}' is now in phase {}",
-        experiment_name, state.current_phase
+        "[autotune] step complete — task '{}' is now in phase {}",
+        task_name, state.current_phase
     );
 
     Ok(())
 }
 
-fn cmd_export(experiment_name: String, output_path: String) -> Result<()> {
+fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     let repo_root = find_repo_root()?;
     let autotune_dir = repo_root.join(".autotune");
-    let experiment_dir = autotune_dir.join("experiments").join(&experiment_name);
+    let task_dir = autotune_dir.join("tasks").join(&task_name);
 
-    let store = ExperimentStore::open(&experiment_dir).with_context(|| {
-        format!(
-            "experiment '{}' not found at {}",
-            experiment_name,
-            experiment_dir.display()
-        )
-    })?;
+    let store = TaskStore::open(&task_dir)
+        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
 
     let state = store.load_state().context("failed to load state")?;
     let ledger = store.load_ledger().context("failed to load ledger")?;
@@ -891,7 +938,7 @@ fn cmd_export(experiment_name: String, output_path: String) -> Result<()> {
     let config_toml = store.load_config_snapshot().unwrap_or_default();
 
     let export = serde_json::json!({
-        "experiment_name": experiment_name,
+        "task_name": task_name,
         "config": config_toml,
         "ledger": ledger,
         "log": log,
@@ -903,8 +950,8 @@ fn cmd_export(experiment_name: String, output_path: String) -> Result<()> {
         .with_context(|| format!("failed to write export to {}", output_path))?;
 
     println!(
-        "[autotune] exported experiment '{}' to {}",
-        experiment_name, output_path
+        "[autotune] exported task '{}' to {}",
+        task_name, output_path
     );
 
     Ok(())

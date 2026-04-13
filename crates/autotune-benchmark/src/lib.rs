@@ -1,7 +1,10 @@
 use autotune_adaptor::criterion::CriterionAdaptor;
 use autotune_adaptor::regex::{RegexAdaptor, RegexPatternConfig};
-use autotune_adaptor::{BenchmarkOutput, MetricAdaptor, Metrics};
-use autotune_config::{AdaptorConfig, BenchmarkConfig};
+use autotune_adaptor::{MetricAdaptor, Metrics};
+
+// Re-export for consumers that need to work with build_adaptor
+pub use autotune_adaptor::MeasureOutput;
+use autotune_config::{AdaptorConfig, MeasureConfig};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,51 +14,45 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
-/// Errors returned by benchmark execution and metric extraction.
+/// Errors returned by measure execution and metric extraction.
 #[derive(Debug, Error)]
-pub enum BenchmarkError {
-    #[error("benchmark '{name}' command failed (exit code {code}): {stderr}")]
+pub enum MeasureError {
+    #[error("measure '{name}' command failed (exit code {code}): {stderr}")]
     CommandFailed {
         name: String,
         code: i32,
         stderr: String,
     },
 
-    #[error("benchmark '{name}' IO error: {source}")]
+    #[error("measure '{name}' IO error: {source}")]
     Io {
         name: String,
         source: std::io::Error,
     },
 
-    #[error("benchmark '{name}' timed out after {timeout} seconds")]
+    #[error("measure '{name}' timed out after {timeout} seconds")]
     TimedOut { name: String, timeout: u64 },
 
-    #[error("metric extraction failed for benchmark '{name}': {source}")]
+    #[error("metric extraction failed for measure '{name}': {source}")]
     Extraction {
         name: String,
         source: autotune_adaptor::AdaptorError,
     },
 }
 
-/// Run a single benchmark command and extract metrics.
-pub fn run_benchmark(
-    config: &BenchmarkConfig,
-    working_dir: &Path,
-) -> Result<Metrics, BenchmarkError> {
+/// Run a single measure command and extract metrics.
+pub fn run_measure(config: &MeasureConfig, working_dir: &Path) -> Result<Metrics, MeasureError> {
     let output = run_command_with_timeout(config, working_dir)?;
 
     if !output.status.success() {
-        return Err(BenchmarkError::CommandFailed {
+        return Err(MeasureError::CommandFailed {
             name: config.name.clone(),
             code: output.status.code().unwrap_or(-1),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         });
     }
 
-    let bench_output = BenchmarkOutput {
+    let bench_output = MeasureOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     };
@@ -63,21 +60,21 @@ pub fn run_benchmark(
     let adaptor = build_adaptor(&config.adaptor, working_dir);
     adaptor
         .extract(&bench_output)
-        .map_err(|source| BenchmarkError::Extraction {
+        .map_err(|source| MeasureError::Extraction {
             name: config.name.clone(),
             source,
         })
 }
 
-/// Run all configured benchmarks and merge their metrics.
-pub fn run_all_benchmarks(
-    configs: &[BenchmarkConfig],
+/// Run all configured measures and merge their metrics.
+pub fn run_all_measures(
+    configs: &[MeasureConfig],
     working_dir: &Path,
-) -> Result<Metrics, BenchmarkError> {
+) -> Result<Metrics, MeasureError> {
     let mut all_metrics = HashMap::new();
 
     for config in configs {
-        let metrics = run_benchmark(config, working_dir)?;
+        let metrics = run_measure(config, working_dir)?;
         all_metrics.extend(metrics);
     }
 
@@ -85,7 +82,7 @@ pub fn run_all_benchmarks(
 }
 
 /// Build a MetricAdaptor from config.
-fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn MetricAdaptor> {
+pub fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn MetricAdaptor> {
     match config {
         AdaptorConfig::Regex { patterns } => {
             let configs: Vec<RegexPatternConfig> = patterns
@@ -97,9 +94,9 @@ fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn MetricAd
                 .collect();
             Box::new(RegexAdaptor::new(configs))
         }
-        AdaptorConfig::Criterion { benchmark_name } => {
+        AdaptorConfig::Criterion { measure_name } => {
             let criterion_dir = working_dir.join("target").join("criterion");
-            Box::new(CriterionAdaptor::new(&criterion_dir, benchmark_name))
+            Box::new(CriterionAdaptor::new(&criterion_dir, measure_name))
         }
         AdaptorConfig::Script { command } => Box::new(ScriptAdaptorWithWorkingDir::new(
             command.clone(),
@@ -109,9 +106,9 @@ fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn MetricAd
 }
 
 fn run_command_with_timeout(
-    config: &BenchmarkConfig,
+    config: &MeasureConfig,
     working_dir: &Path,
-) -> Result<Output, BenchmarkError> {
+) -> Result<Output, MeasureError> {
     let program = &config.command[0];
     let args = &config.command[1..];
 
@@ -123,17 +120,12 @@ fn run_command_with_timeout(
         .stderr(Stdio::piped());
 
     #[cfg(unix)]
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
-            }
-        });
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
     }
 
-    let mut child = command.spawn().map_err(|source| BenchmarkError::Io {
+    let mut child = command.spawn().map_err(|source| MeasureError::Io {
         name: config.name.clone(),
         source,
     })?;
@@ -150,15 +142,12 @@ fn run_command_with_timeout(
     }
 }
 
-fn wait_for_child(
-    config: &BenchmarkConfig,
-    child: &mut Child,
-) -> Result<ExitStatus, BenchmarkError> {
+fn wait_for_child(config: &MeasureConfig, child: &mut Child) -> Result<ExitStatus, MeasureError> {
     let deadline = Duration::from_secs(config.timeout);
     let started_at = Instant::now();
 
     loop {
-        if let Some(status) = child.try_wait().map_err(|source| BenchmarkError::Io {
+        if let Some(status) = child.try_wait().map_err(|source| MeasureError::Io {
             name: config.name.clone(),
             source,
         })? {
@@ -168,7 +157,7 @@ fn wait_for_child(
         if started_at.elapsed() >= deadline {
             terminate_child(child);
             let _ = child.wait();
-            return Err(BenchmarkError::TimedOut {
+            return Err(MeasureError::TimedOut {
                 name: config.name.clone(),
                 timeout: config.timeout,
             });
@@ -179,11 +168,11 @@ fn wait_for_child(
 }
 
 fn collect_output(
-    config: &BenchmarkConfig,
+    config: &MeasureConfig,
     status: ExitStatus,
     stdout_handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
     stderr_handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
-) -> Result<Output, BenchmarkError> {
+) -> Result<Output, MeasureError> {
     let stdout = join_reader(config, stdout_handle)?;
     let stderr = join_reader(config, stderr_handle)?;
 
@@ -218,20 +207,20 @@ where
 }
 
 fn join_reader(
-    config: &BenchmarkConfig,
+    config: &MeasureConfig,
     handle: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
-) -> Result<Vec<u8>, BenchmarkError> {
+) -> Result<Vec<u8>, MeasureError> {
     let Some(handle) = handle else {
         return Ok(Vec::new());
     };
 
     handle
         .join()
-        .map_err(|_| BenchmarkError::Io {
+        .map_err(|_| MeasureError::Io {
             name: config.name.clone(),
-            source: std::io::Error::other("benchmark output reader thread panicked"),
+            source: std::io::Error::other("measure output reader thread panicked"),
         })?
-        .map_err(|source| BenchmarkError::Io {
+        .map_err(|source| MeasureError::Io {
             name: config.name.clone(),
             source,
         })
@@ -239,15 +228,13 @@ fn join_reader(
 
 #[cfg(unix)]
 fn terminate_child(child: &mut Child) {
-    let pgid = child.id() as i32;
-    // Benchmarks run in their own process group so timeout cleanup can reach descendants.
-    unsafe {
-        if libc::killpg(pgid, libc::SIGKILL) != 0 {
-            let err = std::io::Error::last_os_error();
-            if err.raw_os_error() != Some(libc::ESRCH) {
-                let _ = child.kill();
-            }
-        }
+    use nix::sys::signal::{self, Signal};
+    use nix::unistd::Pid;
+
+    let pgid = Pid::from_raw(child.id() as i32);
+    // Measures run in their own process group so timeout cleanup can reach descendants.
+    if signal::killpg(pgid, Signal::SIGKILL).is_err() {
+        let _ = child.kill();
     }
 }
 
@@ -271,7 +258,7 @@ impl ScriptAdaptorWithWorkingDir {
 }
 
 impl MetricAdaptor for ScriptAdaptorWithWorkingDir {
-    fn extract(&self, output: &BenchmarkOutput) -> Result<Metrics, autotune_adaptor::AdaptorError> {
+    fn extract(&self, output: &MeasureOutput) -> Result<Metrics, autotune_adaptor::AdaptorError> {
         let Some((program, args)) = self.command.split_first() else {
             return Err(autotune_adaptor::AdaptorError::ScriptEmptyCommand);
         };

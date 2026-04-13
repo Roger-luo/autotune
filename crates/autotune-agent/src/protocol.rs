@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use autotune_config::{
-    AgentConfig as AgentSectionConfig, BenchmarkConfig, ExperimentConfig, PathsConfig, ScoreConfig,
+    AgentConfig as AgentSectionConfig, MeasureConfig, PathsConfig, ScoreConfig, TaskConfig,
     TestConfig,
 };
 
@@ -42,10 +42,10 @@ pub struct QuestionOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConfigSection {
-    Experiment(ExperimentConfig),
+    Task(TaskConfig),
     Paths(PathsConfig),
     Test(TestConfig),
-    Benchmark(BenchmarkConfig),
+    Measure(MeasureConfig),
     Score { value: ScoreConfig },
     Agent(AgentSectionConfig),
 }

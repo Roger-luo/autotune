@@ -2,15 +2,15 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use autotune_state::{ExperimentState, ExperimentStore, Phase};
+use autotune_state::{Phase, TaskState, TaskStore};
 
-/// Prepare an experiment for resumption by recovering from any incomplete phase.
+/// Prepare a task for resumption by recovering from any incomplete phase.
 ///
-/// Returns the state ready to be fed into `run_experiment`.
-pub fn prepare_resume(store: &ExperimentStore, repo_root: &Path) -> Result<ExperimentState> {
+/// Returns the state ready to be fed into `run_task`.
+pub fn prepare_resume(store: &TaskStore, repo_root: &Path) -> Result<TaskState> {
     let mut state = store
         .load_state()
-        .context("failed to load experiment state for resume")?;
+        .context("failed to load task state for resume")?;
 
     match state.current_phase {
         Phase::Planning => {
@@ -45,19 +45,19 @@ pub fn prepare_resume(store: &ExperimentStore, repo_root: &Path) -> Result<Exper
             println!("[resume] resuming from Testing phase — will re-run tests");
         }
 
-        Phase::Benchmarking => {
-            // Re-run benchmarks from the beginning
-            println!("[resume] resuming from Benchmarking phase — will re-run benchmarks");
+        Phase::Measuring => {
+            // Re-run measurement tasks from the beginning
+            println!("[resume] resuming from Measuring phase — will re-run tasks");
         }
 
         Phase::Scoring => {
-            // If we have metrics, re-score; otherwise go back to benchmarking
+            // If we have metrics, re-score; otherwise go back to measuring
             if let Some(ref approach) = state.current_approach {
                 if approach.metrics.is_some() {
                     println!("[resume] resuming from Scoring phase — will re-score");
                 } else {
-                    println!("[resume] no metrics in Scoring phase, going back to Benchmarking");
-                    state.current_phase = Phase::Benchmarking;
+                    println!("[resume] no metrics in Scoring phase, going back to Measuring");
+                    state.current_phase = Phase::Measuring;
                 }
             }
         }
@@ -95,7 +95,7 @@ pub fn prepare_resume(store: &ExperimentStore, repo_root: &Path) -> Result<Exper
         }
 
         Phase::Done => {
-            println!("[resume] experiment already done");
+            println!("[resume] task already done");
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::{AdaptorError, BenchmarkOutput, MetricAdaptor, Metrics};
+use crate::{AdaptorError, MeasureOutput, MetricAdaptor, Metrics};
 
 /// Configuration for a single regex pattern.
 #[derive(Debug, Clone)]
@@ -7,7 +7,7 @@ pub struct RegexPatternConfig {
     pub pattern: String,
 }
 
-/// Extracts metrics from benchmark output using regex capture groups.
+/// Extracts metrics from measure output using regex capture groups.
 pub struct RegexAdaptor {
     patterns: Vec<RegexPatternConfig>,
 }
@@ -19,7 +19,7 @@ impl RegexAdaptor {
 }
 
 impl MetricAdaptor for RegexAdaptor {
-    fn extract(&self, output: &BenchmarkOutput) -> Result<Metrics, AdaptorError> {
+    fn extract(&self, output: &MeasureOutput) -> Result<Metrics, AdaptorError> {
         let combined = format!("{}\n{}", output.stdout, output.stderr);
         let mut metrics = Metrics::new();
 

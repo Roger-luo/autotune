@@ -1,13 +1,9 @@
 use autotune_agent::claude::ClaudeAgent;
 use autotune_agent::{Agent, AgentConfig, AgentError, AgentSession, ToolPermission};
-use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-static PATH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[test]
 fn claude_backend_name() {
@@ -31,12 +27,12 @@ fn agent_config_builds() {
         prompt: "test prompt".to_string(),
         allowed_tools: vec![
             ToolPermission::Allow("Read".to_string()),
-            ToolPermission::AllowScoped("Edit".to_string(), "src/**".to_string()),
+            ToolPermission::Allow("Write".to_string()),
             ToolPermission::Deny("Bash".to_string()),
         ],
         working_directory: PathBuf::from("/tmp"),
         model: Some("opus".to_string()),
-        max_turns: Some(50),
+        max_turns: None,
     };
 
     assert_eq!(config.prompt, "test prompt");
@@ -46,10 +42,8 @@ fn agent_config_builds() {
 
 #[test]
 fn claude_send_preserves_spawn_context() {
-    let _guard = path_lock();
     let harness = FakeClaudeHarness::new(r#"{"session_id":"sess-123","result":"spawned"}"#);
-    let _path_guard = PathGuard::prepend(&harness.bin_dir);
-    let agent = ClaudeAgent::new();
+    let agent = ClaudeAgent::with_command(harness.claude_path());
     let working_directory = harness.root.join("workspace");
     fs::create_dir_all(&working_directory).unwrap();
 
@@ -100,10 +94,8 @@ fn claude_send_preserves_spawn_context() {
 
 #[test]
 fn claude_spawn_rejects_malformed_json() {
-    let _guard = path_lock();
     let harness = FakeClaudeHarness::new("not json");
-    let _path_guard = PathGuard::prepend(&harness.bin_dir);
-    let agent = ClaudeAgent::new();
+    let agent = ClaudeAgent::with_command(harness.claude_path());
 
     let error = agent.spawn(&basic_config(&harness.root)).unwrap_err();
     assert!(matches!(error, AgentError::ParseFailed { .. }));
@@ -111,10 +103,8 @@ fn claude_spawn_rejects_malformed_json() {
 
 #[test]
 fn claude_spawn_rejects_missing_session_id() {
-    let _guard = path_lock();
     let harness = FakeClaudeHarness::new(r#"{"result":"ok"}"#);
-    let _path_guard = PathGuard::prepend(&harness.bin_dir);
-    let agent = ClaudeAgent::new();
+    let agent = ClaudeAgent::with_command(harness.claude_path());
 
     let error = agent.spawn(&basic_config(&harness.root)).unwrap_err();
     assert!(matches!(error, AgentError::ParseFailed { .. }));
@@ -122,10 +112,8 @@ fn claude_spawn_rejects_missing_session_id() {
 
 #[test]
 fn claude_spawn_rejects_missing_result() {
-    let _guard = path_lock();
     let harness = FakeClaudeHarness::new(r#"{"session_id":"sess-123"}"#);
-    let _path_guard = PathGuard::prepend(&harness.bin_dir);
-    let agent = ClaudeAgent::new();
+    let agent = ClaudeAgent::with_command(harness.claude_path());
 
     let error = agent.spawn(&basic_config(&harness.root)).unwrap_err();
     assert!(matches!(error, AgentError::ParseFailed { .. }));
@@ -192,6 +180,10 @@ impl FakeClaudeHarness {
         }
     }
 
+    fn claude_path(&self) -> PathBuf {
+        self.bin_dir.join("claude")
+    }
+
     fn write_response(&self, response: &str) {
         fs::write(&self.response_file, response).unwrap();
     }
@@ -217,41 +209,4 @@ impl FakeClaudeHarness {
 
         invocations
     }
-}
-
-struct PathGuard {
-    original: Option<OsString>,
-}
-
-impl PathGuard {
-    fn prepend(dir: &Path) -> Self {
-        let original = std::env::var_os("PATH");
-        let mut paths = vec![dir.to_path_buf()];
-        if let Some(existing) = &original {
-            paths.extend(std::env::split_paths(existing));
-        }
-        let joined = std::env::join_paths(paths).unwrap();
-        unsafe {
-            std::env::set_var("PATH", joined);
-        }
-        Self { original }
-    }
-}
-
-impl Drop for PathGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.original {
-                Some(value) => std::env::set_var("PATH", value),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-    }
-}
-
-fn path_lock() -> std::sync::MutexGuard<'static, ()> {
-    PATH_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

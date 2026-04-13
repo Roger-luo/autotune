@@ -41,9 +41,9 @@ pub enum AdaptorError {
     },
 }
 
-/// Output from a benchmark command - the raw text an adaptor processes.
+/// Output from a measure command - the raw text an adaptor processes.
 #[derive(Debug, Clone)]
-pub struct BenchmarkOutput {
+pub struct MeasureOutput {
     pub stdout: String,
     pub stderr: String,
 }
@@ -51,7 +51,7 @@ pub struct BenchmarkOutput {
 /// All adaptors produce this: a map of metric name -> numeric value.
 pub type Metrics = HashMap<String, f64>;
 
-/// The adaptor trait. Takes benchmark output, produces metrics.
+/// The adaptor trait. Takes measure output, produces metrics.
 pub trait MetricAdaptor {
-    fn extract(&self, output: &BenchmarkOutput) -> Result<Metrics, AdaptorError>;
+    fn extract(&self, output: &MeasureOutput) -> Result<Metrics, AdaptorError>;
 }

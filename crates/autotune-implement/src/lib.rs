@@ -91,7 +91,7 @@ pub fn build_implementation_prompt(hypothesis: &Hypothesis, log_content: &str) -
     prompt.push('\n');
 
     prompt.push_str("## Rules\n\n");
-    prompt.push_str("- Do NOT run tests or benchmarks.\n");
+    prompt.push_str("- Do NOT run tests or measures.\n");
     prompt.push_str("- Do NOT modify test files.\n");
     prompt.push_str("- Commit your changes when done.\n");
     prompt.push_str("- Only modify the files listed above.\n");

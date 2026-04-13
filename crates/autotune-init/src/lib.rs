@@ -14,30 +14,38 @@ use autotune_agent::{
 };
 use autotune_config::global::GlobalConfig;
 use autotune_config::{
-    AutotuneConfig, BenchmarkConfig, ExperimentConfig, PathsConfig, ScoreConfig, TestConfig,
+    AutotuneConfig, MeasureConfig, PathsConfig, ScoreConfig, TaskConfig, TestConfig,
 };
 
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Maximum conversation turns before giving up.
 const MAX_TURNS: usize = 50;
 
+/// Callback to validate a proposed config before finalizing.
+///
+/// Called after the user approves the assembled config. Typically runs the
+/// measure commands and tries metric extraction. Returns extracted metrics
+/// on success, or a detailed error string (including measure output) on failure.
+pub type ConfigValidator = dyn Fn(&AutotuneConfig) -> Result<HashMap<String, f64>, String>;
+
 /// Accumulated config sections during the init conversation.
 #[derive(Clone, Default)]
 struct ConfigAccumulator {
-    experiment: Option<ExperimentConfig>,
+    task: Option<TaskConfig>,
     paths: Option<PathsConfig>,
     tests: Vec<TestConfig>,
-    benchmarks: Vec<BenchmarkConfig>,
+    measures: Vec<MeasureConfig>,
     score: Option<ScoreConfig>,
     agent: Option<autotune_config::AgentConfig>,
 }
 
 impl ConfigAccumulator {
     fn is_complete(&self) -> bool {
-        self.experiment.is_some()
+        self.task.is_some()
             && self.paths.is_some()
-            && !self.benchmarks.is_empty()
+            && !self.measures.is_empty()
             && self.score.is_some()
     }
 
@@ -53,13 +61,13 @@ impl ConfigAccumulator {
 
     fn clone_assemble(&self) -> Option<AutotuneConfig> {
         Some(AutotuneConfig {
-            experiment: self.experiment.clone()?,
+            task: self.task.clone()?,
             paths: self.paths.clone()?,
             test: self.tests.clone(),
-            benchmark: if self.benchmarks.is_empty() {
+            measure: if self.measures.is_empty() {
                 return None;
             } else {
-                self.benchmarks.clone()
+                self.measures.clone()
             },
             score: self.score.clone()?,
             agent: self.agent.clone().unwrap_or_default(),
@@ -68,14 +76,14 @@ impl ConfigAccumulator {
 
     fn missing_sections(&self) -> Vec<&'static str> {
         let mut missing = Vec::new();
-        if self.experiment.is_none() {
-            missing.push("experiment");
+        if self.task.is_none() {
+            missing.push("task");
         }
         if self.paths.is_none() {
             missing.push("paths");
         }
-        if self.benchmarks.is_empty() {
-            missing.push("benchmark (at least one)");
+        if self.measures.is_empty() {
+            missing.push("measure (at least one)");
         }
         if self.score.is_none() {
             missing.push("score");
@@ -85,19 +93,19 @@ impl ConfigAccumulator {
 
     /// Try to assemble a complete AutotuneConfig. Returns None if required sections are missing.
     fn assemble(self) -> Option<AutotuneConfig> {
-        let experiment = self.experiment?;
+        let task = self.task?;
         let paths = self.paths?;
-        if self.benchmarks.is_empty() {
+        if self.measures.is_empty() {
             return None;
         }
         let score = self.score?;
         let agent = self.agent.unwrap_or_default();
 
         Some(AutotuneConfig {
-            experiment,
+            task,
             paths,
             test: self.tests,
-            benchmark: self.benchmarks,
+            measure: self.measures,
             score,
             agent,
         })
@@ -108,9 +116,9 @@ impl ConfigAccumulator {
 /// Returns Ok(description) on success or Err(message) on validation failure.
 fn validate_section(section: &ConfigSection, acc: &ConfigAccumulator) -> Result<String, String> {
     match section {
-        ConfigSection::Experiment(exp) => {
+        ConfigSection::Task(exp) => {
             if exp.name.is_empty() {
-                return Err("experiment name must not be empty".to_string());
+                return Err("task name must not be empty".to_string());
             }
             if exp.max_iterations.is_none()
                 && exp.target_improvement.is_none()
@@ -120,7 +128,7 @@ fn validate_section(section: &ConfigSection, acc: &ConfigAccumulator) -> Result<
                     "at least one stop condition required (max_iterations, target_improvement, or max_duration)".to_string(),
                 );
             }
-            Ok(format!("experiment '{}' accepted", exp.name))
+            Ok(format!("task '{}' accepted", exp.name))
         }
         ConfigSection::Paths(paths) => {
             if paths.tunable.is_empty() {
@@ -142,31 +150,28 @@ fn validate_section(section: &ConfigSection, acc: &ConfigAccumulator) -> Result<
             }
             Ok(format!("test '{}' accepted", test.name))
         }
-        ConfigSection::Benchmark(bench) => {
-            if bench.command.is_empty() {
-                return Err(format!("benchmark '{}' has empty command", bench.name));
+        ConfigSection::Measure(measure) => {
+            if measure.command.is_empty() {
+                return Err(format!("measure '{}' has empty command", measure.name));
             }
-            // Check metric name uniqueness against accumulated benchmarks
-            let new_names = adaptor_metric_names(&bench.adaptor);
+            // Check metric name uniqueness against accumulated measures
+            let new_names = adaptor_metric_names(&measure.adaptor);
             let existing_names: std::collections::HashSet<String> = acc
-                .benchmarks
+                .measures
                 .iter()
                 .flat_map(|b| adaptor_metric_names(&b.adaptor))
                 .collect();
             for name in &new_names {
                 if existing_names.contains(name) {
-                    return Err(format!(
-                        "duplicate metric name '{}' across benchmarks",
-                        name
-                    ));
+                    return Err(format!("duplicate metric name '{}' across measures", name));
                 }
             }
-            Ok(format!("benchmark '{}' accepted", bench.name))
+            Ok(format!("measure '{}' accepted", measure.name))
         }
         ConfigSection::Score { value } => {
-            // Validate that referenced metrics exist in accumulated benchmarks
+            // Validate that referenced metrics exist in accumulated measures
             let metric_names: std::collections::HashSet<String> = acc
-                .benchmarks
+                .measures
                 .iter()
                 .flat_map(|b| adaptor_metric_names(&b.adaptor))
                 .collect();
@@ -179,7 +184,7 @@ fn validate_section(section: &ConfigSection, acc: &ConfigAccumulator) -> Result<
                     for pm in primary_metrics {
                         if !metric_names.contains(&pm.name) {
                             return Err(format!(
-                                "primary metric '{}' not produced by any benchmark adaptor",
+                                "primary metric '{}' not produced by any measure adaptor",
                                 pm.name
                             ));
                         }
@@ -187,7 +192,7 @@ fn validate_section(section: &ConfigSection, acc: &ConfigAccumulator) -> Result<
                     for gm in guardrail_metrics {
                         if !metric_names.contains(&gm.name) {
                             return Err(format!(
-                                "guardrail metric '{}' not produced by any benchmark adaptor",
+                                "guardrail metric '{}' not produced by any measure adaptor",
                                 gm.name
                             ));
                         }
@@ -197,7 +202,7 @@ fn validate_section(section: &ConfigSection, acc: &ConfigAccumulator) -> Result<
                     for c in conditions {
                         if !metric_names.contains(&c.metric) {
                             return Err(format!(
-                                "threshold metric '{}' not produced by any benchmark adaptor",
+                                "threshold metric '{}' not produced by any measure adaptor",
                                 c.metric
                             ));
                         }
@@ -250,35 +255,58 @@ fn map_io(e: std::io::Error) -> InitError {
     }
 }
 
+/// Print a concise trial failure summary. Only the first non-empty line of the
+/// error (the core issue) is shown; the full output is sent to the agent separately.
+fn print_trial_failure(err: &str) {
+    let summary = err
+        .lines()
+        .find(|l| !l.is_empty())
+        .unwrap_or("unknown error");
+    println!("[autotune] trial run failed: {}", summary);
+}
+
+/// Result of a successful init: the config and optional baseline metrics
+/// (present when a config validator was provided and succeeded).
+pub struct InitResult {
+    pub config: AutotuneConfig,
+    pub baseline_metrics: Option<HashMap<String, f64>>,
+}
+
 /// Run the agent-assisted init conversation.
 ///
 /// `user_input` handles all user interaction (text prompts, option selection, approval).
 /// Use `TerminalInput` for real CLI sessions or `MockInput` for testing.
+///
+/// If `config_validator` is provided, it is called after user approval to validate the
+/// config (e.g., by running a trial measure). On failure, the user is asked whether
+/// to let the agent revise the config.
 pub fn run_init(
     agent: &dyn Agent,
     global_config: &GlobalConfig,
     repo_root: &Path,
     user_input: &dyn UserInput,
-) -> Result<AutotuneConfig, InitError> {
+    config_validator: Option<&ConfigValidator>,
+) -> Result<InitResult, InitError> {
     // Install a Ctrl+C handler that restores terminal state before exiting.
     // This ensures raw mode is disabled and the cursor is visible even if
     // the process is killed mid-interaction.
     let _ = ctrlc::set_handler(move || {
         restore_terminal();
         // Re-raise SIGINT with default handler to actually terminate
-        #[cfg(unix)]
-        {
-            unsafe {
-                libc::signal(libc::SIGINT, libc::SIG_DFL);
-                libc::raise(libc::SIGINT);
-            }
-        }
-        #[cfg(not(unix))]
+        // Exit cleanly with status 130 (128 + SIGINT). Using process::exit
+        // instead of re-raising SIGINT ensures restore_terminal() completes
+        // and stderr is flushed before the process terminates.
         std::process::exit(130);
     });
 
     // Run the init loop, ensuring terminal state is restored on any exit path.
-    let result = run_init_inner(agent, global_config, repo_root, user_input);
+    let result = run_init_inner(
+        agent,
+        global_config,
+        repo_root,
+        user_input,
+        config_validator,
+    );
 
     // Always restore terminal state
     restore_terminal();
@@ -305,7 +333,8 @@ fn run_init_inner(
     global_config: &GlobalConfig,
     repo_root: &Path,
     user_input: &dyn UserInput,
-) -> Result<AutotuneConfig, InitError> {
+    config_validator: Option<&ConfigValidator>,
+) -> Result<InitResult, InitError> {
     let prompt = build_init_prompt(repo_root);
 
     let model = global_config
@@ -336,7 +365,7 @@ fn run_init_inner(
         max_turns,
     };
 
-    fn make_event_handler(default_status: &str) -> EventHandler {
+    fn make_event_handler(default_status: &str, quiet: bool) -> EventHandler {
         use std::sync::Mutex;
         // Track whether we've seen any text (to know if tool line needs clearing)
         let has_tool_line = std::sync::Arc::new(Mutex::new(false));
@@ -357,6 +386,9 @@ fn run_init_inner(
             let mut has_tl = htl.lock().unwrap();
             match event {
                 AgentEvent::Text(text) => {
+                    if quiet {
+                        return;
+                    }
                     // Skip JSON protocol payloads — those are parsed separately
                     let trimmed = text.trim();
                     if trimmed.starts_with('{') || trimmed.starts_with("```") {
@@ -416,9 +448,24 @@ fn run_init_inner(
         let _ = std::io::Write::flush(&mut std::io::stderr());
     }
 
+    // Ask the user what they want to do before spawning the agent
+    let user_goal = user_input
+        .prompt_text("What would you like autotune to do in this project?")
+        .map_err(map_io)?;
+
+    // Append the user's goal to the agent prompt so it has context from the start
+    let agent_config = {
+        let mut cfg = agent_config;
+        cfg.prompt.push_str(&format!(
+            "\n\n## User Goal\nThe user said: \"{}\"\n\nUse this to guide your exploration and questions. You already know what the user wants — explore the codebase to figure out how best to measure it, then propose config sections.",
+            user_goal
+        ));
+        cfg
+    };
+
     // Spawn the init agent with event streaming
-    let config_with_events = AgentConfigWithEvents::new(agent_config.clone())
-        .with_event_handler(make_event_handler("exploring project..."));
+    let config_with_events = AgentConfigWithEvents::new(agent_config)
+        .with_event_handler(make_event_handler("exploring project...", false));
     let response = agent.spawn_streaming(config_with_events)?;
     clear_status();
 
@@ -430,6 +477,7 @@ fn run_init_inner(
     let mut acc = ConfigAccumulator::default();
     let mut last_response_text = response.text;
     let mut turns = 0;
+    let mut validated_metrics: Option<HashMap<String, f64>> = None;
 
     loop {
         if turns >= MAX_TURNS {
@@ -448,7 +496,7 @@ fn run_init_inner(
             Err(_) => {
                 // Retry once with corrective prompt (counts as an extra turn)
                 turns += 1;
-                let handler = make_event_handler("retrying...");
+                let handler = make_event_handler("retrying...", false);
                 let retry = agent.send_streaming(
                     &session,
                     "Your previous response was not valid JSON. Please respond with exactly one JSON object matching the protocol schema.",
@@ -490,9 +538,9 @@ fn run_init_inner(
                     Ok(msg) => {
                         // Accumulate the valid section
                         match section {
-                            ConfigSection::Experiment(exp) => {
+                            ConfigSection::Task(exp) => {
                                 println!("[autotune] {}", msg);
-                                acc.experiment = Some(exp);
+                                acc.task = Some(exp);
                             }
                             ConfigSection::Paths(paths) => {
                                 println!("[autotune] {}", msg);
@@ -502,9 +550,9 @@ fn run_init_inner(
                                 println!("[autotune] {}", msg);
                                 acc.tests.push(test);
                             }
-                            ConfigSection::Benchmark(bench) => {
+                            ConfigSection::Measure(measure) => {
                                 println!("[autotune] {}", msg);
-                                acc.benchmarks.push(bench);
+                                acc.measures.push(measure);
                             }
                             ConfigSection::Score { value } => {
                                 println!("[autotune] {}", msg);
@@ -524,26 +572,66 @@ fn run_init_inner(
                                 "All required sections collected. Proposed config:\n\n{preview}"
                             );
                             let approved = user_input.prompt_approve(&display).map_err(map_io)?;
-                            if approved {
+                            if !approved {
+                                // User rejected — ask for feedback
+                                let feedback = user_input
+                                    .prompt_text("What would you like to change?")
+                                    .map_err(map_io)?;
+                                let handler = make_event_handler("revising config...", false);
+                                let response = agent.send_streaming(
+                                    &session,
+                                    &format!(
+                                        "User rejected the config with feedback: {}. Please revise the relevant sections.",
+                                        feedback
+                                    ),
+                                    Some(&handler),
+                                )?;
+                                clear_status();
+                                last_response_text = response.text;
+                                continue;
+                            }
+
+                            // Config approved — run validation if a validator is provided
+                            if let Some(validator) = config_validator {
+                                let trial_config = acc.clone_assemble().expect(
+                                    "is_complete() was true but clone_assemble() returned None",
+                                );
+                                println!("[autotune] validating config — running trial run...");
+                                match validator(&trial_config) {
+                                    Ok(metrics) => {
+                                        println!("[autotune] baseline metrics: {:?}", metrics);
+                                        validated_metrics = Some(metrics);
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        print_trial_failure(&err);
+                                        let retry = user_input
+                                            .prompt_approve("Let the agent revise the config?")
+                                            .map_err(map_io)?;
+                                        if !retry {
+                                            return Err(InitError::UserAborted);
+                                        }
+                                        // Clear measure and score so agent can re-propose them
+                                        acc.measures.clear();
+                                        acc.score = None;
+                                        let handler =
+                                            make_event_handler("revising config...", true);
+                                        let response = agent.send_streaming(
+                                            &session,
+                                            &format!(
+                                                "The trial measure validation failed. The measure command ran but metric extraction did not work. Here is the error:\n\n{}\n\nPlease re-propose the measure and score sections with corrected config. You need to re-propose both sections.",
+                                                err
+                                            ),
+                                            Some(&handler),
+                                        )?;
+                                        clear_status();
+                                        last_response_text = response.text;
+                                        continue;
+                                    }
+                                }
+                            } else {
                                 break;
                             }
-                            // User rejected — ask for feedback
-                            let feedback = user_input
-                                .prompt_text("What would you like to change?")
-                                .map_err(map_io)?;
-                            // Send feedback to agent to revise
-                            let handler = make_event_handler("revising config...");
-                            let response = agent.send_streaming(
-                                &session,
-                                &format!(
-                                    "User rejected the config with feedback: {}. Please revise the relevant sections.",
-                                    feedback
-                                ),
-                                Some(&handler),
-                            )?;
-                            clear_status();
-                            last_response_text = response.text;
-                            continue;
                         }
 
                         let missing = acc.missing_sections();
@@ -560,7 +648,7 @@ fn run_init_inner(
             }
         };
 
-        let handler = make_event_handler("thinking...");
+        let handler = make_event_handler("thinking...", false);
         let response = agent.send_streaming(&session, &reply, Some(&handler))?;
         clear_status();
         last_response_text = response.text;
@@ -576,5 +664,8 @@ fn run_init_inner(
         .validate()
         .map_err(|e| InitError::Config { source: e })?;
 
-    Ok(config)
+    Ok(InitResult {
+        config,
+        baseline_metrics: validated_metrics,
+    })
 }

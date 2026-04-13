@@ -5,14 +5,14 @@ use std::io::Write;
 fn roundtrip_serialize_deserialize() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "roundtrip"
 max_iterations = "10"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
@@ -25,8 +25,8 @@ primary_metrics = [{ name = "m", direction = "Maximize" }]
     let config = AutotuneConfig::load(f.path()).unwrap();
     let serialized = toml::to_string_pretty(&config).unwrap();
     let reparsed: AutotuneConfig = toml::from_str(&serialized).unwrap();
-    assert_eq!(reparsed.experiment.name, "roundtrip");
-    assert_eq!(reparsed.benchmark.len(), 1);
+    assert_eq!(reparsed.task.name, "roundtrip");
+    assert_eq!(reparsed.measure.len(), 1);
 }
 
 fn write_config(content: &str) -> tempfile::NamedTempFile {
@@ -39,14 +39,14 @@ fn write_config(content: &str) -> tempfile::NamedTempFile {
 fn parse_minimal_valid_config() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "10"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "bench1"
 command = ["cargo", "bench"]
 adaptor = { type = "regex", patterns = [
@@ -59,8 +59,8 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
 "#,
     );
     let config = AutotuneConfig::load(f.path()).unwrap();
-    assert_eq!(config.experiment.name, "test-exp");
-    assert_eq!(config.benchmark.len(), 1);
+    assert_eq!(config.task.name, "test-exp");
+    assert_eq!(config.measure.len(), 1);
     assert_eq!(config.test.len(), 0);
 }
 
@@ -68,14 +68,14 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
 fn parse_infinite_iterations() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "inf"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
@@ -87,7 +87,7 @@ primary_metrics = [{ name = "m", direction = "Maximize" }]
     );
     let config = AutotuneConfig::load(f.path()).unwrap();
     assert!(matches!(
-        config.experiment.max_iterations,
+        config.task.max_iterations,
         Some(autotune_config::StopValue::Infinite)
     ));
 }
@@ -96,13 +96,13 @@ primary_metrics = [{ name = "m", direction = "Maximize" }]
 fn error_no_stop_condition() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
@@ -125,17 +125,17 @@ fn error_missing_file() {
 }
 
 #[test]
-fn error_empty_benchmark_command() {
+fn error_empty_task_command() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = []
 adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
@@ -153,19 +153,19 @@ primary_metrics = [{ name = "m", direction = "Maximize" }]
 fn error_duplicate_metric_names() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b1"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "time", pattern = "x" }] }
 
-[[benchmark]]
+[[measure]]
 name = "b2"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "time", pattern = "y" }] }
@@ -183,14 +183,14 @@ primary_metrics = [{ name = "time", direction = "Minimize" }]
 fn error_score_references_unknown_metric() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "time", pattern = "x" }] }
@@ -208,14 +208,14 @@ primary_metrics = [{ name = "nonexistent", direction = "Minimize" }]
 fn parse_script_score() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "script", command = ["python", "extract.py"] }
@@ -236,7 +236,7 @@ command = ["python", "judge.py"]
 fn parse_multiple_tests() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
@@ -251,7 +251,7 @@ command = ["cargo", "test"]
 name = "python"
 command = ["pytest"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
@@ -271,14 +271,14 @@ primary_metrics = [{ name = "m", direction = "Maximize" }]
 fn parse_agent_config() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
@@ -308,20 +308,20 @@ max_turns = 50
 }
 
 #[test]
-fn parse_criterion_benchmark_with_mean_metric() {
+fn parse_criterion_task_with_mean_metric() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "criterion-bench"
 command = ["cargo", "bench"]
-adaptor = { type = "criterion", benchmark_name = "my_bench" }
+adaptor = { type = "criterion", measure_name = "my_bench" }
 
 [score]
 type = "weighted_sum"
@@ -329,24 +329,24 @@ primary_metrics = [{ name = "mean", direction = "Minimize" }]
 "#,
     );
     let config = AutotuneConfig::load(f.path()).unwrap();
-    assert_eq!(config.benchmark.len(), 1);
+    assert_eq!(config.measure.len(), 1);
 }
 
 #[test]
-fn error_criterion_benchmark_with_unsupported_metric() {
+fn error_criterion_task_with_unsupported_metric() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "criterion-bench"
 command = ["cargo", "bench"]
-adaptor = { type = "criterion", benchmark_name = "my_bench" }
+adaptor = { type = "criterion", measure_name = "my_bench" }
 
 [score]
 type = "weighted_sum"
@@ -362,14 +362,14 @@ primary_metrics = [{ name = "variance", direction = "Minimize" }]
 fn error_empty_script_adaptor_command() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
 [paths]
 tunable = ["src/**"]
 
-[[benchmark]]
+[[measure]]
 name = "script-bench"
 command = ["echo"]
 adaptor = { type = "script", command = [] }
@@ -388,7 +388,7 @@ command = ["python", "judge.py"]
 fn error_invalid_denied_glob() {
     let f = write_config(
         r#"
-[experiment]
+[task]
 name = "test-exp"
 max_iterations = "5"
 
@@ -396,7 +396,7 @@ max_iterations = "5"
 tunable = ["src/**"]
 denied = ["["]
 
-[[benchmark]]
+[[measure]]
 name = "b"
 command = ["echo"]
 adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }

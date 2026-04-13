@@ -3,14 +3,14 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
-use autotune_benchmark::run_all_benchmarks;
+use autotune_benchmark::run_all_measures;
 use autotune_config::AutotuneConfig;
 use autotune_mock::{ImplBehavior, MockAgent};
 use autotune_score::weighted_sum::{
     Direction, GuardrailMetricDef, PrimaryMetricDef, WeightedSumScorer,
 };
 use autotune_score::{ScoreCalculator, ScoreInput};
-use autotune_state::{ExperimentState, ExperimentStore, IterationRecord, IterationStatus, Phase};
+use autotune_state::{IterationRecord, IterationStatus, Phase, TaskState, TaskStore};
 use chrono::Utc;
 
 // ---------------------------------------------------------------------------
@@ -62,9 +62,9 @@ fn init_temp_repo(dir: &Path) {
 fn write_config_with_iterations(dir: &Path, max_iterations: &str) {
     let config = format!(
         r#"
-[experiment]
-name = "test-experiment"
-description = "integration test experiment"
+[task]
+name = "test-task"
+description = "integration test task"
 canonical_branch = "main"
 max_iterations = "{max_iterations}"
 
@@ -76,7 +76,7 @@ name = "always-pass"
 command = ["true"]
 timeout = 10
 
-[[benchmark]]
+[[measure]]
 name = "echo-bench"
 command = ["sh", "-c", "echo 'metric_value: 42.0'"]
 timeout = 10
@@ -97,8 +97,8 @@ fn write_config(dir: &Path) {
 
 fn write_config_with_failing_test(dir: &Path) {
     let config = r#"
-[experiment]
-name = "test-experiment"
+[task]
+name = "test-task"
 description = "integration test with failing test"
 canonical_branch = "main"
 max_iterations = "1"
@@ -111,7 +111,7 @@ name = "always-fail"
 command = ["sh", "-c", "echo 'test failed' >&2; exit 1"]
 timeout = 10
 
-[[benchmark]]
+[[measure]]
 name = "echo-bench"
 command = ["sh", "-c", "echo 'metric_value: 42.0'"]
 timeout = 10
@@ -140,11 +140,11 @@ fn build_test_scorer() -> WeightedSumScorer {
     )
 }
 
-/// Set up a full experiment ready for run_experiment():
+/// Set up a full task ready for run_task():
 /// baseline recorded, state at Planning, research session mocked.
-fn setup_experiment(repo_root: &Path, config: &AutotuneConfig) -> ExperimentStore {
-    let experiment_dir = config.experiment_dir(repo_root);
-    let store = ExperimentStore::new(&experiment_dir).expect("failed to create store");
+fn setup_task(repo_root: &Path, config: &AutotuneConfig) -> TaskStore {
+    let task_dir = config.task_dir(repo_root);
+    let store = TaskStore::new(&task_dir).expect("failed to create store");
 
     let baseline = IterationRecord {
         iteration: 0,
@@ -159,8 +159,8 @@ fn setup_experiment(repo_root: &Path, config: &AutotuneConfig) -> ExperimentStor
     };
     store.append_ledger(&baseline).unwrap();
 
-    let initial_state = ExperimentState {
-        experiment_name: config.experiment.name.clone(),
+    let initial_state = TaskState {
+        task_name: config.task.name.clone(),
         canonical_branch: "main".to_string(),
         research_session_id: "mock-session-001".to_string(),
         current_iteration: 1,
@@ -184,17 +184,17 @@ fn test_single_iteration_kept() {
     init_temp_repo(repo_root);
     write_config(repo_root);
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
-    // Benchmark produces metric_value=42.0, baseline=100.0, Minimize → improvement → keep
+    // Task produces metric_value=42.0, baseline=100.0, Minimize → improvement → keep
     let agent = MockAgent::builder()
         .hypothesis("opt-1", "reduce allocations", &["src/lib.rs"])
         .build();
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_experiment(&config, &agent, &scorer, repo_root, &store, &shutdown)
-        .expect("run_experiment failed");
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+        .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     assert_eq!(ledger.len(), 2);
@@ -226,9 +226,9 @@ fn test_multiple_iterations_with_discards() {
     init_temp_repo(repo_root);
     write_config_with_iterations(repo_root, "3");
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
-    // 3 unique hypotheses. The benchmark always returns metric_value=42.0.
+    // 3 unique hypotheses. The measure always returns metric_value=42.0.
     // Iteration 1: 42 vs baseline 100 → improvement → kept
     // Iteration 2: 42 vs best 42 → no improvement → discarded
     // Iteration 3: 42 vs best 42 → no improvement → discarded
@@ -240,8 +240,8 @@ fn test_multiple_iterations_with_discards() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_experiment(&config, &agent, &scorer, repo_root, &store, &shutdown)
-        .expect("run_experiment failed");
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+        .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     // baseline + 3 iterations = 4 entries
@@ -277,7 +277,7 @@ fn test_no_commit_records_crash_and_continues() {
     init_temp_repo(repo_root);
     write_config_with_iterations(repo_root, "2");
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
     // First hypothesis: agent does NOT commit (crash). Second: commits normally.
     // We use a stateful closure to commit on the second call only.
@@ -310,8 +310,8 @@ fn test_no_commit_records_crash_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_experiment(&config, &agent, &scorer, repo_root, &store, &shutdown)
-        .expect("run_experiment failed");
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+        .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     // baseline + crash + kept = 3 entries, but max_iterations=2 counts non-baseline iterations
@@ -345,7 +345,7 @@ fn test_failure_discards_and_continues() {
     init_temp_repo(repo_root);
     write_config_with_failing_test(repo_root);
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
     let agent = MockAgent::builder()
         .hypothesis("doomed", "this will fail tests", &["src/lib.rs"])
@@ -353,8 +353,8 @@ fn test_failure_discards_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_experiment(&config, &agent, &scorer, repo_root, &store, &shutdown)
-        .expect("run_experiment failed");
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+        .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     assert_eq!(ledger.len(), 2, "expected baseline + 1 discarded");
@@ -378,14 +378,14 @@ fn test_failure_discards_and_continues() {
 // ===========================================================================
 
 #[test]
-fn test_shutdown_flag_stops_experiment() {
+fn test_shutdown_flag_stops_task() {
     let tmp = tempfile::tempdir().unwrap();
     let repo_root = tmp.path();
 
     init_temp_repo(repo_root);
     write_config_with_iterations(repo_root, "inf");
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
     let agent = MockAgent::builder()
         .hypothesis("opt-1", "optimize", &["src/lib.rs"])
@@ -395,8 +395,8 @@ fn test_shutdown_flag_stops_experiment() {
     // Set shutdown before running — should exit immediately
     let shutdown = AtomicBool::new(true);
 
-    autotune::machine::run_experiment(&config, &agent, &scorer, repo_root, &store, &shutdown)
-        .expect("run_experiment failed");
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+        .expect("run_task failed");
 
     // No iterations should have run
     let ledger = store.load_ledger().unwrap();
@@ -422,7 +422,7 @@ fn test_state_persisted_at_each_phase() {
     init_temp_repo(repo_root);
     write_config(repo_root);
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
     let agent = MockAgent::builder()
         .hypothesis("opt-1", "optimize", &["src/lib.rs"])
@@ -456,12 +456,12 @@ fn test_state_persisted_at_each_phase() {
             .is_some()
     );
 
-    // Testing → Benchmarking
+    // Testing → Measuring
     autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
         .unwrap();
-    assert_eq!(state.current_phase, Phase::Benchmarking);
+    assert_eq!(state.current_phase, Phase::Measuring);
 
-    // Benchmarking → Scoring
+    // Measuring → Scoring
     autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
         .unwrap();
     assert_eq!(state.current_phase, Phase::Scoring);
@@ -475,7 +475,7 @@ fn test_state_persisted_at_each_phase() {
             .is_some()
     );
 
-    // Scoring → Integrating (benchmark=42.0 < baseline=100.0, kept)
+    // Scoring → Integrating (measure=42.0 < baseline=100.0, kept)
     autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
         .unwrap();
     assert_eq!(state.current_phase, Phase::Integrating);
@@ -503,7 +503,7 @@ fn test_iteration_artifacts_saved() {
     init_temp_repo(repo_root);
     write_config(repo_root);
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
     let agent = MockAgent::builder()
         .hypothesis("opt-1", "optimize", &["src/lib.rs"])
@@ -511,8 +511,7 @@ fn test_iteration_artifacts_saved() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_experiment(&config, &agent, &scorer, repo_root, &store, &shutdown)
-        .unwrap();
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown).unwrap();
 
     // metrics.json should exist for the kept iteration
     let metrics_path = store.iteration_dir(1, "opt-1").join("metrics.json");
@@ -538,7 +537,7 @@ fn test_mock_agent_tracks_calls() {
     init_temp_repo(repo_root);
     write_config_with_iterations(repo_root, "2");
     let config = load_test_config(repo_root);
-    let store = setup_experiment(repo_root, &config);
+    let store = setup_task(repo_root, &config);
 
     let agent = MockAgent::builder()
         .hypothesis("opt-1", "optimize 1", &["src/lib.rs"])
@@ -547,8 +546,7 @@ fn test_mock_agent_tracks_calls() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_experiment(&config, &agent, &scorer, repo_root, &store, &shutdown)
-        .unwrap();
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown).unwrap();
 
     // 2 planning calls (send). Only 1st iteration produces an improvement (42 vs 100),
     // 2nd compares 42 vs best=42 → discard → no implementation spawn for discarded.
@@ -560,10 +558,10 @@ fn test_mock_agent_tracks_calls() {
         "should have 2 implementation spawns"
     );
 
-    // Last send message should contain experiment context
+    // Last send message should contain task context
     let last_msg = agent.last_send_message().unwrap();
     assert!(
-        last_msg.contains("integration test experiment"),
+        last_msg.contains("integration test task"),
         "planning prompt should include description"
     );
 
@@ -644,21 +642,21 @@ fn test_scorer_guardrail_blocks_improvement() {
 }
 
 // ===========================================================================
-// Test: config + benchmark end-to-end
+// Test: config + measure end-to-end
 // ===========================================================================
 
 #[test]
-fn test_config_loads_and_benchmarks_run() {
+fn test_config_loads_and_measures_run() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
 
     write_config(dir);
     let config = load_test_config(dir);
 
-    assert_eq!(config.experiment.name, "test-experiment");
-    assert_eq!(config.benchmark.len(), 1);
+    assert_eq!(config.task.name, "test-task");
+    assert_eq!(config.measure.len(), 1);
 
-    let metrics = run_all_benchmarks(&config.benchmark, dir).expect("benchmarks failed");
+    let metrics = run_all_measures(&config.measure, dir).expect("measures failed");
     assert!(metrics.contains_key("metric_value"));
     assert!((metrics["metric_value"] - 42.0).abs() < f64::EPSILON);
 }

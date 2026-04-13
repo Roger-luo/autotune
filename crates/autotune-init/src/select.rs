@@ -145,6 +145,22 @@ fn clear_lines(out: &mut impl Write, n: usize) -> io::Result<()> {
     out.flush()
 }
 
+/// Get the terminal width, defaulting to 80 if unavailable.
+fn term_width() -> usize {
+    terminal::size().map(|(w, _)| w as usize).unwrap_or(80)
+}
+
+/// Truncate a string to fit within `max` columns, appending "…" if truncated.
+fn truncate_to_width(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    format!("{}…", &s[..max - 1])
+}
+
 /// Render the menu. After this, cursor is either:
 /// - past the last `\r\n` (normal mode)
 /// - at the end of the text input line (text mode, no trailing newline)
@@ -156,14 +172,19 @@ fn render(
     text_mode: bool,
     text_buf: &str,
 ) -> io::Result<()> {
+    let width = term_width();
+    // "  > " prefix is 4 chars
+    let max_item_width = width.saturating_sub(4);
+
     for (i, item) in items.iter().enumerate() {
         let marker = if i == cursor_pos && !text_mode {
             ">"
         } else {
             " "
         };
+        let display = truncate_to_width(item, max_item_width);
         queue!(out, terminal::Clear(ClearType::CurrentLine))?;
-        write!(out, "  {marker} {item}\r\n")?;
+        write!(out, "  {marker} {display}\r\n")?;
     }
 
     if has_free_text {

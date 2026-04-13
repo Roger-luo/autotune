@@ -1,5 +1,5 @@
 use autotune_agent::{Agent, AgentError, AgentResponse, AgentSession, ToolPermission};
-use autotune_state::{ExperimentStore, IterationRecord, StateError};
+use autotune_state::{IterationRecord, StateError, TaskStore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -39,14 +39,14 @@ pub fn research_agent_permissions() -> Vec<ToolPermission> {
 
 /// Builds the planning prompt for the research agent.
 pub fn build_planning_prompt(
-    store: &ExperimentStore,
+    store: &TaskStore,
     last_iteration: Option<&IterationRecord>,
     iteration_count: usize,
     description: &str,
 ) -> Result<String, PlanError> {
     let mut prompt = String::new();
 
-    prompt.push_str("# Experiment Goal\n\n");
+    prompt.push_str("# Task Goal\n\n");
     prompt.push_str(description);
     prompt.push_str("\n\n");
 
@@ -95,7 +95,7 @@ pub fn build_planning_prompt(
 
     prompt.push_str("# Instructions\n\n");
     prompt.push_str(
-        "Based on the experiment goal and history above, propose the next approach to try.\n\
+        "Based on the task goal and history above, propose the next approach to try.\n\
          Output your response as a JSON object with the following fields:\n\
          - \"approach\": a short name for the approach\n\
          - \"hypothesis\": what you expect this approach to achieve and why\n\
@@ -146,7 +146,7 @@ pub fn parse_hypothesis(response: &str) -> Result<Hypothesis, PlanError> {
 pub fn plan_next(
     agent: &dyn Agent,
     session: &AgentSession,
-    store: &ExperimentStore,
+    store: &TaskStore,
     last_iteration: Option<&IterationRecord>,
     iteration_count: usize,
     description: &str,

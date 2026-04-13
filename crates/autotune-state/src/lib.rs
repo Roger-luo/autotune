@@ -13,7 +13,7 @@ pub type Metrics = HashMap<String, f64>;
 
 #[derive(Debug, Error)]
 pub enum StateError {
-    #[error("experiment not found: {name}")]
+    #[error("task not found: {name}")]
     NotFound { name: String },
 
     #[error("invalid phase transition: {from} → {to}")]
@@ -38,7 +38,7 @@ pub enum Phase {
     Planning,
     Implementing,
     Testing,
-    Benchmarking,
+    Measuring,
     Scoring,
     Integrating,
     Recorded,
@@ -51,7 +51,7 @@ impl std::fmt::Display for Phase {
             Phase::Planning => write!(f, "Planning"),
             Phase::Implementing => write!(f, "Implementing"),
             Phase::Testing => write!(f, "Testing"),
-            Phase::Benchmarking => write!(f, "Benchmarking"),
+            Phase::Measuring => write!(f, "Measuring"),
             Phase::Scoring => write!(f, "Scoring"),
             Phase::Integrating => write!(f, "Integrating"),
             Phase::Recorded => write!(f, "Recorded"),
@@ -61,8 +61,8 @@ impl std::fmt::Display for Phase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ExperimentState {
-    pub experiment_name: String,
+pub struct TaskState {
+    pub task_name: String,
     pub canonical_branch: String,
     pub research_session_id: String,
     pub current_iteration: usize,
@@ -116,27 +116,27 @@ pub enum IterationStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExperimentStore {
+pub struct TaskStore {
     root: PathBuf,
 }
 
-impl ExperimentStore {
-    pub fn new(experiment_dir: &Path) -> Result<Self, StateError> {
-        create_dir_all_and_sync_parent(experiment_dir)?;
-        create_dir_all_and_sync_parent(&experiment_dir.join("iterations"))?;
+impl TaskStore {
+    pub fn new(task_dir: &Path) -> Result<Self, StateError> {
+        create_dir_all_and_sync_parent(task_dir)?;
+        create_dir_all_and_sync_parent(&task_dir.join("iterations"))?;
         Ok(Self {
-            root: experiment_dir.to_path_buf(),
+            root: task_dir.to_path_buf(),
         })
     }
 
-    pub fn open(experiment_dir: &Path) -> Result<Self, StateError> {
-        if !experiment_dir.exists() {
+    pub fn open(task_dir: &Path) -> Result<Self, StateError> {
+        if !task_dir.exists() {
             return Err(StateError::NotFound {
-                name: experiment_dir.display().to_string(),
+                name: task_dir.display().to_string(),
             });
         }
         Ok(Self {
-            root: experiment_dir.to_path_buf(),
+            root: task_dir.to_path_buf(),
         })
     }
 
@@ -148,11 +148,11 @@ impl ExperimentStore {
         self.root.join("state.json")
     }
 
-    pub fn save_state(&self, state: &ExperimentState) -> Result<(), StateError> {
+    pub fn save_state(&self, state: &TaskState) -> Result<(), StateError> {
         atomic_write(&self.state_path(), &serde_json::to_string_pretty(state)?)
     }
 
-    pub fn load_state(&self) -> Result<ExperimentState, StateError> {
+    pub fn load_state(&self) -> Result<TaskState, StateError> {
         let content = fs::read_to_string(self.state_path())?;
         Ok(serde_json::from_str(&content)?)
     }
@@ -248,14 +248,14 @@ impl ExperimentStore {
         atomic_write(&dir.join("test_output.txt"), output)
     }
 
-    pub fn list_experiments(autotune_dir: &Path) -> Result<Vec<String>, StateError> {
-        let experiments_dir = autotune_dir.join("experiments");
-        if !experiments_dir.exists() {
+    pub fn list_tasks(autotune_dir: &Path) -> Result<Vec<String>, StateError> {
+        let tasks_dir = autotune_dir.join("tasks");
+        if !tasks_dir.exists() {
             return Ok(Vec::new());
         }
 
         let mut names = Vec::new();
-        for entry in fs::read_dir(experiments_dir)? {
+        for entry in fs::read_dir(tasks_dir)? {
             let entry = entry?;
             if entry.file_type()?.is_dir()
                 && let Some(name) = entry.file_name().to_str()
@@ -344,11 +344,7 @@ mod tests {
     #[test]
     fn create_dir_all_and_sync_parent_syncs_each_new_component_in_order() {
         let temp = tempfile::tempdir().unwrap();
-        let nested = temp
-            .path()
-            .join("experiments")
-            .join("demo")
-            .join("iterations");
+        let nested = temp.path().join("tasks").join("demo").join("iterations");
 
         create_dir_all_and_sync_parent(&nested).unwrap();
 
@@ -356,8 +352,8 @@ mod tests {
             take_synced_directories(),
             vec![
                 temp.path().to_path_buf(),
-                temp.path().join("experiments"),
-                temp.path().join("experiments").join("demo"),
+                temp.path().join("tasks"),
+                temp.path().join("tasks").join("demo"),
             ]
         );
     }

@@ -18,9 +18,9 @@ fn prompt_contains_protocol_schema() {
 #[test]
 fn prompt_contains_section_descriptions() {
     let prompt = build_init_prompt(Path::new("/tmp"));
-    assert!(prompt.contains("experiment (required)"));
+    assert!(prompt.contains("task (required)"));
     assert!(prompt.contains("paths (required)"));
-    assert!(prompt.contains("benchmark (required"));
+    assert!(prompt.contains("measure (required"));
     assert!(prompt.contains("score (required)"));
     assert!(prompt.contains("test (optional"));
     assert!(prompt.contains("agent (optional)"));

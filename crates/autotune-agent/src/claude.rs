@@ -30,6 +30,14 @@ impl ClaudeAgent {
         }
     }
 
+    /// Create with a custom binary path (useful for testing with mock binaries).
+    pub fn with_command(command: PathBuf) -> Self {
+        Self {
+            command,
+            sessions: Mutex::new(HashMap::new()),
+        }
+    }
+
     fn build_args(config: &AgentConfig, session_id: Option<&str>) -> Vec<String> {
         let mut args = vec![
             "-p".to_string(),
