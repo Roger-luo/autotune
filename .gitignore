@@ -1,6 +1,14 @@
 /target
 .worktrees/
 
+# Local autotune run state (per-task config + iteration artifacts)
+/.autotune.toml
+/.autotune/
+
+# Agent worktree scratch
+/.claude/worktrees/
+/.agents/worktrees/
+
 # Managed by ion
 .agents/skills/ion-cli
 .claude/skills/ion-cli
