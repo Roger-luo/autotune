@@ -30,6 +30,10 @@ pub fn interactive_select(items: &[String], has_free_text: bool) -> io::Result<S
     // Track the mode of the *previous* render for correct cursor repositioning
     let mut prev_text_mode = false;
 
+    // RAII safety net: if we panic or `?`-early-return between here and the
+    // end-of-function disable_raw_mode(), this guard still restores terminal
+    // modes on drop.
+    let _terminal_guard = autotune_agent::terminal::Guard::new();
     terminal::enable_raw_mode()?;
     let mut out = io::stderr();
     execute!(out, cursor::Hide)?;

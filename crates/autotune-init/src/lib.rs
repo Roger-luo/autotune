@@ -7,7 +7,7 @@ pub use error::InitError;
 pub use input::{MockInput, TerminalInput, UserInput};
 pub use prompt::build_init_prompt;
 
-use autotune_agent::protocol::{AgentRequest, ConfigSection, parse_agent_request};
+use autotune_agent::protocol::{AgentFragment, parse_agent_response};
 use autotune_agent::{
     Agent, AgentConfig, AgentConfigWithEvents, AgentEvent, AgentSession, EventHandler,
     ToolPermission,
@@ -112,112 +112,122 @@ impl ConfigAccumulator {
     }
 }
 
-/// Validate a single config section against the accumulator's current state.
-/// Returns Ok(description) on success or Err(message) on validation failure.
-fn validate_section(section: &ConfigSection, acc: &ConfigAccumulator) -> Result<String, String> {
-    match section {
-        ConfigSection::Task(exp) => {
-            if exp.name.is_empty() {
-                return Err("task name must not be empty".to_string());
+/// Validation outcome for a single fragment.
+enum FragmentOutcome {
+    Accepted(String),
+    Rejected(String),
+}
+
+fn validate_task(task: &TaskConfig) -> FragmentOutcome {
+    if task.name.is_empty() {
+        return FragmentOutcome::Rejected("task name must not be empty".to_string());
+    }
+    if task.max_iterations.is_none()
+        && task.target_improvement.is_none()
+        && task.max_duration.is_none()
+        && task.target_metric.is_empty()
+    {
+        return FragmentOutcome::Rejected(
+            "at least one stop condition required (max_iterations, target_improvement, max_duration, or target_metric)".to_string(),
+        );
+    }
+    FragmentOutcome::Accepted(format!("task '{}' accepted", task.name))
+}
+
+fn validate_paths(paths: &PathsConfig) -> FragmentOutcome {
+    if paths.tunable.is_empty() {
+        return FragmentOutcome::Rejected(
+            "paths.tunable must contain at least one glob pattern".to_string(),
+        );
+    }
+    for pattern in &paths.tunable {
+        if let Err(e) = globset::Glob::new(pattern) {
+            return FragmentOutcome::Rejected(format!("invalid tunable glob '{pattern}': {e}"));
+        }
+    }
+    for pattern in &paths.denied {
+        if let Err(e) = globset::Glob::new(pattern) {
+            return FragmentOutcome::Rejected(format!("invalid denied glob '{pattern}': {e}"));
+        }
+    }
+    FragmentOutcome::Accepted("paths accepted".to_string())
+}
+
+fn validate_test(test: &TestConfig) -> FragmentOutcome {
+    if test.command.is_empty() {
+        return FragmentOutcome::Rejected(format!("test '{}' has empty command", test.name));
+    }
+    FragmentOutcome::Accepted(format!("test '{}' accepted", test.name))
+}
+
+fn validate_measure(measure: &MeasureConfig, acc: &ConfigAccumulator) -> FragmentOutcome {
+    if measure.command.is_empty() {
+        return FragmentOutcome::Rejected(format!("measure '{}' has empty command", measure.name));
+    }
+    let new_names = adaptor_metric_names(&measure.adaptor);
+    let existing_names: std::collections::HashSet<String> = acc
+        .measures
+        .iter()
+        .flat_map(|b| adaptor_metric_names(&b.adaptor))
+        .collect();
+    for name in &new_names {
+        if existing_names.contains(name) {
+            return FragmentOutcome::Rejected(format!(
+                "duplicate metric name '{name}' across measures"
+            ));
+        }
+    }
+    FragmentOutcome::Accepted(format!("measure '{}' accepted", measure.name))
+}
+
+fn validate_score(score: &ScoreConfig, acc: &ConfigAccumulator) -> FragmentOutcome {
+    let metric_names: std::collections::HashSet<String> = acc
+        .measures
+        .iter()
+        .flat_map(|b| adaptor_metric_names(&b.adaptor))
+        .collect();
+
+    match score {
+        ScoreConfig::WeightedSum {
+            primary_metrics,
+            guardrail_metrics,
+        } => {
+            for pm in primary_metrics {
+                if !metric_names.contains(&pm.name) {
+                    return FragmentOutcome::Rejected(format!(
+                        "primary metric '{}' not produced by any measure adaptor",
+                        pm.name
+                    ));
+                }
             }
-            if exp.max_iterations.is_none()
-                && exp.target_improvement.is_none()
-                && exp.max_duration.is_none()
-            {
-                return Err(
-                    "at least one stop condition required (max_iterations, target_improvement, or max_duration)".to_string(),
+            for gm in guardrail_metrics {
+                if !metric_names.contains(&gm.name) {
+                    return FragmentOutcome::Rejected(format!(
+                        "guardrail metric '{}' not produced by any measure adaptor",
+                        gm.name
+                    ));
+                }
+            }
+        }
+        ScoreConfig::Threshold { conditions } => {
+            for c in conditions {
+                if !metric_names.contains(&c.metric) {
+                    return FragmentOutcome::Rejected(format!(
+                        "threshold metric '{}' not produced by any measure adaptor",
+                        c.metric
+                    ));
+                }
+            }
+        }
+        ScoreConfig::Script { command } | ScoreConfig::Command { command } => {
+            if command.is_empty() {
+                return FragmentOutcome::Rejected(
+                    "score script/command must not be empty".to_string(),
                 );
             }
-            Ok(format!("task '{}' accepted", exp.name))
         }
-        ConfigSection::Paths(paths) => {
-            if paths.tunable.is_empty() {
-                return Err("paths.tunable must contain at least one glob pattern".to_string());
-            }
-            for pattern in &paths.tunable {
-                globset::Glob::new(pattern)
-                    .map_err(|e| format!("invalid tunable glob '{}': {}", pattern, e))?;
-            }
-            for pattern in &paths.denied {
-                globset::Glob::new(pattern)
-                    .map_err(|e| format!("invalid denied glob '{}': {}", pattern, e))?;
-            }
-            Ok("paths accepted".to_string())
-        }
-        ConfigSection::Test(test) => {
-            if test.command.is_empty() {
-                return Err(format!("test '{}' has empty command", test.name));
-            }
-            Ok(format!("test '{}' accepted", test.name))
-        }
-        ConfigSection::Measure(measure) => {
-            if measure.command.is_empty() {
-                return Err(format!("measure '{}' has empty command", measure.name));
-            }
-            // Check metric name uniqueness against accumulated measures
-            let new_names = adaptor_metric_names(&measure.adaptor);
-            let existing_names: std::collections::HashSet<String> = acc
-                .measures
-                .iter()
-                .flat_map(|b| adaptor_metric_names(&b.adaptor))
-                .collect();
-            for name in &new_names {
-                if existing_names.contains(name) {
-                    return Err(format!("duplicate metric name '{}' across measures", name));
-                }
-            }
-            Ok(format!("measure '{}' accepted", measure.name))
-        }
-        ConfigSection::Score { value } => {
-            // Validate that referenced metrics exist in accumulated measures
-            let metric_names: std::collections::HashSet<String> = acc
-                .measures
-                .iter()
-                .flat_map(|b| adaptor_metric_names(&b.adaptor))
-                .collect();
-
-            match value {
-                ScoreConfig::WeightedSum {
-                    primary_metrics,
-                    guardrail_metrics,
-                } => {
-                    for pm in primary_metrics {
-                        if !metric_names.contains(&pm.name) {
-                            return Err(format!(
-                                "primary metric '{}' not produced by any measure adaptor",
-                                pm.name
-                            ));
-                        }
-                    }
-                    for gm in guardrail_metrics {
-                        if !metric_names.contains(&gm.name) {
-                            return Err(format!(
-                                "guardrail metric '{}' not produced by any measure adaptor",
-                                gm.name
-                            ));
-                        }
-                    }
-                }
-                ScoreConfig::Threshold { conditions } => {
-                    for c in conditions {
-                        if !metric_names.contains(&c.metric) {
-                            return Err(format!(
-                                "threshold metric '{}' not produced by any measure adaptor",
-                                c.metric
-                            ));
-                        }
-                    }
-                }
-                ScoreConfig::Script { command } | ScoreConfig::Command { command } => {
-                    if command.is_empty() {
-                        return Err("score script/command must not be empty".to_string());
-                    }
-                }
-            }
-            Ok("score accepted".to_string())
-        }
-        ConfigSection::Agent(_) => Ok("agent config accepted".to_string()),
     }
+    FragmentOutcome::Accepted("score accepted".to_string())
 }
 
 /// Extract metric names that an adaptor config will produce.
@@ -314,7 +324,10 @@ pub fn run_init(
     result
 }
 
-/// Restore terminal to a clean state: disable raw mode, show cursor, reset attributes.
+/// Restore terminal to a clean state: disable raw mode, show cursor, reset
+/// attributes, plus the full CSI sequence set handled by
+/// `autotune_agent::terminal::restore` (kitty keyboard protocol, bracketed
+/// paste, mouse reporting).
 fn restore_terminal() {
     use crossterm::{cursor, execute, terminal};
     let _ = terminal::disable_raw_mode();
@@ -326,6 +339,9 @@ fn restore_terminal() {
     // Clear any ephemeral status line
     eprint!("\r\x1b[2K");
     let _ = std::io::Write::flush(&mut std::io::stderr());
+    // Emit the common CSI mode-restore sequences (kitty keyboard protocol,
+    // bracketed paste, mouse reporting) handled by autotune-agent.
+    autotune_agent::terminal::restore();
 }
 
 fn run_init_inner(
@@ -369,6 +385,9 @@ fn run_init_inner(
         use std::sync::Mutex;
         // Track whether we've seen any text (to know if tool line needs clearing)
         let has_tool_line = std::sync::Arc::new(Mutex::new(false));
+        // Once we see the start of an XML tag (protocol payload), suppress
+        // all remaining text deltas for this response.
+        let xml_started = std::sync::Arc::new(Mutex::new(false));
 
         // Print the default status as an ephemeral tool-style line
         {
@@ -380,6 +399,7 @@ fn run_init_inner(
         *has_tool_line.lock().unwrap() = true;
 
         let htl = has_tool_line.clone();
+        let xs = xml_started.clone();
         Box::new(move |event| {
             use std::io::Write;
             let mut stderr = std::io::stderr();
@@ -389,9 +409,15 @@ fn run_init_inner(
                     if quiet {
                         return;
                     }
-                    // Skip JSON protocol payloads — those are parsed separately
-                    let trimmed = text.trim();
-                    if trimmed.starts_with('{') || trimmed.starts_with("```") {
+                    let mut xml_flag = xs.lock().unwrap();
+                    // Once we've entered the XML region, suppress everything
+                    if *xml_flag {
+                        return;
+                    }
+                    // Detect start of XML protocol payload (any known top-level tag)
+                    let trimmed = text.trim_start();
+                    if is_protocol_tag_start(trimmed) {
+                        *xml_flag = true;
                         return;
                     }
                     // Clear the tool/status line if present, then print text
@@ -427,6 +453,22 @@ fn run_init_inner(
                 }
             }
         })
+    }
+
+    /// Detect whether a streaming text chunk begins a known protocol tag.
+    /// This is intentionally narrow to avoid hiding legitimate prose.
+    fn is_protocol_tag_start(s: &str) -> bool {
+        const TAGS: &[&str] = &[
+            "<message",
+            "<question",
+            "<task",
+            "<paths",
+            "<test",
+            "<measure",
+            "<score",
+            "<agent",
+        ];
+        TAGS.iter().any(|t| s.starts_with(t))
     }
 
     fn describe_tool_use(tool: &str, input: &str) -> String {
@@ -479,7 +521,7 @@ fn run_init_inner(
     let mut turns = 0;
     let mut validated_metrics: Option<HashMap<String, f64>> = None;
 
-    loop {
+    'outer: loop {
         if turns >= MAX_TURNS {
             return Err(InitError::ProtocolFailure {
                 message: format!(
@@ -491,25 +533,27 @@ fn run_init_inner(
         }
         turns += 1;
 
-        let request = match parse_agent_request(&last_response_text) {
-            Ok(req) => req,
-            Err(_) => {
-                // Retry once with corrective prompt (counts as an extra turn)
+        // Parse all fragments emitted by the agent this turn.
+        let fragments = match parse_agent_response(&last_response_text) {
+            Ok(fs) => fs,
+            Err(e) => {
+                // Malformed XML — retry once with a corrective prompt.
                 turns += 1;
                 let handler = make_event_handler("retrying...", false);
                 let retry = agent.send_streaming(
                     &session,
-                    "Your previous response was not valid JSON. Please respond with exactly one JSON object matching the protocol schema.",
+                    &format!(
+                        "Your previous response contained malformed XML: {e}. Please respond with well-formed XML tags matching the protocol schema. Use <![CDATA[...]]> for free-text fields containing `<` or `&`.",
+                    ),
                     Some(&handler),
                 )?;
                 clear_status();
-                match parse_agent_request(&retry.text) {
-                    Ok(req) => req,
+                match parse_agent_response(&retry.text) {
+                    Ok(fs) => fs,
                     Err(e) => {
                         return Err(InitError::ProtocolFailure {
                             message: format!(
-                                "agent failed to produce valid JSON after retry: {}",
-                                e
+                                "agent failed to produce well-formed XML after retry: {e}"
                             ),
                         });
                     }
@@ -517,134 +561,205 @@ fn run_init_inner(
             }
         };
 
-        let reply = match request {
-            AgentRequest::Message { text } => user_input.prompt_text(&text).map_err(map_io)?,
-            AgentRequest::Question {
-                text,
-                options,
-                allow_free_response,
-            } => {
-                if options.is_empty() {
-                    // No options — treat as free-form text prompt
-                    user_input.prompt_text(&text).map_err(map_io)?
-                } else {
-                    user_input
-                        .prompt_select(&text, &options, allow_free_response)
-                        .map_err(map_io)?
+        if fragments.is_empty() {
+            // No tags at all — remind the agent and retry.
+            let reply = "No XML tags found in your response. Please emit one or more top-level tags (<message>, <question>, <task>, <paths>, <test>, <measure>, <score>, <agent>) as described in the protocol.";
+            let handler = make_event_handler("thinking...", false);
+            let response = agent.send_streaming(&session, reply, Some(&handler))?;
+            clear_status();
+            last_response_text = response.text;
+            continue;
+        }
+
+        // Process fragments in order. Config fragments accumulate; Message and
+        // Question fragments pause for user input, which becomes the reply.
+        let mut ack_lines: Vec<String> = Vec::new();
+        let mut rejection_lines: Vec<String> = Vec::new();
+        let mut user_reply: Option<String> = None;
+
+        for frag in fragments {
+            // If the agent mixes interactive fragments with config, we handle
+            // the user interaction inline and keep accumulating configs.
+            match frag {
+                AgentFragment::Message(text) => {
+                    let input = loop {
+                        let s = user_input.prompt_text(&text).map_err(map_io)?;
+                        if !s.is_empty() {
+                            break s;
+                        }
+                        // Empty enter → re-prompt like a REPL
+                    };
+                    user_reply = Some(input);
+                }
+                AgentFragment::Question {
+                    text,
+                    options,
+                    allow_free_response,
+                } => {
+                    let input = if options.is_empty() {
+                        loop {
+                            let s = user_input.prompt_text(&text).map_err(map_io)?;
+                            if !s.is_empty() {
+                                break s;
+                            }
+                        }
+                    } else {
+                        user_input
+                            .prompt_select(&text, &options, allow_free_response)
+                            .map_err(map_io)?
+                    };
+                    user_reply = Some(input);
+                }
+                AgentFragment::Task(task) => match validate_task(&task) {
+                    FragmentOutcome::Accepted(msg) => {
+                        println!("[autotune] {msg}");
+                        ack_lines.push(msg);
+                        acc.task = Some(task);
+                    }
+                    FragmentOutcome::Rejected(err) => {
+                        println!("[autotune] validation error: {err}");
+                        rejection_lines.push(format!("task: {err}"));
+                    }
+                },
+                AgentFragment::Paths(paths) => match validate_paths(&paths) {
+                    FragmentOutcome::Accepted(msg) => {
+                        println!("[autotune] {msg}");
+                        ack_lines.push(msg);
+                        acc.paths = Some(paths);
+                    }
+                    FragmentOutcome::Rejected(err) => {
+                        println!("[autotune] validation error: {err}");
+                        rejection_lines.push(format!("paths: {err}"));
+                    }
+                },
+                AgentFragment::Test(test) => match validate_test(&test) {
+                    FragmentOutcome::Accepted(msg) => {
+                        println!("[autotune] {msg}");
+                        ack_lines.push(msg);
+                        acc.tests.push(test);
+                    }
+                    FragmentOutcome::Rejected(err) => {
+                        println!("[autotune] validation error: {err}");
+                        rejection_lines.push(format!("test: {err}"));
+                    }
+                },
+                AgentFragment::Measure(measure) => match validate_measure(&measure, &acc) {
+                    FragmentOutcome::Accepted(msg) => {
+                        println!("[autotune] {msg}");
+                        ack_lines.push(msg);
+                        acc.measures.push(measure);
+                    }
+                    FragmentOutcome::Rejected(err) => {
+                        println!("[autotune] validation error: {err}");
+                        rejection_lines.push(format!("measure: {err}"));
+                    }
+                },
+                AgentFragment::Score(score) => match validate_score(&score, &acc) {
+                    FragmentOutcome::Accepted(msg) => {
+                        println!("[autotune] {msg}");
+                        ack_lines.push(msg);
+                        acc.score = Some(score);
+                    }
+                    FragmentOutcome::Rejected(err) => {
+                        println!("[autotune] validation error: {err}");
+                        rejection_lines.push(format!("score: {err}"));
+                    }
+                },
+                AgentFragment::Agent(agent_cfg) => {
+                    let msg = "agent config accepted".to_string();
+                    println!("[autotune] {msg}");
+                    ack_lines.push(msg);
+                    acc.agent = Some(agent_cfg);
                 }
             }
-            AgentRequest::Config { section } => {
-                match validate_section(&section, &acc) {
-                    Ok(msg) => {
-                        // Accumulate the valid section
-                        match section {
-                            ConfigSection::Task(exp) => {
-                                println!("[autotune] {}", msg);
-                                acc.task = Some(exp);
-                            }
-                            ConfigSection::Paths(paths) => {
-                                println!("[autotune] {}", msg);
-                                acc.paths = Some(paths);
-                            }
-                            ConfigSection::Test(test) => {
-                                println!("[autotune] {}", msg);
-                                acc.tests.push(test);
-                            }
-                            ConfigSection::Measure(measure) => {
-                                println!("[autotune] {}", msg);
-                                acc.measures.push(measure);
-                            }
-                            ConfigSection::Score { value } => {
-                                println!("[autotune] {}", msg);
-                                acc.score = Some(value);
-                            }
-                            ConfigSection::Agent(agent_cfg) => {
-                                println!("[autotune] {}", msg);
-                                acc.agent = Some(agent_cfg);
-                            }
-                        }
+        }
 
-                        // Check if we have everything
-                        if acc.is_complete() {
-                            // Show assembled config for final approval
-                            let preview = acc.assemble_preview();
-                            let display = format!(
-                                "All required sections collected. Proposed config:\n\n{preview}"
-                            );
-                            let approved = user_input.prompt_approve(&display).map_err(map_io)?;
-                            if !approved {
-                                // User rejected — ask for feedback
-                                let feedback = user_input
-                                    .prompt_text("What would you like to change?")
-                                    .map_err(map_io)?;
-                                let handler = make_event_handler("revising config...", false);
-                                let response = agent.send_streaming(
-                                    &session,
-                                    &format!(
-                                        "User rejected the config with feedback: {}. Please revise the relevant sections.",
-                                        feedback
-                                    ),
-                                    Some(&handler),
-                                )?;
-                                clear_status();
-                                last_response_text = response.text;
-                                continue;
-                            }
+        // If the config is now complete, move to approval/validation flow.
+        if acc.is_complete() && rejection_lines.is_empty() {
+            let preview = acc.assemble_preview();
+            let display = format!("All required sections collected. Proposed config:\n\n{preview}");
+            let approved = user_input.prompt_approve(&display).map_err(map_io)?;
+            if !approved {
+                let feedback = user_input
+                    .prompt_text("What would you like to change?")
+                    .map_err(map_io)?;
+                let handler = make_event_handler("revising config...", false);
+                let response = agent.send_streaming(
+                    &session,
+                    &format!(
+                        "User rejected the config with feedback: {feedback}. Please revise the relevant sections by re-emitting the affected XML tags."
+                    ),
+                    Some(&handler),
+                )?;
+                clear_status();
+                last_response_text = response.text;
+                continue;
+            }
 
-                            // Config approved — run validation if a validator is provided
-                            if let Some(validator) = config_validator {
-                                let trial_config = acc.clone_assemble().expect(
-                                    "is_complete() was true but clone_assemble() returned None",
-                                );
-                                println!("[autotune] validating config — running trial run...");
-                                match validator(&trial_config) {
-                                    Ok(metrics) => {
-                                        println!("[autotune] baseline metrics: {:?}", metrics);
-                                        validated_metrics = Some(metrics);
-                                        break;
-                                    }
-                                    Err(err) => {
-                                        print_trial_failure(&err);
-                                        let retry = user_input
-                                            .prompt_approve("Let the agent revise the config?")
-                                            .map_err(map_io)?;
-                                        if !retry {
-                                            return Err(InitError::UserAborted);
-                                        }
-                                        // Clear measure and score so agent can re-propose them
-                                        acc.measures.clear();
-                                        acc.score = None;
-                                        let handler =
-                                            make_event_handler("revising config...", true);
-                                        let response = agent.send_streaming(
-                                            &session,
-                                            &format!(
-                                                "The trial measure validation failed. The measure command ran but metric extraction did not work. Here is the error:\n\n{}\n\nPlease re-propose the measure and score sections with corrected config. You need to re-propose both sections.",
-                                                err
-                                            ),
-                                            Some(&handler),
-                                        )?;
-                                        clear_status();
-                                        last_response_text = response.text;
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-
-                        let missing = acc.missing_sections();
-                        format!(
-                            "Section accepted. Still needed: {}. Please propose the next section.",
-                            missing.join(", ")
-                        )
+            if let Some(validator) = config_validator {
+                let trial_config = acc
+                    .clone_assemble()
+                    .expect("is_complete() was true but clone_assemble() returned None");
+                println!("[autotune] validating config — running trial run...");
+                match validator(&trial_config) {
+                    Ok(metrics) => {
+                        println!("[autotune] baseline metrics: {metrics:?}");
+                        validated_metrics = Some(metrics);
+                        break 'outer;
                     }
                     Err(err) => {
-                        println!("[autotune] validation error: {}", err);
-                        format!("Validation error: {}. Please correct and re-propose.", err)
+                        print_trial_failure(&err);
+                        let retry = user_input
+                            .prompt_approve("Let the agent revise the config?")
+                            .map_err(map_io)?;
+                        if !retry {
+                            return Err(InitError::UserAborted);
+                        }
+                        acc.measures.clear();
+                        acc.score = None;
+                        let handler = make_event_handler("revising config...", true);
+                        let response = agent.send_streaming(
+                            &session,
+                            &format!(
+                                "The trial measure validation failed. The measure command ran but metric extraction did not work. Here is the error:\n\n{err}\n\nPlease re-emit <measure> and <score> fragments with corrected values."
+                            ),
+                            Some(&handler),
+                        )?;
+                        clear_status();
+                        last_response_text = response.text;
+                        continue;
                     }
                 }
+            } else {
+                break 'outer;
+            }
+        }
+
+        // Build the reply for the next turn.
+        // Priority: rejection errors > user reply > ack + what's still missing.
+        let reply = if !rejection_lines.is_empty() {
+            let still_missing = acc.missing_sections().join(", ");
+            format!(
+                "Validation errors:\n{}\nPlease correct and re-emit the affected fragments. Still needed: {}.",
+                rejection_lines
+                    .iter()
+                    .map(|l| format!("- {l}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                still_missing
+            )
+        } else if let Some(r) = user_reply {
+            r
+        } else {
+            let missing = acc.missing_sections();
+            if missing.is_empty() {
+                "All required sections accepted. If you want to add optional sections (test, agent), emit them now; otherwise await the preview.".to_string()
+            } else {
+                format!(
+                    "Accepted: {}. Still needed: {}. Please emit the next fragment(s).",
+                    ack_lines.join(", "),
+                    missing.join(", ")
+                )
             }
         };
 

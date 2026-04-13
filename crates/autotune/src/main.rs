@@ -24,6 +24,9 @@ use autotune_state::{IterationRecord, IterationStatus, Phase, TaskState, TaskSto
 use cli::{Cli, Commands, ConfigCommands, ReportFormat};
 
 fn main() -> Result<()> {
+    // Layer 2: catch panics that escape a Guard (e.g., panics in non-guarded code paths).
+    autotune_agent::terminal::install_panic_hook();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -168,11 +171,22 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     let task_dir = config.task_dir(&repo_root);
     if task_dir.exists() {
-        bail!(
-            "task '{}' already exists at {}. Use 'resume' to continue it.",
-            config.task.name,
-            task_dir.display()
-        );
+        // If state.json is missing, this is leftover from a failed previous
+        // run (crashed before state was persisted). Clean it up and retry.
+        if !task_dir.join("state.json").exists() {
+            println!(
+                "[autotune] removing incomplete task state at {}",
+                task_dir.display()
+            );
+            std::fs::remove_dir_all(&task_dir)
+                .context("failed to remove incomplete task directory")?;
+        } else {
+            bail!(
+                "task '{}' already exists at {}. Use 'resume' to continue it.",
+                config.task.name,
+                task_dir.display()
+            );
+        }
     }
 
     let store = TaskStore::new(&task_dir).context("failed to create task store")?;
@@ -205,9 +219,17 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Take baseline measurements
     println!("[autotune] collecting baseline metrics...");
-    let baseline_metrics = autotune_benchmark::run_all_measures(&config.measure, &repo_root)
-        .context("baseline measures failed")?;
+    let (baseline_metrics, baseline_reports) =
+        autotune_benchmark::run_all_measures_with_output(&config.measure, &repo_root)
+            .context("baseline measures failed")?;
     println!("[autotune] baseline metrics: {:?}", baseline_metrics);
+
+    // Persist raw baseline stdout/stderr per measure so the research agent
+    // can look up detailed reports (e.g. coverage output) on demand.
+    for report in &baseline_reports {
+        let _ =
+            store.save_measure_output(0, "baseline", &report.name, &report.stdout, &report.stderr);
+    }
 
     // Score baseline against itself (rank=0)
     let baseline_record = IterationRecord {
@@ -215,7 +237,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         approach: "baseline".to_string(),
         status: IterationStatus::Baseline,
         hypothesis: None,
-        metrics: baseline_metrics,
+        metrics: baseline_metrics.clone(),
         rank: 0.0,
         score: None,
         reason: None,
@@ -227,18 +249,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Spawn research agent
     println!("[autotune] spawning research agent...");
-    let description = config
-        .task
-        .description
-        .as_deref()
-        .unwrap_or(&config.task.name);
-    let research_prompt = format!(
-        "You are a research agent for the autotune performance tuning system.\n\
-         Task: {}\n\
-         Description: {}\n\
-         You will be asked to analyze code and propose optimization approaches.",
-        config.task.name, description
-    );
+    let research_prompt = build_research_agent_prompt(&config, &baseline_metrics);
 
     let research_permissions = autotune_plan::research_agent_permissions();
     let research_config = autotune_agent::AgentConfig {
@@ -249,9 +260,33 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         max_turns: config.agent.research.as_ref().and_then(|r| r.max_turns),
     };
 
+    // Forward streaming events (text, tool use) to stderr.
+    let research_handler =
+        autotune::stream_ui::make_research_event_handler("exploring codebase...");
+    let research_config_with_events = autotune_agent::AgentConfigWithEvents::new(research_config)
+        .with_event_handler(research_handler);
     let research_response = agent
-        .spawn(&research_config)
+        .spawn_streaming(research_config_with_events)
         .context("failed to spawn research agent")?;
+    autotune::stream_ui::clear_status();
+
+    // Handle any tool-access requests the agent emitted during initial exploration.
+    let tool_approver = autotune::stream_ui::TerminalToolApprover;
+    let initial_session = autotune_agent::AgentSession {
+        session_id: research_response.session_id.clone(),
+        backend: agent.backend_name().to_string(),
+    };
+    let spawn_handler = autotune::stream_ui::make_research_event_handler("processing...");
+    let _research_response = autotune_plan::handle_tool_requests(
+        agent.as_ref(),
+        &initial_session,
+        research_response.clone(),
+        Some(&spawn_handler),
+        Some(&tool_approver),
+    )
+    .context("failed to handle research agent tool requests")?;
+    autotune::stream_ui::clear_status();
+    let research_response = _research_response;
 
     println!(
         "[autotune] research agent session: {}",
@@ -286,6 +321,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         &repo_root,
         &store,
         &shutdown,
+        Some(&tool_approver),
     )?;
 
     // Print handover info
@@ -350,6 +386,8 @@ fn cmd_resume(
     })
     .context("failed to set Ctrl+C handler")?;
 
+    let tool_approver = autotune::stream_ui::TerminalToolApprover;
+
     // Run state machine
     machine::run_task(
         &config,
@@ -358,6 +396,7 @@ fn cmd_resume(
         &repo_root,
         &store,
         &shutdown,
+        Some(&tool_approver),
     )?;
 
     // Print handover info
@@ -466,8 +505,8 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let config_path = repo_root.join(".autotune.toml");
 
-    let (mut config, cached_baseline) = if config_path.exists() {
-        (load_config(&repo_root)?, None)
+    let mut config = if config_path.exists() {
+        load_config(&repo_root)?
     } else {
         // Agent-assisted init
         println!("[autotune] no .autotune.toml found — starting agent-assisted init");
@@ -505,84 +544,202 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
         std::fs::write(&config_path, &toml_content).context("failed to write .autotune.toml")?;
         println!("[autotune] wrote .autotune.toml");
 
-        (result.config, result.baseline_metrics)
+        result.config
     };
 
     if let Some(name) = name_override {
         config.task.name = name;
     }
 
-    let task_dir = config.task_dir(&repo_root);
-    if task_dir.exists() {
-        bail!(
-            "task '{}' already exists at {}. Use 'resume' to continue it.",
-            config.task.name,
-            task_dir.display()
-        );
-    }
-
-    let store = TaskStore::new(&task_dir).context("failed to create task store")?;
-
-    // Snapshot config
-    let config_content = std::fs::read_to_string(&config_path).context("failed to read config")?;
-    store
-        .save_config_snapshot(&config_content)
-        .context("failed to save config snapshot")?;
-
-    // Run sanity tests
-    if !config.test.is_empty() {
-        println!("[autotune] running sanity tests...");
-        let test_results = autotune_test::run_all_tests(&config.test, &repo_root)
-            .context("sanity tests failed to execute")?;
-        if !autotune_test::all_passed(&test_results) {
-            let failed: Vec<_> = test_results
-                .iter()
-                .filter(|r| !r.passed)
-                .map(|r| r.name.as_str())
-                .collect();
-            bail!("sanity tests failed: {}", failed.join(", "));
-        }
-        println!("[autotune] sanity tests passed");
-    }
-
-    // Take baseline measurements (reuse validated metrics from init if available)
-    let baseline_metrics = if let Some(metrics) = cached_baseline {
-        println!("[autotune] using baseline metrics from config validation");
-        metrics
-    } else {
-        println!("[autotune] collecting baseline metrics...");
-        let metrics = autotune_benchmark::run_all_measures(&config.measure, &repo_root)
-            .context("baseline measures failed")?;
-        println!("[autotune] baseline metrics: {:?}", metrics);
-        metrics
-    };
-
-    // Record baseline in ledger
-    let baseline_record = IterationRecord {
-        iteration: 0,
-        approach: "baseline".to_string(),
-        status: IterationStatus::Baseline,
-        hypothesis: None,
-        metrics: baseline_metrics,
-        rank: 0.0,
-        score: None,
-        reason: None,
-        timestamp: Utc::now(),
-    };
-    store
-        .append_ledger(&baseline_record)
-        .context("failed to record baseline")?;
-
     println!();
-    println!("[autotune] task '{}' initialized", config.task.name);
-    println!("[autotune] results at: {}", task_dir.display());
-    println!("[autotune] run `autotune run` to start the tune loop or use step commands");
+    println!("[autotune] task '{}' configured", config.task.name);
+    println!("[autotune] run `autotune run` to start the tune loop");
 
     Ok(())
 }
 
 /// Run each measure command and try metric extraction, returning detailed
 /// errors (including the actual command output) so the init agent can fix the config.
+/// Build the initial prompt for the research agent at task spawn time.
+///
+/// Front-loads everything the agent needs so it doesn't re-explore setup or
+/// re-run the measure command:
+/// - Task goal and stop criteria
+/// - Which files it can propose changes to (tunable/denied)
+/// - Which test and measure commands the CLI will run (agent does NOT run them)
+/// - How metrics are extracted and scored
+/// - Baseline metric values already collected
+fn build_research_agent_prompt(
+    config: &autotune_config::AutotuneConfig,
+    baseline_metrics: &std::collections::HashMap<String, f64>,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut p = String::new();
+    p.push_str("You are the research agent for the autotune performance-tuning system.\n\n");
+    p.push_str("The CLI drives the tune loop. Your job, each iteration, is to analyze the codebase and propose ONE concrete approach (a hypothesis + files to modify). The CLI handles running tests, running measures, scoring, and integrating changes — do not run them yourself.\n\n");
+
+    p.push_str("# Task\n\n");
+    writeln!(p, "- Name: {}", config.task.name).ok();
+    if let Some(desc) = &config.task.description {
+        writeln!(p, "- Description: {desc}").ok();
+    }
+    writeln!(p, "- Canonical branch: {}", config.task.canonical_branch).ok();
+
+    p.push_str("\n# Stop criteria\n\n");
+    let mut any_stop = false;
+    if let Some(ref max_iter) = config.task.max_iterations {
+        match max_iter {
+            autotune_config::StopValue::Finite(n) => {
+                writeln!(p, "- max_iterations: {n}").ok();
+            }
+            autotune_config::StopValue::Infinite => {
+                writeln!(p, "- max_iterations: inf (no hard cap)").ok();
+            }
+        }
+        any_stop = true;
+    }
+    if let Some(t) = config.task.target_improvement {
+        writeln!(
+            p,
+            "- target_improvement: rank >= {t} (relative improvement over baseline)"
+        )
+        .ok();
+        any_stop = true;
+    }
+    if let Some(ref d) = config.task.max_duration {
+        writeln!(p, "- max_duration: {d}").ok();
+        any_stop = true;
+    }
+    for tm in &config.task.target_metric {
+        let op = match tm.direction {
+            autotune_config::Direction::Maximize => ">=",
+            autotune_config::Direction::Minimize => "<=",
+        };
+        writeln!(p, "- target_metric: {} {} {}", tm.name, op, tm.value).ok();
+        any_stop = true;
+    }
+    if !any_stop {
+        p.push_str("- (none configured)\n");
+    }
+
+    p.push_str("\n# Paths you may propose changes to\n\n");
+    p.push_str("Tunable globs (you may propose edits to files matching these):\n");
+    for g in &config.paths.tunable {
+        writeln!(p, "- {g}").ok();
+    }
+    if !config.paths.denied.is_empty() {
+        p.push_str("\nDenied globs (do NOT read or propose changes to):\n");
+        for g in &config.paths.denied {
+            writeln!(p, "- {g}").ok();
+        }
+    }
+
+    if !config.test.is_empty() {
+        p.push_str("\n# Test suites run by the CLI after each approach\n\n");
+        p.push_str("(The implementation agent must not modify test files. Tests must still pass after changes.)\n\n");
+        for t in &config.test {
+            writeln!(p, "- {}: `{}`", t.name, t.command.join(" ")).ok();
+        }
+    }
+
+    p.push_str("\n# Measures run by the CLI to score each approach\n\n");
+    p.push_str("(The CLI runs these, NOT you. Do not try to re-run them.)\n\n");
+    for m in &config.measure {
+        writeln!(p, "- {}: `{}`", m.name, m.command.join(" ")).ok();
+        match &m.adaptor {
+            autotune_config::AdaptorConfig::Regex { patterns } => {
+                for pat in patterns {
+                    writeln!(p, "  - extracts `{}` via regex: {}", pat.name, pat.pattern).ok();
+                }
+            }
+            autotune_config::AdaptorConfig::Criterion { measure_name } => {
+                writeln!(p, "  - extracts criterion metrics from `{measure_name}`").ok();
+            }
+            autotune_config::AdaptorConfig::Script { command } => {
+                writeln!(
+                    p,
+                    "  - extracts metrics via script: `{}`",
+                    command.join(" ")
+                )
+                .ok();
+            }
+        }
+    }
+
+    p.push_str("\n# Scoring\n\n");
+    match &config.score {
+        autotune_config::ScoreConfig::WeightedSum {
+            primary_metrics,
+            guardrail_metrics,
+        } => {
+            p.push_str("Score is a weighted sum of primary metrics (relative to baseline):\n");
+            for m in primary_metrics {
+                writeln!(p, "- {} ({:?}, weight={})", m.name, m.direction, m.weight).ok();
+            }
+            if !guardrail_metrics.is_empty() {
+                p.push_str("\nGuardrails (an approach is discarded if any guardrail regresses past its limit):\n");
+                for g in guardrail_metrics {
+                    writeln!(
+                        p,
+                        "- {} ({:?}, max_regression={})",
+                        g.name, g.direction, g.max_regression
+                    )
+                    .ok();
+                }
+            }
+        }
+        autotune_config::ScoreConfig::Threshold { conditions } => {
+            p.push_str("Score uses thresholds:\n");
+            for c in conditions {
+                writeln!(p, "- {} {:?} {}", c.metric, c.direction, c.threshold).ok();
+            }
+        }
+        autotune_config::ScoreConfig::Script { command }
+        | autotune_config::ScoreConfig::Command { command } => {
+            writeln!(p, "Score computed via: `{}`", command.join(" ")).ok();
+        }
+    }
+
+    p.push_str("\n# Baseline metrics (already collected)\n\n");
+    if baseline_metrics.is_empty() {
+        p.push_str("(no baseline metrics were extracted)\n");
+    } else {
+        let mut keys: Vec<&String> = baseline_metrics.keys().collect();
+        keys.sort();
+        for k in keys {
+            writeln!(p, "- {}: {}", k, baseline_metrics[k]).ok();
+        }
+    }
+
+    p.push_str("\n# What to do\n\n");
+    p.push_str(
+        "- Do NOT run the measure, test, or build commands listed above. The CLI owns that.\n",
+    );
+    p.push_str("- Do NOT re-collect the baseline — it's already done.\n");
+    p.push_str("- Use Read/Glob/Grep to understand the code that produces the target metric(s).\n");
+    p.push_str("- When the CLI asks you to plan the next iteration, propose a concrete, scoped hypothesis with specific files to modify.\n");
+    p.push_str("- Your planning response format is JSON: `{\"approach\": \"...\", \"hypothesis\": \"...\", \"files_to_modify\": [\"...\"]}`. The CLI will tell you when to emit one.\n");
+    p.push_str("- The `hypothesis` string is the main prompt passed to the implementation agent, along with the `files_to_modify` list. Write it as concrete instructions: what to change and why. Anything you want the implementer to know must go there.\n");
+
+    p.push_str("\n# Requesting additional tools\n\n");
+    p.push_str("You start with read-only tools (Read, Glob, Grep). If you need a tool that isn't available — for example `Bash` to run `cargo tree`, `cargo metadata`, or `git log` — you can request it by emitting an XML fragment in your response:\n\n");
+    p.push_str("```xml\n");
+    p.push_str("<request-tool>\n");
+    p.push_str("  <tool>Bash</tool>\n");
+    p.push_str("  <scope>cargo tree:*</scope>\n");
+    p.push_str("  <reason>need the dependency graph to identify heavy crates</reason>\n");
+    p.push_str("</request-tool>\n");
+    p.push_str("```\n\n");
+    p.push_str("- `<tool>`: the tool name (e.g., `Bash`, `WebFetch`). `Edit`, `Write`, and `Agent` are hard-denied for the research role and will be rejected.\n");
+    p.push_str("- `<scope>`: optional scope string (e.g., `cargo tree:*` to narrow Bash). Always prefer the narrowest scope that meets your need; the user is more likely to approve.\n");
+    p.push_str("- `<reason>`: required — one sentence the user reads to decide. Be specific.\n\n");
+    p.push_str("You may emit multiple `<request-tool>` fragments in one response. The CLI will prompt the user for each and reply with a summary of what was granted/denied. Once granted, the tool is available for the rest of this task run. If denied, do NOT re-request the same tool — find another path.\n");
+    p.push_str("When you emit tool requests, do NOT also emit a hypothesis in the same response — wait for approval first, then produce the hypothesis with the new tools.\n");
+
+    p
+}
+
 fn validate_measure_config(
     measures: &[autotune_config::MeasureConfig],
     working_dir: &Path,
@@ -905,6 +1062,7 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
     let agent = build_agent(&config);
     let scorer = build_scorer(&config);
 
+    let tool_approver = autotune::stream_ui::TerminalToolApprover;
     machine::run_single_phase(
         &config,
         agent.as_ref(),
@@ -912,6 +1070,7 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
         &repo_root,
         &store,
         &mut state,
+        Some(&tool_approver),
     )?;
 
     println!(

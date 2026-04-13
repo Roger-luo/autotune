@@ -93,9 +93,15 @@ pub fn build_implementation_prompt(hypothesis: &Hypothesis, log_content: &str) -
     prompt.push_str("## Rules\n\n");
     prompt.push_str("- Do NOT run tests or measures.\n");
     prompt.push_str("- Do NOT modify test files.\n");
-    prompt.push_str("- Commit your changes when done.\n");
+    prompt.push_str("- Do NOT try to commit — the system stages and commits your changes automatically. Bash is not available to you.\n");
     prompt.push_str("- Only modify the files listed above.\n");
     prompt.push('\n');
+
+    prompt.push_str("## Output\n\n");
+    prompt.push_str("After you finish editing, end your response with a single line starting with `SUMMARY:` that describes, in one sentence, what you changed. This line becomes the commit subject. Example:\n\n");
+    prompt.push_str(
+        "    SUMMARY: extract hot loop in foo::bar into inlined helper to reduce branching\n\n",
+    );
 
     if !log_content.is_empty() {
         prompt.push_str("## Prior findings from log.md\n\n");
@@ -153,14 +159,40 @@ pub fn run_implementation(
 
     let sha_after = autotune_git::latest_commit_sha(worktree_path)?;
 
-    if sha_before == sha_after {
+    let commit_sha = if sha_before != sha_after {
+        // Agent somehow committed on its own (e.g., permissions allowed it).
+        sha_after
+    } else if autotune_git::has_uncommitted_changes(worktree_path)? {
+        // Agent made file edits but didn't commit — the CLI owns the commit.
+        let summary =
+            extract_summary(&response.text).unwrap_or_else(|| hypothesis.approach.clone());
+        let message = format!("autotune: {}\n\n{}", summary, response.text.trim());
+        autotune_git::stage_all_and_commit(worktree_path, &message)?;
+        autotune_git::latest_commit_sha(worktree_path)?
+    } else {
+        // No commit and no uncommitted changes — the agent made no edits.
         return Err(ImplementError::NoCommit);
-    }
+    };
 
     Ok(ImplementResult {
         worktree_path: worktree_path.to_path_buf(),
         branch_name: branch_name.to_string(),
-        commit_sha: sha_after,
+        commit_sha,
         agent_response: response,
     })
+}
+
+/// Extract a one-line commit subject from the agent response.
+/// Looks for a line starting with `SUMMARY:`, falling back to None.
+fn extract_summary(response: &str) -> Option<String> {
+    for line in response.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("SUMMARY:") {
+            let s = rest.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
 }

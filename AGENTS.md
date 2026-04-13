@@ -114,6 +114,32 @@ Leaf crates have no internal workspace dependencies. This means you can work on 
 - **Atomic state writes:** All state persistence uses write-to-temp-then-rename (via `tempfile::NamedTempFile`)
 - **Direction types:** `autotune_config::Direction`, `autotune_score::weighted_sum::Direction`, and `autotune_score::threshold::Direction` are separate enums that need mapping in `main.rs`
 
+### Terminal state restoration
+
+Subprocesses (the Claude CLI) and interactive prompt libraries (`dialoguer`, `crossterm` raw mode) leave the terminal in non-default modes — Kitty keyboard protocol, bracketed paste, hidden cursor, mouse reporting. If not restored on exit, the user's shell is left typing garbage like `^[[99;5u` until they run `reset`.
+
+All restoration logic is centralized in **`autotune_agent::terminal`**. Three overlapping layers guarantee cleanup on every exit path:
+
+| Layer | Mechanism | Catches |
+|---|---|---|
+| 1. `terminal::Guard` | RAII; `Drop` calls `restore()` | Normal return, `?` error propagation, unwinding panics |
+| 2. `terminal::install_panic_hook()` | Global panic hook runs `restore()` before the prior hook | Uncaught panics that escape all Guards |
+| 3. Explicit `terminal::restore()` in signal handlers | Manual call before `std::process::exit()` | Direct exit paths (no Drop, no panic) |
+
+**Rules for contributors:**
+
+- **Call `install_panic_hook()` once early in `main()`.** Already wired in the binary crate — don't remove it.
+- **Hold a `Guard` for any scope that may mutate terminal state.** That means: spawning the Claude CLI, calling `dialoguer::*::interact()`, enabling crossterm raw mode, or wrapping any third-party code that does the above.
+  ```rust
+  let _guard = autotune_agent::terminal::Guard::new();
+  // ... interactive call ...
+  // Guard's Drop restores on any scope exit
+  ```
+- **In signal handlers that `exit()`**, call `autotune_agent::terminal::restore()` explicitly — Drop won't run. (The init crate's `restore_terminal()` already wraps this plus crossterm-specific cleanup.)
+- **Don't sprinkle terminal CSI sequences elsewhere.** If a new mode needs restoring, extend `terminal::restore()` so every site benefits.
+
+Rust can't enforce "all terminal-touching code wears a Guard" at the type level (third-party APIs don't take our witness). The discipline is: the number of call sites is small, they're listed in `autotune_agent::terminal` module docs, and every new one should hold a Guard.
+
 ## Git Conventions
 
 - **Conventional commits:** `feat:`, `fix:`, `docs:`, `test:`, `ci:`, `refactor:`, `perf:`, `build:`, `chore:`

@@ -93,6 +93,42 @@ primary_metrics = [{ name = "m", direction = "Maximize" }]
 }
 
 #[test]
+fn parse_target_metric_satisfies_stop_condition() {
+    // target_metric alone should satisfy the "at least one stop condition" rule.
+    let f = write_config(
+        r#"
+[task]
+name = "coverage-task"
+
+[[task.target_metric]]
+name = "line_coverage"
+value = 95.0
+direction = "Maximize"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "line_coverage", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "line_coverage", direction = "Maximize" }]
+"#,
+    );
+    let config = AutotuneConfig::load(f.path()).unwrap();
+    assert_eq!(config.task.target_metric.len(), 1);
+    assert_eq!(config.task.target_metric[0].name, "line_coverage");
+    assert_eq!(config.task.target_metric[0].value, 95.0);
+    assert!(matches!(
+        config.task.target_metric[0].direction,
+        autotune_config::Direction::Maximize
+    ));
+}
+
+#[test]
 fn error_no_stop_condition() {
     let f = write_config(
         r#"

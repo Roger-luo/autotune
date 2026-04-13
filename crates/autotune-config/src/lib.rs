@@ -31,6 +31,21 @@ pub struct TaskConfig {
     pub target_improvement: Option<f64>,
     #[serde(default)]
     pub max_duration: Option<String>,
+    /// Stop when specific metrics reach absolute thresholds.
+    /// All listed metrics must meet their threshold (AND semantics).
+    #[serde(default)]
+    pub target_metric: Vec<TargetMetric>,
+}
+
+/// A metric threshold that acts as a stop condition.
+///
+/// For `direction = Maximize`, stops when the metric value is `>= value`.
+/// For `direction = Minimize`, stops when the metric value is `<= value`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetMetric {
+    pub name: String,
+    pub value: f64,
+    pub direction: Direction,
 }
 
 fn default_canonical_branch() -> String {
@@ -230,9 +245,10 @@ impl AutotuneConfig {
         if self.task.max_iterations.is_none()
             && self.task.target_improvement.is_none()
             && self.task.max_duration.is_none()
+            && self.task.target_metric.is_empty()
         {
             return Err(ConfigError::Validation {
-                message: "at least one stop condition required (max_iterations, target_improvement, or max_duration)".to_string(),
+                message: "at least one stop condition required (max_iterations, target_improvement, max_duration, or target_metric)".to_string(),
             });
         }
 

@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod protocol;
+pub mod terminal;
 
 use std::path::PathBuf;
 use thiserror::Error;
@@ -14,6 +15,9 @@ pub enum AgentError {
 
     #[error("agent timed out after {seconds}s")]
     Timeout { seconds: u64 },
+
+    #[error("agent interrupted by signal")]
+    Interrupted,
 
     #[error("IO error: {source}")]
     Io {
@@ -112,4 +116,19 @@ pub trait Agent {
     fn backend_name(&self) -> &str;
 
     fn handover_command(&self, session: &AgentSession) -> String;
+
+    /// Add a tool permission to an existing session so subsequent `send_streaming`
+    /// calls will include it in the allowed tools list. Used to approve runtime
+    /// tool requests from an agent. Default impl errors — backends that keep
+    /// per-session context should override.
+    fn grant_session_permission(
+        &self,
+        session: &AgentSession,
+        permission: ToolPermission,
+    ) -> Result<(), AgentError> {
+        let _ = (session, permission);
+        Err(AgentError::CommandFailed {
+            message: "this agent backend does not support runtime permission grants".to_string(),
+        })
+    }
 }

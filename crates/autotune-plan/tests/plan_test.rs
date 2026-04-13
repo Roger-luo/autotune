@@ -1,4 +1,4 @@
-use autotune_plan::{PlanError, build_planning_prompt, parse_hypothesis};
+use autotune_plan::{PlanError, build_planning_prompt, is_denied_for_research, parse_hypothesis};
 use autotune_state::{IterationRecord, IterationStatus, Metrics, TaskStore};
 use chrono::Utc;
 
@@ -28,6 +28,21 @@ fn parse_hypothesis_no_json_errors() {
     let response = "I have no suggestions at this time.";
     let err = parse_hypothesis(response).unwrap_err();
     assert!(matches!(err, PlanError::ParseHypothesis { .. }));
+}
+
+#[test]
+fn research_denylist_blocks_write_tools() {
+    assert!(is_denied_for_research("Edit"));
+    assert!(is_denied_for_research("Write"));
+    assert!(is_denied_for_research("Agent"));
+}
+
+#[test]
+fn research_denylist_allows_read_and_bash() {
+    assert!(!is_denied_for_research("Bash"));
+    assert!(!is_denied_for_research("WebFetch"));
+    assert!(!is_denied_for_research("WebSearch"));
+    assert!(!is_denied_for_research("Read"));
 }
 
 #[test]

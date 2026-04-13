@@ -1,4 +1,4 @@
-use autotune_agent::protocol::{AgentRequest, parse_agent_request};
+use autotune_agent::protocol::{AgentFragment, parse_agent_response};
 use autotune_agent::{Agent, AgentConfig, ToolPermission};
 use autotune_mock::MockAgent;
 use std::path::PathBuf;
@@ -6,8 +6,10 @@ use std::path::PathBuf;
 #[test]
 fn mock_agent_init_conversation() {
     let agent = MockAgent::builder()
-        .init_response(r#"{"type":"message","text":"I see a Rust project."}"#)
-        .init_response(r#"{"type":"question","text":"Pick a name","options":[{"key":"a","label":"my-exp"}],"allow_free_response":false}"#)
+        .init_response("<message>I see a Rust project.</message>")
+        .init_response(
+            r#"<question><text>Pick a name</text><option><key>a</key><label>my-exp</label></option></question>"#,
+        )
         .build();
 
     let config = AgentConfig {
@@ -20,8 +22,9 @@ fn mock_agent_init_conversation() {
 
     // spawn returns first init_response
     let resp = agent.spawn(&config).unwrap();
-    let req = parse_agent_request(&resp.text).unwrap();
-    assert!(matches!(req, AgentRequest::Message { .. }));
+    let frags = parse_agent_response(&resp.text).unwrap();
+    assert_eq!(frags.len(), 1);
+    assert!(matches!(frags[0], AgentFragment::Message(_)));
 
     // send returns second init_response
     let session = autotune_agent::AgentSession {
@@ -29,6 +32,7 @@ fn mock_agent_init_conversation() {
         backend: "mock".to_string(),
     };
     let resp2 = agent.send(&session, "sounds good").unwrap();
-    let req2 = parse_agent_request(&resp2.text).unwrap();
-    assert!(matches!(req2, AgentRequest::Question { .. }));
+    let frags2 = parse_agent_response(&resp2.text).unwrap();
+    assert_eq!(frags2.len(), 1);
+    assert!(matches!(frags2[0], AgentFragment::Question { .. }));
 }

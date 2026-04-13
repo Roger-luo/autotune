@@ -40,8 +40,29 @@ pub enum MeasureError {
     },
 }
 
+/// Result of running a single measure: the raw stdout/stderr plus the
+/// extracted metrics. Raw output is retained so callers can persist it for
+/// later inspection (e.g. by a research agent looking for context beyond the
+/// summary metrics).
+#[derive(Debug, Clone)]
+pub struct MeasureReport {
+    pub name: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub metrics: Metrics,
+}
+
 /// Run a single measure command and extract metrics.
 pub fn run_measure(config: &MeasureConfig, working_dir: &Path) -> Result<Metrics, MeasureError> {
+    run_measure_with_output(config, working_dir).map(|r| r.metrics)
+}
+
+/// Run a single measure command, returning the extracted metrics along with
+/// the raw stdout/stderr captured during the run.
+pub fn run_measure_with_output(
+    config: &MeasureConfig,
+    working_dir: &Path,
+) -> Result<MeasureReport, MeasureError> {
     let output = run_command_with_timeout(config, working_dir)?;
 
     if !output.status.success() {
@@ -52,18 +73,28 @@ pub fn run_measure(config: &MeasureConfig, working_dir: &Path) -> Result<Metrics
         });
     }
 
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
     let bench_output = MeasureOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        stdout: stdout.clone(),
+        stderr: stderr.clone(),
     };
 
     let adaptor = build_adaptor(&config.adaptor, working_dir);
-    adaptor
+    let metrics = adaptor
         .extract(&bench_output)
         .map_err(|source| MeasureError::Extraction {
             name: config.name.clone(),
             source,
-        })
+        })?;
+
+    Ok(MeasureReport {
+        name: config.name.clone(),
+        stdout,
+        stderr,
+        metrics,
+    })
 }
 
 /// Run all configured measures and merge their metrics.
@@ -71,14 +102,25 @@ pub fn run_all_measures(
     configs: &[MeasureConfig],
     working_dir: &Path,
 ) -> Result<Metrics, MeasureError> {
+    run_all_measures_with_output(configs, working_dir).map(|(metrics, _)| metrics)
+}
+
+/// Run all configured measures, returning the merged metrics and the per-measure
+/// raw output reports (in the order the measures were configured).
+pub fn run_all_measures_with_output(
+    configs: &[MeasureConfig],
+    working_dir: &Path,
+) -> Result<(Metrics, Vec<MeasureReport>), MeasureError> {
     let mut all_metrics = HashMap::new();
+    let mut reports = Vec::with_capacity(configs.len());
 
     for config in configs {
-        let metrics = run_measure(config, working_dir)?;
-        all_metrics.extend(metrics);
+        let report = run_measure_with_output(config, working_dir)?;
+        all_metrics.extend(report.metrics.clone());
+        reports.push(report);
     }
 
-    Ok(all_metrics)
+    Ok((all_metrics, reports))
 }
 
 /// Build a MetricAdaptor from config.

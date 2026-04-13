@@ -5,30 +5,62 @@ use std::path::PathBuf;
 
 #[test]
 fn agent_assisted_init_produces_valid_config() {
+    // Agent can bundle all required sections plus an optional test suite in one turn.
     let agent = MockAgent::builder()
-        .init_response(r#"{"type":"message","text":"I see a Rust project."}"#)
         .init_response(
-            r#"{"type":"config","section":{"type":"task","name":"perf-opt","description":"Optimize performance","max_iterations":"20","canonical_branch":"main"}}"#,
-        )
-        .init_response(
-            r#"{"type":"config","section":{"type":"paths","tunable":["src/**/*.rs"]}}"#,
-        )
-        .init_response(
-            r#"{"type":"config","section":{"type":"test","name":"rust","command":["cargo","test"]}}"#,
-        )
-        .init_response(
-            r#"{"type":"config","section":{"type":"measure","name":"bench1","command":["cargo","bench"],"adaptor":{"type":"regex","patterns":[{"name":"time_us","pattern":"time:\\s+([0-9.]+)"}]}}}"#,
-        )
-        .init_response(
-            r#"{"type":"config","section":{"type":"score","value":{"type":"weighted_sum","primary_metrics":[{"name":"time_us","direction":"Minimize"}]}}}"#,
+            r#"
+<message>I see a Rust project.</message>
+
+<task>
+  <name>perf-opt</name>
+  <description><![CDATA[Optimize performance]]></description>
+  <canonical-branch>main</canonical-branch>
+  <max-iterations>20</max-iterations>
+</task>
+
+<paths>
+  <tunable>src/**/*.rs</tunable>
+</paths>
+
+<test>
+  <name>rust</name>
+  <command>
+    <segment>cargo</segment>
+    <segment>test</segment>
+  </command>
+</test>
+
+<measure>
+  <name>bench1</name>
+  <command>
+    <segment>cargo</segment>
+    <segment>bench</segment>
+  </command>
+  <adaptor>
+    <type>regex</type>
+    <pattern>
+      <name>time_us</name>
+      <regex><![CDATA[time:\s+([0-9.]+)]]></regex>
+    </pattern>
+  </adaptor>
+</measure>
+
+<score>
+  <type>weighted_sum</type>
+  <primary-metric>
+    <name>time_us</name>
+    <direction>Minimize</direction>
+  </primary-metric>
+</score>
+"#,
         )
         .build();
 
     let global = GlobalConfig::default();
+    // MockInput returns "yes" to everything, including the <message> prompt.
     let input = MockInput::new("yes");
     let result = run_init(&agent, &global, &PathBuf::from("/tmp/fake"), &input, None).unwrap();
 
-    // Verify all sections are present and correct
     assert_eq!(result.config.task.name, "perf-opt");
     assert_eq!(
         result.config.task.description.as_deref(),
@@ -50,23 +82,31 @@ fn agent_assisted_init_produces_valid_config() {
 
 #[test]
 fn agent_assisted_init_validates_sections_incrementally() {
-    // Agent proposes an invalid task (no stop condition), then a valid one
+    // Agent proposes an invalid task (no stop condition), then a valid one,
+    // then the rest of the config across turns.
     let agent = MockAgent::builder()
+        .init_response(r#"<task><name>test-exp</name></task>"#)
+        .init_response(r#"<task><name>test-exp</name><max-iterations>5</max-iterations></task>"#)
+        .init_response(r#"<paths><tunable>src/**</tunable></paths>"#)
         .init_response(
-            r#"{"type":"config","section":{"type":"task","name":"test-exp"}}"#,
+            r#"
+<measure>
+  <name>b</name>
+  <command><segment>echo</segment></command>
+  <adaptor>
+    <type>regex</type>
+    <pattern><name>m</name><regex>x</regex></pattern>
+  </adaptor>
+</measure>
+"#,
         )
-        // After validation error, agent retries with stop condition
         .init_response(
-            r#"{"type":"config","section":{"type":"task","name":"test-exp","max_iterations":"5"}}"#,
-        )
-        .init_response(
-            r#"{"type":"config","section":{"type":"paths","tunable":["src/**"]}}"#,
-        )
-        .init_response(
-            r#"{"type":"config","section":{"type":"measure","name":"b","command":["echo"],"adaptor":{"type":"regex","patterns":[{"name":"m","pattern":"x"}]}}}"#,
-        )
-        .init_response(
-            r#"{"type":"config","section":{"type":"score","value":{"type":"weighted_sum","primary_metrics":[{"name":"m","direction":"Maximize"}]}}}"#,
+            r#"
+<score>
+  <type>weighted_sum</type>
+  <primary-metric><name>m</name><direction>Maximize</direction></primary-metric>
+</score>
+"#,
         )
         .build();
 

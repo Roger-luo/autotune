@@ -7,6 +7,7 @@ use chrono::Utc;
 use autotune_agent::{Agent, AgentSession};
 use autotune_config::AutotuneConfig;
 use autotune_implement::ImplementError;
+use autotune_plan::ToolApprover;
 use autotune_score::{ScoreCalculator, ScoreInput};
 use autotune_state::{
     ApproachState, IterationRecord, IterationStatus, Phase, TaskState, TaskStore,
@@ -23,6 +24,7 @@ pub fn run_single_phase(
     repo_root: &Path,
     store: &TaskStore,
     state: &mut TaskState,
+    approver: Option<&dyn ToolApprover>,
 ) -> Result<bool> {
     let research_session = AgentSession {
         session_id: state.research_session_id.clone(),
@@ -31,7 +33,7 @@ pub fn run_single_phase(
 
     match state.current_phase {
         Phase::Planning => {
-            run_planning(config, agent, store, state, &research_session)?;
+            run_planning(config, agent, store, state, &research_session, approver)?;
         }
         Phase::Implementing => {
             run_implementing(config, agent, store, state)?;
@@ -67,6 +69,7 @@ pub fn run_task(
     repo_root: &Path,
     store: &TaskStore,
     shutdown: &ShutdownFlag,
+    approver: Option<&dyn ToolApprover>,
 ) -> Result<()> {
     let mut state = store.load_state().context("failed to load task state")?;
 
@@ -77,13 +80,36 @@ pub fn run_task(
             return Ok(());
         }
 
-        let done = run_single_phase(config, agent, scorer, repo_root, store, &mut state)?;
-        if done {
-            break;
+        match run_single_phase(
+            config, agent, scorer, repo_root, store, &mut state, approver,
+        ) {
+            Ok(true) => break,
+            Ok(false) => continue,
+            Err(e) => {
+                // If the user pressed Ctrl+C while an agent call was in-flight,
+                // the subprocess dies with SIGINT and the phase returns an
+                // error. Recognize that and exit cleanly with saved state.
+                if shutdown.load(Ordering::SeqCst) || is_interrupt_error(&e) {
+                    println!("[autotune] interrupted — saving state and exiting");
+                    shutdown.store(true, Ordering::SeqCst);
+                    store.save_state(&state)?;
+                    return Ok(());
+                }
+                return Err(e);
+            }
         }
     }
 
     Ok(())
+}
+
+/// Detect whether an error chain carries an `AgentError::Interrupted`.
+fn is_interrupt_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<autotune_agent::AgentError>()
+            .is_some_and(|a| matches!(a, autotune_agent::AgentError::Interrupted))
+    })
 }
 
 fn run_planning(
@@ -92,6 +118,7 @@ fn run_planning(
     store: &TaskStore,
     state: &mut TaskState,
     research_session: &AgentSession,
+    approver: Option<&dyn ToolApprover>,
 ) -> Result<()> {
     println!(
         "[autotune] iteration {} — planning",
@@ -106,6 +133,10 @@ fn run_planning(
         .as_deref()
         .unwrap_or(&config.task.name);
 
+    let planning_handler = crate::stream_ui::make_research_event_handler(&format!(
+        "planning iteration {}...",
+        state.current_iteration
+    ));
     let hypothesis = autotune_plan::plan_next(
         agent,
         research_session,
@@ -113,8 +144,11 @@ fn run_planning(
         last_iteration,
         state.current_iteration,
         description,
+        Some(&planning_handler),
+        approver,
     )
     .context("planning failed")?;
+    crate::stream_ui::clear_status();
 
     // Set up worktree
     let worktree_parent = store.root().join("worktrees");
@@ -271,8 +305,21 @@ fn run_measuring(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskSta
         state.current_iteration, approach.name
     );
 
-    let metrics = autotune_benchmark::run_all_measures(&config.measure, &approach.worktree_path)
-        .context("measuring failed")?;
+    let (metrics, reports) =
+        autotune_benchmark::run_all_measures_with_output(&config.measure, &approach.worktree_path)
+            .context("measuring failed")?;
+
+    // Persist raw stdout/stderr per measure so the research agent can fetch
+    // extra detail on demand (only the metric values feed scoring).
+    for report in &reports {
+        let _ = store.save_measure_output(
+            state.current_iteration,
+            &approach.name,
+            &report.name,
+            &report.stdout,
+            &report.stderr,
+        );
+    }
 
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.metrics = Some(metrics);
@@ -511,6 +558,42 @@ fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
             last_kept.rank, target
         );
         return Ok(true);
+    }
+
+    // Check target_metric — absolute thresholds on specific metrics.
+    // Uses the most recent measured metrics (baseline or any iteration with metrics).
+    if !config.task.target_metric.is_empty()
+        && let Some(latest) = ledger.iter().rev().find(|r| !r.metrics.is_empty())
+    {
+        let all_met = config.task.target_metric.iter().all(|tm| {
+            latest
+                .metrics
+                .get(&tm.name)
+                .is_some_and(|v| match tm.direction {
+                    autotune_config::Direction::Maximize => *v >= tm.value,
+                    autotune_config::Direction::Minimize => *v <= tm.value,
+                })
+        });
+        if all_met {
+            let summary: Vec<String> = config
+                .task
+                .target_metric
+                .iter()
+                .map(|tm| {
+                    let cur = latest.metrics.get(&tm.name).copied().unwrap_or(f64::NAN);
+                    let op = match tm.direction {
+                        autotune_config::Direction::Maximize => ">=",
+                        autotune_config::Direction::Minimize => "<=",
+                    };
+                    format!("{}={:.4} {} {:.4}", tm.name, cur, op, tm.value)
+                })
+                .collect();
+            println!(
+                "[autotune] stop: target metric(s) reached ({})",
+                summary.join(", ")
+            );
+            return Ok(true);
+        }
     }
 
     Ok(false)

@@ -1,2 +1,5 @@
 [tools]
 prek = "latest"
+
+[env]
+EDITOR = "zed"

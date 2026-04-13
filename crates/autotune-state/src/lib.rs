@@ -237,6 +237,45 @@ impl TaskStore {
         atomic_write(&dir.join("prompt.md"), prompt)
     }
 
+    /// Directory that holds raw per-measure stdout/stderr captures for an
+    /// iteration. Paths returned here are intended to be referenced from the
+    /// research agent's planning prompt as on-demand lookups.
+    pub fn measure_output_dir(&self, iteration: usize, approach: &str) -> PathBuf {
+        self.iteration_dir(iteration, approach)
+            .join("measure_output")
+    }
+
+    /// Save the raw stdout and/or stderr of a single measure. Empty streams
+    /// are skipped (no file written) so callers can cheaply advertise only
+    /// the paths that actually have content. Returns the list of files
+    /// written, in (stream-name, path) pairs.
+    pub fn save_measure_output(
+        &self,
+        iteration: usize,
+        approach: &str,
+        measure_name: &str,
+        stdout: &str,
+        stderr: &str,
+    ) -> Result<Vec<(&'static str, PathBuf)>, StateError> {
+        let mut written = Vec::new();
+        if stdout.is_empty() && stderr.is_empty() {
+            return Ok(written);
+        }
+        let dir = self.measure_output_dir(iteration, approach);
+        create_dir_all_and_sync_parent(&dir)?;
+        if !stdout.is_empty() {
+            let path = dir.join(format!("{}.stdout.txt", measure_name));
+            atomic_write(&path, stdout)?;
+            written.push(("stdout", path));
+        }
+        if !stderr.is_empty() {
+            let path = dir.join(format!("{}.stderr.txt", measure_name));
+            atomic_write(&path, stderr)?;
+            written.push(("stderr", path));
+        }
+        Ok(written)
+    }
+
     pub fn save_test_output(
         &self,
         iteration: usize,

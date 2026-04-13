@@ -46,7 +46,8 @@ fn prompt_includes_rules() {
 
     assert!(prompt.contains("Do NOT run tests"));
     assert!(prompt.contains("Do NOT modify test files"));
-    assert!(prompt.contains("Commit your changes"));
+    assert!(prompt.contains("Do NOT try to commit"));
+    assert!(prompt.contains("SUMMARY:"));
 }
 
 #[test]

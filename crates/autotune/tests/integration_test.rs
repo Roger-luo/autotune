@@ -193,7 +193,7 @@ fn test_single_iteration_kept() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -240,7 +240,7 @@ fn test_multiple_iterations_with_discards() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -310,7 +310,7 @@ fn test_no_commit_records_crash_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -353,7 +353,7 @@ fn test_failure_discards_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -395,7 +395,7 @@ fn test_shutdown_flag_stops_task() {
     // Set shutdown before running — should exit immediately
     let shutdown = AtomicBool::new(true);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
         .expect("run_task failed");
 
     // No iterations should have run
@@ -434,8 +434,10 @@ fn test_state_persisted_at_each_phase() {
     assert_eq!(state.current_phase, Phase::Planning);
 
     // Planning → Implementing
-    autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
-        .unwrap();
+    autotune::machine::run_single_phase(
+        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+    )
+    .unwrap();
     assert_eq!(state.current_phase, Phase::Implementing);
     // Verify state was persisted
     let persisted = store.load_state().unwrap();
@@ -443,8 +445,10 @@ fn test_state_persisted_at_each_phase() {
     assert!(persisted.current_approach.is_some());
 
     // Implementing → Testing
-    autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
-        .unwrap();
+    autotune::machine::run_single_phase(
+        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+    )
+    .unwrap();
     assert_eq!(state.current_phase, Phase::Testing);
     let persisted = store.load_state().unwrap();
     assert!(
@@ -457,13 +461,17 @@ fn test_state_persisted_at_each_phase() {
     );
 
     // Testing → Measuring
-    autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
-        .unwrap();
+    autotune::machine::run_single_phase(
+        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+    )
+    .unwrap();
     assert_eq!(state.current_phase, Phase::Measuring);
 
     // Measuring → Scoring
-    autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
-        .unwrap();
+    autotune::machine::run_single_phase(
+        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+    )
+    .unwrap();
     assert_eq!(state.current_phase, Phase::Scoring);
     let persisted = store.load_state().unwrap();
     assert!(
@@ -476,18 +484,24 @@ fn test_state_persisted_at_each_phase() {
     );
 
     // Scoring → Integrating (measure=42.0 < baseline=100.0, kept)
-    autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
-        .unwrap();
+    autotune::machine::run_single_phase(
+        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+    )
+    .unwrap();
     assert_eq!(state.current_phase, Phase::Integrating);
 
     // Integrating → Recorded
-    autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
-        .unwrap();
+    autotune::machine::run_single_phase(
+        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+    )
+    .unwrap();
     assert_eq!(state.current_phase, Phase::Recorded);
 
     // Recorded → Done (max_iterations=1)
-    autotune::machine::run_single_phase(&config, &agent, &scorer, repo_root, &store, &mut state)
-        .unwrap();
+    autotune::machine::run_single_phase(
+        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+    )
+    .unwrap();
     assert_eq!(state.current_phase, Phase::Done);
 }
 
@@ -511,7 +525,8 @@ fn test_iteration_artifacts_saved() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown).unwrap();
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+        .unwrap();
 
     // metrics.json should exist for the kept iteration
     let metrics_path = store.iteration_dir(1, "opt-1").join("metrics.json");
@@ -546,7 +561,8 @@ fn test_mock_agent_tracks_calls() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown).unwrap();
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+        .unwrap();
 
     // 2 planning calls (send). Only 1st iteration produces an improvement (42 vs 100),
     // 2nd compares 42 vs best=42 → discard → no implementation spawn for discarded.

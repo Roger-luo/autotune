@@ -181,6 +181,23 @@ pub fn latest_commit_sha(dir: &Path) -> Result<String, GitError> {
     Ok(output.stdout.trim().to_string())
 }
 
+/// Returns true if the working tree or index has any uncommitted changes
+/// (including untracked files).
+pub fn has_uncommitted_changes(dir: &Path) -> Result<bool, GitError> {
+    let output = git(dir, &[OsStr::new("status"), OsStr::new("--porcelain")])?;
+    Ok(!output.stdout.trim().is_empty())
+}
+
+/// Stage all changes (including untracked files) and create a commit.
+pub fn stage_all_and_commit(dir: &Path, message: &str) -> Result<(), GitError> {
+    git(dir, &[OsStr::new("add"), OsStr::new("-A")])?;
+    git(
+        dir,
+        &[OsStr::new("commit"), OsStr::new("-m"), OsStr::new(message)],
+    )?;
+    Ok(())
+}
+
 /// Checkout a branch in the given directory.
 pub fn checkout(dir: &Path, branch: &str) -> Result<(), GitError> {
     git(dir, &[OsStr::new("checkout"), OsStr::new(branch)])?;

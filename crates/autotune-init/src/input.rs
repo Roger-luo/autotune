@@ -104,6 +104,9 @@ impl UserInput for TerminalInput {
         println!("\n{}", message);
 
         if io::stdin().is_terminal() {
+            // Ensure any terminal state dialoguer leaves behind is restored
+            // even if we short-circuit on error or unwind.
+            let _terminal_guard = autotune_agent::terminal::Guard::new();
             let confirmed = dialoguer::Confirm::new()
                 .with_prompt("Approve this config?")
                 .default(true)

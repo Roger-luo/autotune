@@ -1,4 +1,7 @@
-use autotune_agent::{Agent, AgentError, AgentResponse, AgentSession, ToolPermission};
+use autotune_agent::protocol::{ToolRequest, parse_tool_requests};
+use autotune_agent::{
+    Agent, AgentError, AgentResponse, AgentSession, EventHandler, ToolPermission,
+};
 use autotune_state::{IterationRecord, StateError, TaskStore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -35,6 +38,99 @@ pub fn research_agent_permissions() -> Vec<ToolPermission> {
         ToolPermission::Allow("Glob".to_string()),
         ToolPermission::Allow("Grep".to_string()),
     ]
+}
+
+/// Tools the research agent can NEVER be granted at runtime, even if the user
+/// approves. The research role is read-only by design — file edits belong to
+/// the implementation agent, and sub-agents open an unbounded execution path.
+pub fn is_denied_for_research(tool: &str) -> bool {
+    matches!(tool, "Edit" | "Write" | "Agent")
+}
+
+/// How to handle a `ToolRequest` from the research agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    /// Grant the permission for the remainder of this task run.
+    Approve,
+    /// Refuse; the agent is told to proceed without it.
+    Deny,
+}
+
+/// Interface the CLI implements to approve/deny runtime tool requests.
+pub trait ToolApprover {
+    fn approve(&self, req: &ToolRequest) -> std::io::Result<ApprovalDecision>;
+}
+
+/// Walk any `<request-tool>` fragments in the agent's response, prompt the user
+/// for each, grant approved permissions to the session, and send the agent the
+/// outcome. Loops until the agent's response contains no more requests.
+///
+/// Returns the final response (which should contain whatever structured
+/// output the caller is waiting for, e.g., a hypothesis JSON).
+///
+/// When `approver` is `None`, all requests are denied automatically.
+pub fn handle_tool_requests(
+    agent: &dyn Agent,
+    session: &AgentSession,
+    mut response: AgentResponse,
+    event_handler: Option<&EventHandler>,
+    approver: Option<&dyn ToolApprover>,
+) -> Result<AgentResponse, PlanError> {
+    loop {
+        let requests = parse_tool_requests(&response.text)?;
+        if requests.is_empty() {
+            return Ok(response);
+        }
+
+        let mut reply_lines: Vec<String> = Vec::new();
+        for req in &requests {
+            let label = format_request_label(req);
+
+            if is_denied_for_research(&req.tool) {
+                reply_lines.push(format!(
+                    "DENIED (hardcoded for research role): {label} — {} is never available to the research agent.",
+                    req.tool
+                ));
+                continue;
+            }
+
+            let decision = match approver {
+                Some(a) => a.approve(req).map_err(|e| PlanError::Agent {
+                    source: AgentError::Io { source: e },
+                })?,
+                None => ApprovalDecision::Deny,
+            };
+
+            match decision {
+                ApprovalDecision::Approve => {
+                    let perm = match &req.scope {
+                        Some(scope) if !scope.is_empty() => {
+                            ToolPermission::AllowScoped(req.tool.clone(), scope.clone())
+                        }
+                        _ => ToolPermission::Allow(req.tool.clone()),
+                    };
+                    agent.grant_session_permission(session, perm)?;
+                    reply_lines.push(format!("GRANTED: {label}"));
+                }
+                ApprovalDecision::Deny => {
+                    reply_lines.push(format!("DENIED: {label}"));
+                }
+            }
+        }
+
+        let reply = format!(
+            "Tool-approval results:\n{}\n\nProceed with your task using whatever tools are now available. Do not re-request denied tools.",
+            reply_lines.join("\n")
+        );
+        response = agent.send_streaming(session, &reply, event_handler)?;
+    }
+}
+
+fn format_request_label(req: &ToolRequest) -> String {
+    match &req.scope {
+        Some(s) if !s.is_empty() => format!("{}({s})", req.tool),
+        _ => req.tool.clone(),
+    }
 }
 
 /// Builds the planning prompt for the research agent.
@@ -85,6 +181,44 @@ pub fn build_planning_prompt(
         prompt.push('\n');
     }
 
+    // Advertise raw measure output files as on-demand references. The agent
+    // gets to see summary metrics and ledger history up front; these files
+    // (e.g. coverage reports, verbose benchmark logs) are only worth reading
+    // when that summary isn't enough.
+    let mut detail_sources: Vec<(String, Vec<std::path::PathBuf>)> = Vec::new();
+    if let Some(files) = collect_measure_output_files(store, 0, "baseline")
+        && !files.is_empty()
+    {
+        detail_sources.push(("baseline".to_string(), files));
+    }
+    if let Some(last) = last_iteration
+        && let Some(files) = collect_measure_output_files(store, last.iteration, &last.approach)
+        && !files.is_empty()
+    {
+        detail_sources.push((
+            format!("iteration {} ({})", last.iteration, last.approach),
+            files,
+        ));
+    }
+    if !detail_sources.is_empty() {
+        prompt.push_str("# Raw Measure Output (on-demand reference)\n\n");
+        prompt.push_str(
+            "The files below contain the full stdout/stderr captured when each measure \
+             ran. They are NOT part of the metric values above — scoring already used \
+             whatever the adaptor extracted. Only open a file here if the headline \
+             metrics and ledger history leave you unable to form a concrete hypothesis \
+             (e.g. you need to see which code paths a coverage report flagged, or which \
+             benchmark case regressed). Most iterations should not need these.\n\n",
+        );
+        for (label, files) in &detail_sources {
+            prompt.push_str(&format!("- {}:\n", label));
+            for path in files {
+                prompt.push_str(&format!("  - `{}`\n", path.display()));
+            }
+        }
+        prompt.push('\n');
+    }
+
     // Include log contents
     let log = store.read_log()?;
     if !log.is_empty() {
@@ -104,6 +238,25 @@ pub fn build_planning_prompt(
     );
 
     Ok(prompt)
+}
+
+/// List raw measure-output files (stdout/stderr) saved for a given iteration,
+/// sorted for stable prompt output. Returns `None` if the directory does not
+/// exist, which keeps the planning prompt terse when nothing was captured.
+fn collect_measure_output_files(
+    store: &TaskStore,
+    iteration: usize,
+    approach: &str,
+) -> Option<Vec<std::path::PathBuf>> {
+    let dir = store.measure_output_dir(iteration, approach);
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut files: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    files.sort();
+    Some(files)
 }
 
 /// Parses a `Hypothesis` from an agent response that may contain surrounding prose.
@@ -143,6 +296,12 @@ pub fn parse_hypothesis(response: &str) -> Result<Hypothesis, PlanError> {
 }
 
 /// Calls the agent to plan the next iteration and parses the hypothesis.
+///
+/// Streaming events (text, tool use) are forwarded to `event_handler` if
+/// provided. Any `<request-tool>` fragments in the agent response are routed
+/// through `approver` (defaulting to deny-all when `None`); the loop continues
+/// until the agent produces a response free of tool requests.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_next(
     agent: &dyn Agent,
     session: &AgentSession,
@@ -150,9 +309,12 @@ pub fn plan_next(
     last_iteration: Option<&IterationRecord>,
     iteration_count: usize,
     description: &str,
+    event_handler: Option<&EventHandler>,
+    approver: Option<&dyn ToolApprover>,
 ) -> Result<Hypothesis, PlanError> {
     let prompt = build_planning_prompt(store, last_iteration, iteration_count, description)?;
-    let response: AgentResponse = agent.send(session, &prompt)?;
+    let response: AgentResponse = agent.send_streaming(session, &prompt, event_handler)?;
+    let response = handle_tool_requests(agent, session, response, event_handler, approver)?;
     parse_hypothesis(&response.text)
 }
 

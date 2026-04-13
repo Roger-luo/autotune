@@ -151,6 +151,7 @@ impl ClaudeAgent {
     }
 
     fn run_claude(&self, args: &[String], cwd: &Path) -> Result<AgentResponse, AgentError> {
+        let _guard = crate::terminal::Guard::new();
         let output = Command::new(&self.command)
             .args(args)
             .current_dir(cwd)
@@ -159,8 +160,22 @@ impl ClaudeAgent {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut details = String::new();
+            if !stderr.trim().is_empty() {
+                details.push_str(&format!("\nstderr: {}", stderr.trim()));
+            }
+            if !stdout.trim().is_empty() {
+                details.push_str(&format!("\nstdout: {}", stdout.trim()));
+            }
+            if details.is_empty() {
+                details.push_str(" (no output)");
+            }
             return Err(AgentError::CommandFailed {
-                message: format!("claude exited with {}: {}", output.status, stderr),
+                message: format!(
+                    "claude exited with {}\nargs: {:?}{}",
+                    output.status, args, details
+                ),
             });
         }
 
@@ -175,6 +190,7 @@ impl ClaudeAgent {
         cwd: &Path,
         event_handler: &EventHandler,
     ) -> Result<AgentResponse, AgentError> {
+        let _guard = crate::terminal::Guard::new();
         // Replace --output-format json with stream-json and add --verbose
         let mut args: Vec<String> = args
             .iter()
@@ -307,6 +323,17 @@ impl ClaudeAgent {
         let status = child.wait().map_err(|source| AgentError::Io { source })?;
 
         if !status.success() {
+            // Distinguish "killed by SIGINT" (user pressed Ctrl+C) from a real
+            // command failure. On Unix, signal exits have no exit code and
+            // their signal() is Some(2) for SIGINT.
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                // SIGINT is signal 2 on every POSIX platform.
+                if status.signal() == Some(2) {
+                    return Err(AgentError::Interrupted);
+                }
+            }
             let stderr = stderr_handle
                 .map(|mut h| {
                     let mut buf = String::new();
@@ -314,8 +341,13 @@ impl ClaudeAgent {
                     buf
                 })
                 .unwrap_or_default();
+            let details = if stderr.trim().is_empty() {
+                " (no stderr output)".to_string()
+            } else {
+                format!("\nstderr: {}", stderr.trim())
+            };
             return Err(AgentError::CommandFailed {
-                message: format!("claude exited with {}: {}", status, stderr.trim()),
+                message: format!("claude exited with {}\nargs: {:?}{}", status, args, details),
             });
         }
 
@@ -358,6 +390,13 @@ impl Agent for ClaudeAgent {
     }
 
     fn send(&self, session: &AgentSession, message: &str) -> Result<AgentResponse, AgentError> {
+        // Claude CLI treats an empty prompt with -r as "resume deferred tool",
+        // which fails if the session completed normally. Use a fallback prompt.
+        let message = if message.trim().is_empty() {
+            "Continue."
+        } else {
+            message
+        };
         let config = self.config_for_session(&session.session_id, message)?;
         let args = Self::build_args(&config, Some(&session.session_id));
         let response = self.run_claude(&args, &config.working_directory)?;
@@ -386,6 +425,13 @@ impl Agent for ClaudeAgent {
         message: &str,
         event_handler: Option<&EventHandler>,
     ) -> Result<AgentResponse, AgentError> {
+        // Claude CLI treats an empty prompt with -r as "resume deferred tool",
+        // which fails if the session completed normally. Use a fallback prompt.
+        let message = if message.trim().is_empty() {
+            "Continue."
+        } else {
+            message
+        };
         let config = self.config_for_session(&session.session_id, message)?;
         let args = Self::build_args(&config, Some(&session.session_id));
         let response = if let Some(handler) = event_handler {
@@ -403,5 +449,29 @@ impl Agent for ClaudeAgent {
 
     fn handover_command(&self, session: &AgentSession) -> String {
         format!("claude -r {}", session.session_id)
+    }
+
+    fn grant_session_permission(
+        &self,
+        session: &AgentSession,
+        permission: ToolPermission,
+    ) -> Result<(), AgentError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| AgentError::CommandFailed {
+                message: "claude session state unavailable".to_string(),
+            })?;
+        let ctx =
+            sessions
+                .get_mut(&session.session_id)
+                .ok_or_else(|| AgentError::CommandFailed {
+                    message: format!(
+                        "cannot grant permission — no session context for '{}'",
+                        session.session_id
+                    ),
+                })?;
+        ctx.allowed_tools.push(permission);
+        Ok(())
     }
 }
