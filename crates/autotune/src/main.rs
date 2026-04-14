@@ -309,7 +309,12 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         .context("failed to record baseline")?;
 
     // Spawn research agent
-    println!("[autotune] spawning research agent...");
+    let research_model = config.agent.research.as_ref().and_then(|r| r.model.clone());
+    let research_max_turns = config.agent.research.as_ref().and_then(|r| r.max_turns);
+    println!(
+        "[autotune] spawning research agent: model={}",
+        research_model.as_deref().unwrap_or("default"),
+    );
     let research_prompt =
         build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files);
 
@@ -318,8 +323,8 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         prompt: research_prompt,
         allowed_tools: research_permissions,
         working_directory: repo_root.clone(),
-        model: config.agent.research.as_ref().and_then(|r| r.model.clone()),
-        max_turns: config.agent.research.as_ref().and_then(|r| r.max_turns),
+        model: research_model,
+        max_turns: research_max_turns,
     };
 
     // Forward streaming events (text, tool use) to stderr.

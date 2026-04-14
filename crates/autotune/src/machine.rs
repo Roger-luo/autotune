@@ -205,9 +205,16 @@ fn run_implementing(
         .current_approach
         .as_ref()
         .context("no current approach in Implementing phase")?;
+    let impl_model = config
+        .agent
+        .implementation
+        .as_ref()
+        .and_then(|c| c.model.as_deref());
     println!(
-        "[autotune] iteration {} — implementing '{}'",
-        state.current_iteration, approach.name
+        "[autotune] iteration {} — implementing '{}': model={}",
+        state.current_iteration,
+        approach.name,
+        impl_model.unwrap_or("default"),
     );
 
     let impl_hypothesis = autotune_implement::Hypothesis {
@@ -217,11 +224,6 @@ fn run_implementing(
     };
 
     let log_content = store.read_log().unwrap_or_default();
-    let impl_model = config
-        .agent
-        .implementation
-        .as_ref()
-        .and_then(|c| c.model.as_deref());
     let impl_max_turns = config
         .agent
         .implementation
