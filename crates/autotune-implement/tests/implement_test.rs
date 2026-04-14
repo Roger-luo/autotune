@@ -142,3 +142,56 @@ fn setup_worktree_creates_branch_and_worktree() {
         "worktree should contain repo files"
     );
 }
+
+/// Approach names with spaces, commas, and special characters are slugified
+/// into valid git branch names.
+#[test]
+fn setup_worktree_slugifies_approach_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    std::fs::write(repo.join("dummy.txt"), "hello").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let _ = std::process::Command::new("git")
+        .args(["branch", "-M", "main"])
+        .current_dir(&repo)
+        .output();
+
+    let worktree_parent = tmp.path().join("worktrees");
+    std::fs::create_dir_all(&worktree_parent).unwrap();
+
+    let (_wt_path, branch) = autotune_implement::setup_worktree(
+        &repo,
+        "Add unit tests for X, Y & Z!",
+        &worktree_parent,
+        "main",
+    )
+    .unwrap();
+
+    // Should be slugified: lowercase, hyphens, no spaces/commas/special chars
+    assert_eq!(branch, "autotune/add-unit-tests-for-x-y-z");
+}

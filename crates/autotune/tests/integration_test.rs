@@ -221,6 +221,13 @@ fn test_single_iteration_kept() {
     // 1 send (planning) + 1 spawn (implementation)
     assert_eq!(agent.send_count(), 1);
     assert!(agent.spawn_count() >= 1);
+
+    // Advancing branch should exist and be ahead of canonical (main).
+    let advancing = &state.advancing_branch;
+    assert!(
+        autotune_git::has_commits_ahead(repo_root, "main", advancing).unwrap(),
+        "advancing branch should be ahead of main"
+    );
 }
 
 // ===========================================================================
