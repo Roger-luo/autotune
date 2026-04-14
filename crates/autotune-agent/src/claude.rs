@@ -58,12 +58,11 @@ impl ClaudeAgent {
             // Tested: `--dangerously-skip-permissions --disallowedTools Bash`
             // correctly prevents the agent from using Bash.
             "--dangerously-skip-permissions".to_string(),
-            // Skip hooks, LSP, plugins, auto-memory, CLAUDE.md discovery, and
-            // other interactive conveniences. Agents receive their full context
-            // via the system prompt; the host CLI maintains its own task log.
-            "--bare".to_string(),
             // Prevent agents from invoking skills/slash-commands which could
             // cause unexpected side effects.
+            // NOTE: --bare is NOT used because it disables OAuth/keychain auth,
+            // requiring ANTHROPIC_API_KEY to be set. Most users authenticate
+            // via OAuth or the system keychain.
             "--disable-slash-commands".to_string(),
         ];
 
