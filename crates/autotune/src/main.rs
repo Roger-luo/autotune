@@ -62,6 +62,41 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
         .with_context(|| format!("failed to load config from {}", config_path.display()))
 }
 
+/// Fill in missing agent role settings from the global user config.
+///
+/// For each role (research, implementation), if the project config has no
+/// setting for model/max_turns, use the value from the global config.
+fn apply_global_agent_defaults(config: &mut AutotuneConfig, global: &GlobalConfig) {
+    let Some(global_agent) = &global.agent else {
+        return;
+    };
+
+    // Helper: merge a global role into a project role, filling None fields.
+    fn merge_role(
+        project: &mut Option<autotune_config::AgentRoleConfig>,
+        global: &Option<autotune_config::AgentRoleConfig>,
+    ) {
+        let Some(g) = global else { return };
+        let p = project.get_or_insert_with(|| autotune_config::AgentRoleConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+        });
+        if p.model.is_none() {
+            p.model.clone_from(&g.model);
+        }
+        if p.max_turns.is_none() {
+            p.max_turns = g.max_turns;
+        }
+    }
+
+    merge_role(&mut config.agent.research, &global_agent.research);
+    merge_role(
+        &mut config.agent.implementation,
+        &global_agent.implementation,
+    );
+}
+
 fn build_agent(_config: &AutotuneConfig) -> Box<dyn Agent> {
     #[cfg(feature = "mock")]
     if std::env::var("AUTOTUNE_MOCK").is_ok() {
@@ -179,6 +214,11 @@ fn build_scorer(config: &AutotuneConfig) -> Box<dyn ScoreCalculator> {
 fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let mut config = load_config(&repo_root)?;
+
+    // Merge global user config as defaults for agent role settings.
+    // Project-level settings in .autotune.toml win; global config fills gaps.
+    let global_config = GlobalConfig::load().context("failed to load global config")?;
+    apply_global_agent_defaults(&mut config, &global_config);
 
     // Apply task name override
     if let Some(name) = task_name_override {
