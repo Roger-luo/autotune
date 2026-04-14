@@ -8,6 +8,22 @@ use autotune_git::GitError;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Load project-level instructions for the implementation agent.
+///
+/// Checks AGENTS.md first (preferred), then CLAUDE.md as fallback.
+/// Returns `None` if neither exists.
+fn load_project_instructions(worktree_path: &Path) -> Option<String> {
+    for name in ["AGENTS.md", "CLAUDE.md"] {
+        let path = worktree_path.join(name);
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && !content.trim().is_empty()
+        {
+            return Some(content);
+        }
+    }
+    None
+}
+
 /// A hypothesis for a tuning approach.
 ///
 /// This is a local copy of the type that will eventually live in `autotune-plan`.
@@ -201,7 +217,21 @@ pub fn run_implementation(
     max_turns: Option<u64>,
     event_handler: Option<EventHandler>,
 ) -> Result<ImplementResult, ImplementError> {
-    let prompt = build_implementation_prompt(hypothesis, log_content, denied_paths);
+    let mut prompt = String::new();
+
+    // Load project instructions (AGENTS.md first, CLAUDE.md fallback) so the
+    // implementation agent follows the same conventions as a human developer.
+    // We read from the worktree since --bare skips CLAUDE.md auto-discovery.
+    if let Some(instructions) = load_project_instructions(worktree_path) {
+        prompt.push_str(&instructions);
+        prompt.push_str("\n\n");
+    }
+
+    prompt.push_str(&build_implementation_prompt(
+        hypothesis,
+        log_content,
+        denied_paths,
+    ));
 
     // Resolve tunable globs to absolute paths anchored at the worktree.
     // The Claude CLI matches `--allowedTools Edit:<glob>` against the
