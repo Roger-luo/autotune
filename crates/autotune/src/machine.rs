@@ -173,6 +173,11 @@ fn run_planning(
     let (worktree_path, branch_name) =
         autotune_implement::setup_worktree(&repo_root, &hypothesis.approach, &worktree_parent)
             .context("failed to set up worktree")?;
+    println!(
+        "[autotune] worktree: {} (branch {})",
+        worktree_path.display(),
+        branch_name
+    );
 
     state.current_approach = Some(ApproachState {
         name: hypothesis.approach.clone(),
@@ -234,6 +239,7 @@ fn run_implementing(
         &approach.worktree_path,
         &approach.branch_name,
         &config.paths.tunable,
+        &config.paths.denied,
         &log_content,
         impl_model,
         impl_max_turns,

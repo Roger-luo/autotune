@@ -14,7 +14,7 @@ fn sample_hypothesis() -> Hypothesis {
 #[test]
 fn prompt_includes_hypothesis_details() {
     let h = sample_hypothesis();
-    let prompt = build_implementation_prompt(&h, "");
+    let prompt = build_implementation_prompt(&h, "", &[]);
 
     assert!(prompt.contains("loop-unrolling"));
     assert!(prompt.contains("Unrolling the inner loop will reduce branch overhead"));
@@ -25,7 +25,7 @@ fn prompt_includes_hypothesis_details() {
 #[test]
 fn prompt_includes_log_content_when_nonempty() {
     let h = sample_hypothesis();
-    let prompt = build_implementation_prompt(&h, "Previous run showed 5% regression.");
+    let prompt = build_implementation_prompt(&h, "Previous run showed 5% regression.", &[]);
 
     assert!(prompt.contains("Prior findings from log.md"));
     assert!(prompt.contains("Previous run showed 5% regression."));
@@ -34,7 +34,7 @@ fn prompt_includes_log_content_when_nonempty() {
 #[test]
 fn prompt_excludes_log_section_when_empty() {
     let h = sample_hypothesis();
-    let prompt = build_implementation_prompt(&h, "");
+    let prompt = build_implementation_prompt(&h, "", &[]);
 
     assert!(!prompt.contains("Prior findings"));
 }
@@ -42,12 +42,30 @@ fn prompt_excludes_log_section_when_empty() {
 #[test]
 fn prompt_includes_rules() {
     let h = sample_hypothesis();
-    let prompt = build_implementation_prompt(&h, "");
+    let prompt = build_implementation_prompt(&h, "", &[]);
 
     assert!(prompt.contains("Do NOT run tests"));
-    assert!(prompt.contains("Do NOT modify test files"));
     assert!(prompt.contains("Do NOT try to commit"));
     assert!(prompt.contains("SUMMARY:"));
+}
+
+#[test]
+fn prompt_includes_denied_paths_when_present() {
+    let h = sample_hypothesis();
+    let denied = vec!["**/tests/**".to_string(), "benches/**".to_string()];
+    let prompt = build_implementation_prompt(&h, "", &denied);
+
+    assert!(prompt.contains("denied patterns"));
+    assert!(prompt.contains("`**/tests/**`"));
+    assert!(prompt.contains("`benches/**`"));
+}
+
+#[test]
+fn prompt_omits_denied_section_when_empty() {
+    let h = sample_hypothesis();
+    let prompt = build_implementation_prompt(&h, "", &[]);
+
+    assert!(!prompt.contains("denied"));
 }
 
 #[test]

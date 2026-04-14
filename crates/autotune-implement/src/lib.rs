@@ -81,23 +81,46 @@ pub fn implementation_agent_permissions(tunable_paths: &[String]) -> Vec<ToolPer
 }
 
 /// Build the system prompt sent to the implementation agent.
-pub fn build_implementation_prompt(hypothesis: &Hypothesis, log_content: &str) -> String {
+pub fn build_implementation_prompt(
+    hypothesis: &Hypothesis,
+    log_content: &str,
+    denied_paths: &[String],
+) -> String {
     let mut prompt = String::new();
 
     prompt.push_str(&format!("# Approach: {}\n\n", hypothesis.approach));
     prompt.push_str(&format!("## Hypothesis\n\n{}\n\n", hypothesis.hypothesis));
 
-    prompt.push_str("## Files to modify\n\n");
+    prompt.push_str("## Files to create or modify\n\n");
     for file in &hypothesis.files_to_modify {
         prompt.push_str(&format!("- {}\n", file));
     }
     prompt.push('\n');
 
+    prompt.push_str("## Tools\n\n");
+    prompt.push_str(
+        "You have these tools pre-configured — use them directly, do NOT ask for permission:\n",
+    );
+    prompt.push_str("- **Read, Glob, Grep** — unrestricted, use freely to explore the codebase.\n");
+    prompt.push_str("- **Edit** — modify existing files (scoped to the paths above).\n");
+    prompt.push_str(
+        "- **Write** — create new files or overwrite existing ones (scoped to the paths above).\n",
+    );
+    prompt.push('\n');
+
     prompt.push_str("## Rules\n\n");
     prompt.push_str("- Do NOT run tests or measures.\n");
-    prompt.push_str("- Do NOT modify test files.\n");
     prompt.push_str("- Do NOT try to commit — the system stages and commits your changes automatically. Bash is not available to you.\n");
-    prompt.push_str("- Only modify the files listed above.\n");
+    prompt.push_str("- Only create or modify the files listed above.\n");
+    if !denied_paths.is_empty() {
+        prompt.push_str("- Do NOT modify files matching these denied patterns:\n");
+        for p in denied_paths {
+            prompt.push_str(&format!("  - `{p}`\n"));
+        }
+    }
+    prompt.push_str(
+        "- Do NOT ask for permission — your tools are already configured. Just use them.\n",
+    );
     prompt.push('\n');
 
     prompt.push_str("## Output\n\n");
@@ -145,13 +168,24 @@ pub fn run_implementation(
     worktree_path: &Path,
     branch_name: &str,
     tunable_paths: &[String],
+    denied_paths: &[String],
     log_content: &str,
     model: Option<&str>,
     max_turns: Option<u64>,
     event_handler: Option<EventHandler>,
 ) -> Result<ImplementResult, ImplementError> {
-    let prompt = build_implementation_prompt(hypothesis, log_content);
-    let permissions = implementation_agent_permissions(tunable_paths);
+    let prompt = build_implementation_prompt(hypothesis, log_content, denied_paths);
+
+    // Resolve tunable globs to absolute paths anchored at the worktree.
+    // The Claude CLI matches `--allowedTools Edit:<glob>` against the
+    // absolute file paths the agent passes to Edit/Write. Relative globs
+    // like `crates/**/*.rs` don't match absolute paths, so we prepend the
+    // worktree root to each glob.
+    let abs_tunable: Vec<String> = tunable_paths
+        .iter()
+        .map(|p| worktree_path.join(p).to_string_lossy().into_owned())
+        .collect();
+    let permissions = implementation_agent_permissions(&abs_tunable);
 
     autotune_agent::trace::record(
         "implement.prompt",
