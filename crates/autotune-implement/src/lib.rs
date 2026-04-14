@@ -138,6 +138,32 @@ pub fn build_implementation_prompt(
     prompt
 }
 
+/// Turn an arbitrary approach name into a valid git branch component.
+///
+/// Lowercases, replaces non-alphanumeric runs with a single hyphen,
+/// trims leading/trailing hyphens, and caps at 60 characters.
+fn slugify(name: &str) -> String {
+    let slug: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    // Collapse consecutive hyphens and trim edges.
+    let mut out = String::new();
+    for ch in slug.chars() {
+        if ch == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(ch);
+    }
+    let out = out.trim_matches('-');
+    if out.len() > 60 {
+        out[..60].trim_end_matches('-').to_string()
+    } else {
+        out.to_string()
+    }
+}
+
 /// Create a branch and worktree for the given approach.
 ///
 /// Returns `(worktree_path, branch_name)`.
@@ -146,8 +172,9 @@ pub fn setup_worktree(
     approach_name: &str,
     worktree_parent: &Path,
 ) -> Result<(PathBuf, String), ImplementError> {
-    let branch_name = format!("autotune/{}", approach_name);
-    let worktree_path = worktree_parent.join(approach_name);
+    let slug = slugify(approach_name);
+    let branch_name = format!("autotune/{}", slug);
+    let worktree_path = worktree_parent.join(&slug);
 
     autotune_git::create_branch(repo_root, &branch_name)?;
     autotune_git::create_worktree(repo_root, &worktree_path, &branch_name)?;
