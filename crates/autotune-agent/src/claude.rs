@@ -58,6 +58,10 @@ impl ClaudeAgent {
             // Tested: `--dangerously-skip-permissions --disallowedTools Bash`
             // correctly prevents the agent from using Bash.
             "--dangerously-skip-permissions".to_string(),
+            // Skip hooks, LSP, plugins, auto-memory, CLAUDE.md discovery, and
+            // other interactive conveniences. Agents receive their full context
+            // via the system prompt; the host CLI maintains its own task log.
+            "--bare".to_string(),
         ];
 
         if let Some(sid) = session_id {
