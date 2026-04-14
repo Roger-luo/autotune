@@ -62,10 +62,6 @@ impl ClaudeAgent {
             // other interactive conveniences. Agents receive their full context
             // via the system prompt; the host CLI maintains its own task log.
             "--bare".to_string(),
-            // Don't persist sessions to the Claude CLI's own session store.
-            // We manage session IDs ourselves; the saved sessions would just
-            // be disk clutter.
-            "--no-session-persistence".to_string(),
             // Prevent agents from invoking skills/slash-commands which could
             // cause unexpected side effects.
             "--disable-slash-commands".to_string(),
