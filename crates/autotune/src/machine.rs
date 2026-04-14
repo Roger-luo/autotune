@@ -31,6 +31,15 @@ pub fn run_single_phase(
         backend: agent.backend_name().to_string(),
     };
 
+    autotune_agent::trace::record(
+        "phase.enter",
+        serde_json::json!({
+            "iteration": state.current_iteration,
+            "phase": state.current_phase.to_string(),
+            "approach": state.current_approach.as_ref().map(|a| a.name.clone()),
+        }),
+    );
+
     match state.current_phase {
         Phase::Planning => {
             run_planning(config, agent, store, state, &research_session, approver)?;
@@ -151,6 +160,11 @@ fn run_planning(
     .context("planning failed")?;
     planning_stream.finish();
 
+    // Show the user what the research agent chose before we advance into
+    // implementation — otherwise the planning phase would silently transition
+    // and the hypothesis would only surface later in the ledger.
+    crate::stream_ui::render_hypothesis(state.current_iteration, &hypothesis);
+
     // Set up worktree
     let worktree_parent = store.root().join("worktrees");
     std::fs::create_dir_all(&worktree_parent)?;
@@ -169,6 +183,7 @@ fn run_planning(
         test_results: Vec::new(),
         metrics: None,
         rank: None,
+        files_to_modify: hypothesis.files_to_modify.clone(),
     });
     state.current_phase = Phase::Implementing;
     store.save_state(state)?;
@@ -193,7 +208,7 @@ fn run_implementing(
     let impl_hypothesis = autotune_implement::Hypothesis {
         approach: approach.name.clone(),
         hypothesis: approach.hypothesis.clone(),
-        files_to_modify: Vec::new(), // agent figures this out
+        files_to_modify: approach.files_to_modify.clone(),
     };
 
     let log_content = store.read_log().unwrap_or_default();
@@ -238,6 +253,14 @@ fn run_implementing(
                 "[autotune] iteration {} — implementation produced no commit, recording as crash",
                 state.current_iteration
             );
+            autotune_agent::trace::record(
+                "phase.decision",
+                serde_json::json!({
+                    "phase": "Implementing",
+                    "branch": "crash",
+                    "reason": "implementation produced no commit",
+                }),
+            );
             record_crash(state, store)?;
         }
         Err(e) => {
@@ -275,6 +298,19 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
 
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.test_results = state_test_results;
+
+    autotune_agent::trace::record(
+        "phase.decision",
+        serde_json::json!({
+            "phase": "Testing",
+            "branch": if all_pass { "pass" } else { "fail" },
+            "results": test_results.iter().map(|r| serde_json::json!({
+                "name": r.name,
+                "passed": r.passed,
+                "duration_secs": r.duration_secs,
+            })).collect::<Vec<_>>(),
+        }),
+    );
 
     if all_pass {
         state.current_phase = Phase::Measuring;
@@ -388,6 +424,16 @@ fn run_scoring(
     println!(
         "[autotune] iteration {} — score: rank={:.4}, decision={}, reason={}",
         state.current_iteration, score_output.rank, score_output.decision, score_output.reason
+    );
+    autotune_agent::trace::record(
+        "phase.decision",
+        serde_json::json!({
+            "phase": "Scoring",
+            "branch": score_output.decision,
+            "rank": score_output.rank,
+            "reason": score_output.reason,
+            "metrics": candidate_metrics,
+        }),
     );
 
     if score_output.decision == "keep" {

@@ -153,6 +153,16 @@ pub fn run_implementation(
     let prompt = build_implementation_prompt(hypothesis, log_content);
     let permissions = implementation_agent_permissions(tunable_paths);
 
+    autotune_agent::trace::record(
+        "implement.prompt",
+        serde_json::json!({
+            "approach": hypothesis.approach,
+            "files_to_modify": hypothesis.files_to_modify,
+            "prompt": prompt,
+            "worktree": worktree_path.display().to_string(),
+        }),
+    );
+
     let config = AgentConfig {
         prompt,
         allowed_tools: permissions,
@@ -184,8 +194,24 @@ pub fn run_implementation(
         autotune_git::latest_commit_sha(worktree_path)?
     } else {
         // No commit and no uncommitted changes — the agent made no edits.
+        autotune_agent::trace::record(
+            "implement.result",
+            serde_json::json!({
+                "approach": hypothesis.approach,
+                "outcome": "no_commit",
+            }),
+        );
         return Err(ImplementError::NoCommit);
     };
+
+    autotune_agent::trace::record(
+        "implement.result",
+        serde_json::json!({
+            "approach": hypothesis.approach,
+            "outcome": "committed",
+            "commit_sha": commit_sha,
+        }),
+    );
 
     Ok(ImplementResult {
         worktree_path: worktree_path.to_path_buf(),

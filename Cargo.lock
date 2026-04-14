@@ -146,6 +146,7 @@ dependencies = [
  "quick-xml",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -227,8 +228,8 @@ dependencies = [
  "autotune-agent",
  "autotune-state",
  "chrono",
- "quick-xml",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
 ]

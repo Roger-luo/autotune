@@ -38,6 +38,7 @@ fn sample_approach() -> ApproachState {
         }],
         metrics: Some(metrics(&[("time_us", 123.0)])),
         rank: Some(0.25),
+        files_to_modify: vec!["src/cache.rs".to_string()],
     }
 }
 

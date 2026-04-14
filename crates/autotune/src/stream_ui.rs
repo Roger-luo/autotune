@@ -250,6 +250,37 @@ fn describe_tool_use(tool: &str, input: &str) -> String {
     }
 }
 
+/// Build the markdown snippet presented to the user after the research agent
+/// proposes a hypothesis. Factored out of `render_hypothesis` so the formatting
+/// can be unit-tested without touching stderr.
+fn build_hypothesis_markdown(iteration: usize, hypothesis: &autotune_plan::Hypothesis) -> String {
+    let mut md = String::new();
+    md.push_str(&format!(
+        "## Iteration {iteration} — Proposed Hypothesis\n\n"
+    ));
+    md.push_str(&format!("**Approach:** `{}`\n\n", hypothesis.approach));
+    md.push_str(hypothesis.hypothesis.trim());
+    md.push('\n');
+    if !hypothesis.files_to_modify.is_empty() {
+        md.push_str("\n**Files to modify:**\n");
+        for f in &hypothesis.files_to_modify {
+            md.push_str(&format!("- `{f}`\n"));
+        }
+    }
+    md
+}
+
+/// Render the proposed hypothesis to stderr so the user can see what the
+/// research agent chose before the implementation phase runs.
+pub fn render_hypothesis(iteration: usize, hypothesis: &autotune_plan::Hypothesis) {
+    let md = build_hypothesis_markdown(iteration, hypothesis);
+    let skin = termimad::MadSkin::default_dark();
+    let mut stderr = std::io::stderr();
+    let _ = skin.write_text_on(&mut stderr, md.trim_end_matches('\n'));
+    let _ = writeln!(stderr);
+    let _ = stderr.flush();
+}
+
 /// Clear the current terminal line. Used by the tool-approval prompt to wipe
 /// any leftover ephemeral status before showing an interactive question.
 pub fn clear_status() {
@@ -278,6 +309,14 @@ impl autotune_plan::ToolApprover for TerminalToolApprover {
         };
         println!("  tool:   {scope_str}");
         println!("  reason: {}", req.reason);
+        autotune_agent::trace::record(
+            "approval.prompt",
+            serde_json::json!({
+                "tool": req.tool,
+                "scope": req.scope,
+                "reason": req.reason,
+            }),
+        );
 
         // Layer 1: dialoguer puts the terminal in raw mode. If interrupted,
         // Drop on this guard restores.
@@ -288,10 +327,49 @@ impl autotune_plan::ToolApprover for TerminalToolApprover {
             .interact()
             .map_err(std::io::Error::other)?;
 
-        Ok(if confirmed {
+        let decision = if confirmed {
             autotune_plan::ApprovalDecision::Approve
         } else {
             autotune_plan::ApprovalDecision::Deny
-        })
+        };
+        autotune_agent::trace::record(
+            "approval.answer",
+            serde_json::json!({
+                "tool": req.tool,
+                "decision": if confirmed { "approve" } else { "deny" },
+            }),
+        );
+        Ok(decision)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hypothesis_markdown_includes_approach_and_files() {
+        let h = autotune_plan::Hypothesis {
+            approach: "inline-cache".to_string(),
+            hypothesis: "Inlining the cache reduces overhead.".to_string(),
+            files_to_modify: vec!["src/cache.rs".into(), "src/main.rs".into()],
+        };
+        let md = build_hypothesis_markdown(7, &h);
+        assert!(md.contains("Iteration 7"));
+        assert!(md.contains("`inline-cache`"));
+        assert!(md.contains("Inlining the cache reduces overhead."));
+        assert!(md.contains("- `src/cache.rs`"));
+        assert!(md.contains("- `src/main.rs`"));
+    }
+
+    #[test]
+    fn hypothesis_markdown_omits_files_section_when_empty() {
+        let h = autotune_plan::Hypothesis {
+            approach: "noop".to_string(),
+            hypothesis: "Nothing to change.".to_string(),
+            files_to_modify: vec![],
+        };
+        let md = build_hypothesis_markdown(1, &h);
+        assert!(!md.contains("Files to modify"));
     }
 }

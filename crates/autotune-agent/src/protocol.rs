@@ -25,6 +25,60 @@ use quick_xml::events::{BytesStart, Event};
 
 use crate::AgentError;
 
+// ---------------------------------------------------------------------------
+// Lenient tag extraction — used by all top-level parsers
+// ---------------------------------------------------------------------------
+
+/// A substring match found by [`lenient_find_all`].
+#[derive(Debug, Clone, Copy)]
+pub struct TagMatch<'a> {
+    /// Byte offset of the opening `<tag>` in the source string.
+    pub start: usize,
+    /// Content between `<tag>` and `</tag>`, not including the tags themselves.
+    pub inner: &'a str,
+    /// Full `<tag>…</tag>` substring including both tags.
+    pub outer: &'a str,
+}
+
+/// Find all `<tag>…</tag>` occurrences by literal substring matching.
+///
+/// Returns one [`TagMatch`] per pair found, in document order. Does not attempt
+/// XML parsing — `inner` may contain any characters, including unescaped `<`,
+/// `>`, and `&`. Unterminated opens (no matching `</tag>`) are silently
+/// skipped rather than treated as errors.
+///
+/// Only matches literal `<tag>` opens; attribute-bearing opens like
+/// `<tag foo="bar">` are not recognized (none of our protocol tags use
+/// attributes).
+pub fn lenient_find_all<'a>(text: &'a str, tag: &str) -> Vec<TagMatch<'a>> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut matches = Vec::new();
+    let mut cursor = 0;
+    while let Some(rel_open) = text[cursor..].find(&open) {
+        let open_start = cursor + rel_open;
+        let content_start = open_start + open.len();
+        if let Some(rel_close) = text[content_start..].find(&close) {
+            let inner_end = content_start + rel_close;
+            let outer_end = inner_end + close.len();
+            matches.push(TagMatch {
+                start: open_start,
+                inner: &text[content_start..inner_end],
+                outer: &text[open_start..outer_end],
+            });
+            cursor = outer_end;
+        } else {
+            // Unterminated — skip this occurrence and keep scanning.
+            cursor = content_start;
+        }
+    }
+    matches
+}
+
+// ---------------------------------------------------------------------------
+// Data types
+// ---------------------------------------------------------------------------
+
 /// A question option rendered as a selection menu item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestionOption {
@@ -46,34 +100,30 @@ pub struct ToolRequest {
 }
 
 /// Parse any `<request-tool>` top-level fragments in an agent response.
-/// Ignores all other content. Safe to call on responses that may or may not
-/// contain tool requests (returns an empty Vec if none found).
+///
+/// Only `<request-tool>` blocks matter here — everything else is prose, plans,
+/// or fragments handled by a different parser. In practice the rest of the
+/// response is full of things that aren't well-formed XML: agents routinely
+/// embed Rust type signatures (`&Value`, `Vec<T>`), code snippets with `<` and
+/// `&`, and markdown tables. Walking the whole document with strict quick-xml
+/// blows up on the first such occurrence and takes down the tune loop.
+///
+/// So we do a lenient string scan: find each literal `<request-tool>` …
+/// `</request-tool>` pair and run the strict parser only on that substring.
+/// Whatever sits between pairs is ignored verbatim, regardless of whether it
+/// parses as XML.
+///
+/// Attribute-bearing opens (`<request-tool foo="bar">`) are not supported —
+/// the schema doesn't use attributes on this tag, and accepting them here
+/// would force us back onto the strict walker.
 pub fn parse_tool_requests(response: &str) -> Result<Vec<ToolRequest>, AgentError> {
-    let mut reader = Reader::from_str(response);
-    reader.config_mut().trim_text(false);
     let mut requests = Vec::new();
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let name = tag_name(&e)?;
-                if name == "request-tool" {
-                    requests.push(parse_tool_request(&mut reader)?);
-                } else {
-                    skip_element(&mut reader, &name)?;
-                }
-            }
-            Ok(Event::Empty(_)) => {}
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => {
-                return Err(AgentError::ParseFailed {
-                    message: format!("XML parse error: {e}"),
-                });
-            }
-        }
-        buf.clear();
+    for m in lenient_find_all(response, "request-tool") {
+        requests.push(parse_fragment_strict(
+            m.outer,
+            "request-tool",
+            parse_tool_request,
+        )?);
     }
     Ok(requests)
 }
@@ -138,54 +188,99 @@ pub enum AgentFragment {
 
 /// Parse an agent response into zero or more fragments.
 ///
-/// Prose outside recognised top-level tags is ignored. Unknown top-level tags
-/// are skipped. Malformed XML or bad fragment contents return `ParseFailed`.
+/// Uses lenient substring extraction at the top level: each known tag
+/// (`<message>`, `<question>`, `<task>`, `<paths>`, `<test>`, `<measure>`,
+/// `<score>`, `<agent>`) is found by literal string matching. The strict XML
+/// parser runs only on each matched fragment's content, so garbage prose
+/// between fragments (unescaped `<`, `&`, Rust generics, markdown tables)
+/// is harmlessly ignored.
+///
+/// Fragments are returned in document order (sorted by byte offset).
+/// Unknown tags and unmatched text are silently skipped.
 pub fn parse_agent_response(response: &str) -> Result<Vec<AgentFragment>, AgentError> {
-    let mut reader = Reader::from_str(response);
-    reader.config_mut().trim_text(false);
-    let mut fragments = Vec::new();
-    let mut buf = Vec::new();
+    const KNOWN: &[&str] = &[
+        "message", "question", "task", "paths", "test", "measure", "score", "agent",
+    ];
 
+    // Collect all matches for every known tag, then sort by document position.
+    let mut all: Vec<(usize, &str, &str)> = Vec::new(); // (start, tag, outer)
+    for tag in KNOWN {
+        for m in lenient_find_all(response, tag) {
+            all.push((m.start, tag, m.outer));
+        }
+    }
+    all.sort_by_key(|&(start, _, _)| start);
+
+    let mut fragments = Vec::new();
+    for (_, tag, outer) in all {
+        let frag = match tag {
+            "message" => parse_fragment_strict(outer, "message", |r| {
+                Ok(AgentFragment::Message(read_text(r, "message")?))
+            })?,
+            "question" => parse_fragment_strict(outer, "question", parse_question)?,
+            "task" => {
+                parse_fragment_strict(outer, "task", |r| Ok(AgentFragment::Task(parse_task(r)?)))?
+            }
+            "paths" => parse_fragment_strict(outer, "paths", |r| {
+                Ok(AgentFragment::Paths(parse_paths(r)?))
+            })?,
+            "test" => {
+                parse_fragment_strict(outer, "test", |r| Ok(AgentFragment::Test(parse_test(r)?)))?
+            }
+            "measure" => parse_fragment_strict(outer, "measure", |r| {
+                Ok(AgentFragment::Measure(parse_measure(r)?))
+            })?,
+            "score" => parse_fragment_strict(outer, "score", |r| {
+                Ok(AgentFragment::Score(parse_score(r)?))
+            })?,
+            "agent" => parse_fragment_strict(outer, "agent", |r| {
+                Ok(AgentFragment::Agent(parse_agent(r)?))
+            })?,
+            _ => unreachable!(),
+        };
+        fragments.push(frag);
+    }
+
+    Ok(fragments)
+}
+
+// ---------------------------------------------------------------------------
+// Fragment dispatch
+// ---------------------------------------------------------------------------
+
+/// Parse a single fragment whose full text (including outer tags) is in
+/// `fragment`. Creates a fresh strict Reader, skips to the opening `<tag>`
+/// event, then delegates to `parser` which consumes everything up to and
+/// including the closing `</tag>`.
+fn parse_fragment_strict<T, F>(fragment: &str, tag: &str, parser: F) -> Result<T, AgentError>
+where
+    F: FnOnce(&mut Reader<&[u8]>) -> Result<T, AgentError>,
+{
+    let mut reader = Reader::from_str(fragment);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = tag_name(&e)?;
-                let frag = match name.as_str() {
-                    "message" => AgentFragment::Message(read_text(&mut reader, "message")?),
-                    "question" => parse_question(&mut reader)?,
-                    "task" => AgentFragment::Task(parse_task(&mut reader)?),
-                    "paths" => AgentFragment::Paths(parse_paths(&mut reader)?),
-                    "test" => AgentFragment::Test(parse_test(&mut reader)?),
-                    "measure" => AgentFragment::Measure(parse_measure(&mut reader)?),
-                    "score" => AgentFragment::Score(parse_score(&mut reader)?),
-                    "agent" => AgentFragment::Agent(parse_agent(&mut reader)?),
-                    other => {
-                        skip_element(&mut reader, other)?;
-                        continue;
-                    }
-                };
-                fragments.push(frag);
-            }
-            Ok(Event::Empty(e)) => {
-                // Self-closing top-level tag — accept only scalar-style ones as empty strings.
-                let name = tag_name(&e)?;
-                if let "message" = name.as_str() {
-                    fragments.push(AgentFragment::Message(String::new()));
+                if name == tag {
+                    return parser(&mut reader);
                 }
-                // Other empty top-level tags are ignored (they'd be invalid sections anyway).
             }
-            Ok(Event::Eof) => break,
-            Ok(_) => {} // text/comment/decl outside any tag — skip
+            Ok(Event::Eof) => {
+                return Err(AgentError::ParseFailed {
+                    message: format!("no <{tag}> found in fragment"),
+                });
+            }
+            Ok(_) => {}
             Err(e) => {
                 return Err(AgentError::ParseFailed {
-                    message: format!("XML parse error: {e}"),
+                    message: format!("XML parse error in <{tag}>: {e}"),
                 });
             }
         }
         buf.clear();
     }
-
-    Ok(fragments)
 }
 
 // ---------------------------------------------------------------------------

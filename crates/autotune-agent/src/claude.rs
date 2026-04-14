@@ -386,6 +386,7 @@ impl Agent for ClaudeAgent {
         let args = Self::build_args(config, None);
         let response = self.run_claude(&args, &config.working_directory)?;
         self.remember_session(&response.session_id, config)?;
+        trace_spawn(config, &response);
         Ok(response)
     }
 
@@ -401,6 +402,7 @@ impl Agent for ClaudeAgent {
         let args = Self::build_args(&config, Some(&session.session_id));
         let response = self.run_claude(&args, &config.working_directory)?;
         self.remember_session(&response.session_id, &config)?;
+        trace_send(session, message, &response);
         Ok(response)
     }
 
@@ -416,6 +418,7 @@ impl Agent for ClaudeAgent {
             self.run_claude(&args, &config.working_directory)?
         };
         self.remember_session(&response.session_id, config)?;
+        trace_spawn(config, &response);
         Ok(response)
     }
 
@@ -440,6 +443,7 @@ impl Agent for ClaudeAgent {
             self.run_claude(&args, &config.working_directory)?
         };
         self.remember_session(&response.session_id, &config)?;
+        trace_send(session, message, &response);
         Ok(response)
     }
 
@@ -474,4 +478,41 @@ impl Agent for ClaudeAgent {
         ctx.allowed_tools.push(permission);
         Ok(())
     }
+}
+
+/// Emit one `agent.spawn` trace record. Captures prompt + response verbatim
+/// so a trace file is enough to replay a run end-to-end.
+fn trace_spawn(config: &AgentConfig, response: &AgentResponse) {
+    if !crate::trace::is_enabled() {
+        return;
+    }
+    crate::trace::record(
+        "agent.spawn",
+        serde_json::json!({
+            "backend": "claude",
+            "working_dir": config.working_directory.display().to_string(),
+            "model": config.model,
+            "max_turns": config.max_turns,
+            "prompt": config.prompt,
+            "response_session_id": response.session_id,
+            "response_text": response.text,
+        }),
+    );
+}
+
+/// Emit one `agent.send` trace record.
+fn trace_send(session: &AgentSession, message: &str, response: &AgentResponse) {
+    if !crate::trace::is_enabled() {
+        return;
+    }
+    crate::trace::record(
+        "agent.send",
+        serde_json::json!({
+            "backend": session.backend,
+            "session_id": session.session_id,
+            "message": message,
+            "response_session_id": response.session_id,
+            "response_text": response.text,
+        }),
+    );
 }

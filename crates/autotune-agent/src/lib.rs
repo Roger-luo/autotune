@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod protocol;
 pub mod terminal;
+pub mod trace;
 
 use std::path::PathBuf;
 use thiserror::Error;

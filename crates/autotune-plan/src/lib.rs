@@ -245,97 +245,43 @@ fn collect_measure_output_files(
     Some(files)
 }
 
-/// Parses a `Hypothesis` from an agent response that may contain surrounding prose.
+/// Parses a `Hypothesis` from an agent response that may contain surrounding
+/// prose.
 ///
-/// Expects a `<plan>` XML fragment with `<approach>`, `<hypothesis>`, and
-/// `<files-to-modify>` children. Prose outside the fragment is ignored.
+/// Uses [`autotune_agent::protocol::lenient_find_all`] at every level — both
+/// the outer `<plan>` and its children (`<approach>`, `<hypothesis>`,
+/// `<files-to-modify>` → `<file>`). This makes the parser immune to
+/// unescaped `<`, `&`, and other non-XML content that agents routinely embed
+/// in hypothesis prose (Rust type signatures, markdown, code snippets).
 pub fn parse_hypothesis(response: &str) -> Result<Hypothesis, PlanError> {
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
+    use autotune_agent::protocol::lenient_find_all;
 
-    let mut reader = Reader::from_str(response);
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
+    let plan_inner = lenient_find_all(response, "plan")
+        .first()
+        .map(|m| m.inner)
+        .ok_or_else(|| PlanError::ParseHypothesis {
+            message: "no <plan> fragment found in agent response".to_string(),
+        })?;
 
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| PlanError::ParseHypothesis {
-                        message: format!("non-utf8 tag name: {err}"),
-                    })?
-                    .to_string();
-                if name == "plan" {
-                    return parse_plan(&mut reader);
-                }
-                skip_element(&mut reader, &name)?;
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(e) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("XML parse error: {e}"),
-                });
-            }
-        }
-        buf.clear();
-    }
+    let approach = lenient_find_all(plan_inner, "approach")
+        .first()
+        .map(|m| m.inner.trim().to_string())
+        .unwrap_or_default();
 
-    Err(PlanError::ParseHypothesis {
-        message: "no <plan> fragment found in agent response".to_string(),
-    })
-}
+    let hypothesis = lenient_find_all(plan_inner, "hypothesis")
+        .first()
+        .map(|m| m.inner.trim().to_string())
+        .unwrap_or_default();
 
-fn parse_plan(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Hypothesis, PlanError> {
-    use quick_xml::events::Event;
-
-    let mut approach = String::new();
-    let mut hypothesis = String::new();
-    let mut files_to_modify: Vec<String> = Vec::new();
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| PlanError::ParseHypothesis {
-                        message: format!("non-utf8 tag name: {err}"),
-                    })?
-                    .to_string();
-                match name.as_str() {
-                    "approach" => approach = read_text(reader, "approach")?,
-                    "hypothesis" => hypothesis = read_text(reader, "hypothesis")?,
-                    "files-to-modify" => files_to_modify = parse_files_to_modify(reader)?,
-                    other => skip_element(reader, other)?,
-                }
-            }
-            Ok(Event::End(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| PlanError::ParseHypothesis {
-                        message: format!("non-utf8 tag name: {err}"),
-                    })?
-                    .to_string();
-                if name == "plan" {
-                    break;
-                }
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("unexpected closing tag </{name}> while in <plan>"),
-                });
-            }
-            Ok(Event::Eof) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: "unexpected EOF inside <plan>".to_string(),
-                });
-            }
-            Ok(_) => {}
-            Err(e) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("XML parse error inside <plan>: {e}"),
-                });
-            }
-        }
-        buf.clear();
-    }
+    let files_to_modify = lenient_find_all(plan_inner, "files-to-modify")
+        .first()
+        .map(|m| {
+            lenient_find_all(m.inner, "file")
+                .iter()
+                .map(|f| f.inner.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
 
     if approach.is_empty() {
         return Err(PlanError::ParseHypothesis {
@@ -355,152 +301,58 @@ fn parse_plan(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Hypothesis, PlanE
     })
 }
 
-fn parse_files_to_modify(reader: &mut quick_xml::Reader<&[u8]>) -> Result<Vec<String>, PlanError> {
-    use quick_xml::events::Event;
+/// Maximum number of planning attempts before bubbling the parse error up. The
+/// research agent occasionally emits malformed XML (truncated fragments,
+/// mismatched tags). Re-prompting with the specific parse error almost always
+/// recovers; hard-failing after three tries keeps a broken model from spinning
+/// forever.
+pub const MAX_PLAN_ATTEMPTS: usize = 3;
 
-    let mut files: Vec<String> = Vec::new();
-    let mut buf = Vec::new();
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| PlanError::ParseHypothesis {
-                        message: format!("non-utf8 tag name: {err}"),
-                    })?
-                    .to_string();
-                if name == "file" {
-                    files.push(read_text(reader, "file")?);
-                } else {
-                    skip_element(reader, &name)?;
-                }
+/// Classify a `PlanError` as recoverable-by-retry.
+///
+/// `ParseHypothesis` (final `<plan>` parse) and `AgentError::ParseFailed`
+/// (raised while walking tool requests over malformed XML) can be fixed by the
+/// agent with a corrected response. IO / command / interrupt failures cannot.
+fn is_retryable(err: &PlanError) -> bool {
+    matches!(
+        err,
+        PlanError::ParseHypothesis { .. }
+            | PlanError::Agent {
+                source: AgentError::ParseFailed { .. },
             }
-            Ok(Event::End(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| PlanError::ParseHypothesis {
-                        message: format!("non-utf8 tag name: {err}"),
-                    })?
-                    .to_string();
-                if name == "files-to-modify" {
-                    break;
-                }
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("unexpected closing tag </{name}> while in <files-to-modify>"),
-                });
-            }
-            Ok(Event::Eof) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: "unexpected EOF inside <files-to-modify>".to_string(),
-                });
-            }
-            Ok(_) => {}
-            Err(e) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("XML parse error inside <files-to-modify>: {e}"),
-                });
-            }
-        }
-        buf.clear();
-    }
-
-    Ok(files)
+    )
 }
 
-fn read_text(reader: &mut quick_xml::Reader<&[u8]>, tag: &str) -> Result<String, PlanError> {
-    use quick_xml::events::Event;
-
-    let mut out = String::new();
-    let mut buf = Vec::new();
-    let mut depth = 0i32;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(_)) => depth += 1,
-            Ok(Event::End(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())
-                    .map_err(|err| PlanError::ParseHypothesis {
-                        message: format!("non-utf8 tag name: {err}"),
-                    })?
-                    .to_string();
-                if depth == 0 {
-                    if name == tag {
-                        return Ok(out.trim().to_string());
-                    }
-                    return Err(PlanError::ParseHypothesis {
-                        message: format!("unexpected closing tag </{name}> while reading <{tag}>"),
-                    });
-                }
-                depth -= 1;
-            }
-            Ok(Event::Empty(_)) => {}
-            Ok(Event::Text(t)) => {
-                let s = t.unescape().map_err(|e| PlanError::ParseHypothesis {
-                    message: format!("text unescape failed in <{tag}>: {e}"),
-                })?;
-                out.push_str(&s);
-            }
-            Ok(Event::CData(c)) => {
-                let s =
-                    std::str::from_utf8(c.as_ref()).map_err(|e| PlanError::ParseHypothesis {
-                        message: format!("CDATA utf8 error in <{tag}>: {e}"),
-                    })?;
-                out.push_str(s);
-            }
-            Ok(Event::Eof) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("unexpected EOF inside <{tag}>"),
-                });
-            }
-            Ok(_) => {}
-            Err(e) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("XML parse error inside <{tag}>: {e}"),
-                });
-            }
-        }
-        buf.clear();
-    }
+/// Build the re-prompt sent to the agent after a malformed response. Embeds
+/// the parser error verbatim so the model can target its fix.
+fn build_plan_correction_prompt(err: &PlanError) -> String {
+    format!(
+        "Your previous response could not be parsed.\n\n\
+         Error: {err}\n\n\
+         Please respond again. The response must contain a well-formed \
+         `<plan>` fragment in the schema you were given at session start:\n\n\
+         <plan>\n  <approach>short-name</approach>\n  \
+         <hypothesis>your hypothesis in prose</hypothesis>\n  \
+         <files-to-modify>\n    <file>relative/path.rs</file>\n  \
+         </files-to-modify>\n</plan>\n\n\
+         Every opening tag must have a matching closing tag. If you need a \
+         tool you don't yet have, emit a single `<request-tool>` fragment \
+         instead of a `<plan>`. Do not emit any other XML fragments."
+    )
 }
 
-fn skip_element(reader: &mut quick_xml::Reader<&[u8]>, tag: &str) -> Result<(), PlanError> {
-    use quick_xml::events::Event;
-
-    let mut depth = 0i32;
-    let mut buf = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(_)) => depth += 1,
-            Ok(Event::End(e)) => {
-                if depth == 0 {
-                    let name = std::str::from_utf8(e.name().as_ref())
-                        .map_err(|err| PlanError::ParseHypothesis {
-                            message: format!("non-utf8 tag name: {err}"),
-                        })?
-                        .to_string();
-                    if name == tag {
-                        return Ok(());
-                    }
-                    return Err(PlanError::ParseHypothesis {
-                        message: format!("unexpected closing tag </{name}> while skipping <{tag}>"),
-                    });
-                }
-                depth -= 1;
-            }
-            Ok(Event::Empty(_)) => {}
-            Ok(Event::Eof) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("unexpected EOF while skipping <{tag}>"),
-                });
-            }
-            Ok(_) => {}
-            Err(e) => {
-                return Err(PlanError::ParseHypothesis {
-                    message: format!("XML parse error while skipping <{tag}>: {e}"),
-                });
-            }
-        }
-        buf.clear();
-    }
+/// Attempt a single round of tool-request resolution + hypothesis parse on
+/// an agent response. Returns the hypothesis or a `PlanError` that the caller
+/// can inspect to decide whether to retry.
+fn try_resolve_plan(
+    agent: &dyn Agent,
+    session: &AgentSession,
+    response: AgentResponse,
+    event_handler: Option<&EventHandler>,
+    approver: Option<&dyn ToolApprover>,
+) -> Result<Hypothesis, PlanError> {
+    let resolved = handle_tool_requests(agent, session, response, event_handler, approver)?;
+    parse_hypothesis(&resolved.text)
 }
 
 /// Calls the agent to plan the next iteration and parses the hypothesis.
@@ -509,6 +361,12 @@ fn skip_element(reader: &mut quick_xml::Reader<&[u8]>, tag: &str) -> Result<(), 
 /// provided. Any `<request-tool>` fragments in the agent response are routed
 /// through `approver` (defaulting to deny-all when `None`); the loop continues
 /// until the agent produces a response free of tool requests.
+///
+/// If the agent emits an unparseable response — either malformed XML that
+/// breaks the tool-request walk, or a `<plan>` missing required children — the
+/// loop re-prompts the agent with the specific error up to
+/// [`MAX_PLAN_ATTEMPTS`] times before giving up. Non-parse errors (IO, timeout,
+/// interrupt) are returned immediately.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_next(
     agent: &dyn Agent,
@@ -521,9 +379,51 @@ pub fn plan_next(
     approver: Option<&dyn ToolApprover>,
 ) -> Result<Hypothesis, PlanError> {
     let prompt = build_planning_prompt(store, last_iteration, iteration_count, description)?;
-    let response: AgentResponse = agent.send_streaming(session, &prompt, event_handler)?;
-    let response = handle_tool_requests(agent, session, response, event_handler, approver)?;
-    parse_hypothesis(&response.text)
+    let mut response: AgentResponse = agent.send_streaming(session, &prompt, event_handler)?;
+
+    for attempt in 1..=MAX_PLAN_ATTEMPTS {
+        match try_resolve_plan(agent, session, response, event_handler, approver) {
+            Ok(hypothesis) => {
+                autotune_agent::trace::record(
+                    "plan.attempt",
+                    serde_json::json!({
+                        "attempt": attempt,
+                        "result": "ok",
+                        "approach": hypothesis.approach,
+                        "files_to_modify": hypothesis.files_to_modify,
+                    }),
+                );
+                return Ok(hypothesis);
+            }
+            Err(err) if attempt < MAX_PLAN_ATTEMPTS && is_retryable(&err) => {
+                eprintln!(
+                    "[autotune] planning response invalid (attempt {attempt}/{MAX_PLAN_ATTEMPTS}): {err} — asking agent to retry"
+                );
+                let correction = build_plan_correction_prompt(&err);
+                autotune_agent::trace::record(
+                    "plan.retry",
+                    serde_json::json!({
+                        "attempt": attempt,
+                        "error": err.to_string(),
+                        "correction_prompt": correction,
+                    }),
+                );
+                response = agent.send_streaming(session, &correction, event_handler)?;
+            }
+            Err(err) => {
+                autotune_agent::trace::record(
+                    "plan.attempt",
+                    serde_json::json!({
+                        "attempt": attempt,
+                        "result": "fatal",
+                        "error": err.to_string(),
+                    }),
+                );
+                return Err(err);
+            }
+        }
+    }
+    unreachable!("plan_next loop returns on every branch")
 }
 
 #[cfg(test)]

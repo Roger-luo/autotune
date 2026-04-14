@@ -235,10 +235,14 @@ fn parse_unknown_child_tag_is_skipped() {
     }
 }
 
+/// With lenient top-level scanning, an unclosed `<message>` (no `</message>`)
+/// is simply not matched — it doesn't produce an error, it produces no
+/// fragment. This is deliberate: the response may contain valid fragments
+/// elsewhere, and we don't want garbage in one part to block parsing the rest.
 #[test]
-fn parse_malformed_xml_errors() {
-    let err = parse_agent_response("<message>unclosed").unwrap_err();
-    assert!(err.to_string().to_lowercase().contains("eof"));
+fn parse_unclosed_tag_yields_no_fragments() {
+    let frags = parse_agent_response("<message>unclosed").unwrap();
+    assert!(frags.is_empty());
 }
 
 #[test]
@@ -295,6 +299,51 @@ Prose.
 "#;
     let reqs = autotune_agent::protocol::parse_tool_requests(xml).unwrap();
     assert_eq!(reqs.len(), 1);
+}
+
+/// Reproduces the production crash: agent wraps prose in a non-request block
+/// containing unescaped Rust code snippets (`&Value`, `Vec<T>`), then emits a
+/// valid `<request-tool>` after it. The strict walker choked on the prose
+/// because quick-xml treated `<&Value>` as an opening tag and then rejected
+/// `</hypothesis>` as a mismatched close. The lenient scanner skips past the
+/// prose because it doesn't pattern-match `<request-tool>`.
+#[test]
+fn parse_tool_request_survives_malformed_prose_in_other_blocks() {
+    let xml = r#"
+<plan>
+  <hypothesis>
+  Look at how fn foo(x: &Value) -> Vec<T> handles the <thing> case.
+  Also the generic parameter <U: Display> matters here.
+  </hypothesis>
+</plan>
+<request-tool>
+  <tool>Bash</tool>
+  <scope>ls:*</scope>
+  <reason>need to see crate layout</reason>
+</request-tool>
+"#;
+    let reqs = autotune_agent::protocol::parse_tool_requests(xml).unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].tool, "Bash");
+    assert_eq!(reqs[0].reason, "need to see crate layout");
+}
+
+#[test]
+fn parse_tool_request_no_requests_returns_empty_even_with_garbage() {
+    // Entire response is garbage XML but contains no <request-tool> — we
+    // should return an empty Vec without even attempting to parse.
+    let xml = r#"<plan><hypothesis>x: &Value, y: Vec<T></hypothesis></plan>"#;
+    let reqs = autotune_agent::protocol::parse_tool_requests(xml).unwrap();
+    assert!(reqs.is_empty());
+}
+
+/// An unterminated `<request-tool>` (no matching close) is silently skipped
+/// by the lenient scanner — it's likely a false positive from prose.
+#[test]
+fn parse_tool_request_skips_unterminated_open() {
+    let xml = r#"<request-tool><tool>Bash</tool><reason>r</reason>"#;
+    let reqs = autotune_agent::protocol::parse_tool_requests(xml).unwrap();
+    assert!(reqs.is_empty());
 }
 
 #[test]

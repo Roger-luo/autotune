@@ -80,6 +80,12 @@ pub struct ApproachState {
     pub test_results: Vec<TestResult>,
     pub metrics: Option<Metrics>,
     pub rank: Option<f64>,
+    /// Files the research agent proposed for the implementation agent to
+    /// modify. Persisted on the approach so a crash between Planning and
+    /// Implementing doesn't lose the file list. `#[serde(default)]` keeps
+    /// older state files loadable.
+    #[serde(default)]
+    pub files_to_modify: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
