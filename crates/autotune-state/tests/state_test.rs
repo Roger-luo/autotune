@@ -16,6 +16,7 @@ fn sample_state() -> TaskState {
     TaskState {
         task_name: "demo".to_string(),
         canonical_branch: "main".to_string(),
+        advancing_branch: "autotune-demo".to_string(),
         research_session_id: "research-1".to_string(),
         current_iteration: 3,
         current_phase: Phase::Testing,

@@ -360,10 +360,21 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         research_response.session_id
     );
 
+    // Create the advancing branch where kept iterations accumulate.
+    // The user can later PR this branch into the canonical branch.
+    let advancing_branch = format!("autotune-{}", config.task.name);
+    autotune_git::create_branch_from(&repo_root, &advancing_branch, &config.task.canonical_branch)
+        .context("failed to create advancing branch")?;
+    println!(
+        "[autotune] advancing branch: {} (from {})",
+        advancing_branch, config.task.canonical_branch
+    );
+
     // Initialize state
     let initial_state = TaskState {
         task_name: config.task.name.clone(),
         canonical_branch: config.task.canonical_branch.clone(),
+        advancing_branch,
         research_session_id: research_response.session_id.clone(),
         current_iteration: 1,
         current_phase: Phase::Planning,

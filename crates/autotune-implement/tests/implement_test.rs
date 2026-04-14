@@ -133,7 +133,7 @@ fn setup_worktree_creates_branch_and_worktree() {
     std::fs::create_dir_all(&worktree_parent).unwrap();
 
     let (wt_path, branch) =
-        autotune_implement::setup_worktree(&repo, "fast-path", &worktree_parent).unwrap();
+        autotune_implement::setup_worktree(&repo, "fast-path", &worktree_parent, "main").unwrap();
 
     assert_eq!(branch, "autotune/fast-path");
     assert!(wt_path.exists(), "worktree directory should exist");

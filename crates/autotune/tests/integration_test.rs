@@ -159,9 +159,18 @@ fn setup_task(repo_root: &Path, config: &AutotuneConfig) -> TaskStore {
     };
     store.append_ledger(&baseline).unwrap();
 
+    // Create the advancing branch (mirrors what cmd_run does).
+    let advancing_branch = format!("autotune-{}", config.task.name);
+    Command::new("git")
+        .args(["branch", &advancing_branch, "main"])
+        .current_dir(repo_root)
+        .output()
+        .expect("failed to create advancing branch");
+
     let initial_state = TaskState {
         task_name: config.task.name.clone(),
         canonical_branch: "main".to_string(),
+        advancing_branch,
         research_session_id: "mock-session-001".to_string(),
         current_iteration: 1,
         current_phase: Phase::Planning,

@@ -63,24 +63,24 @@ pub fn prepare_resume(store: &TaskStore, repo_root: &Path) -> Result<TaskState> 
         }
 
         Phase::Integrating => {
-            // Integration may have partially completed. Check if cherry-pick landed.
+            // Integration may have partially completed. Check if the approach
+            // commits are already on the advancing branch.
             if let Some(ref approach) = state.current_approach {
                 if let Some(ref sha) = approach.commit_sha {
-                    // Check if the commit is already on the canonical branch
-                    let on_canonical = autotune_git::has_commits_ahead(
+                    let on_advancing = autotune_git::has_commits_ahead(
                         repo_root,
                         &format!("{sha}~1"),
-                        &state.canonical_branch,
+                        &state.advancing_branch,
                     )
                     .unwrap_or(false);
 
-                    if on_canonical {
-                        println!("[resume] cherry-pick already landed, moving to Recorded");
+                    if on_advancing {
+                        println!(
+                            "[resume] rebase already landed on advancing branch, moving to Recorded"
+                        );
                         state.current_phase = Phase::Recorded;
                     } else {
-                        println!(
-                            "[resume] resuming from Integrating phase — will retry cherry-pick"
-                        );
+                        println!("[resume] resuming from Integrating phase — will retry rebase");
                     }
                 } else {
                     println!("[resume] no commit SHA in Integrating phase, going back to Planning");

@@ -64,6 +64,10 @@ impl std::fmt::Display for Phase {
 pub struct TaskState {
     pub task_name: String,
     pub canonical_branch: String,
+    /// The branch where kept iterations accumulate (e.g. `autotune-<task>`).
+    /// Created from `canonical_branch` at task start so the user can PR it.
+    #[serde(default)]
+    pub advancing_branch: String,
     pub research_session_id: String,
     pub current_iteration: usize,
     pub current_phase: Phase,

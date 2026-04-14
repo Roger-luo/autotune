@@ -170,9 +170,13 @@ fn run_planning(
     std::fs::create_dir_all(&worktree_parent)?;
     let repo_root =
         autotune_git::repo_root(store.root()).unwrap_or_else(|_| store.root().to_path_buf());
-    let (worktree_path, branch_name) =
-        autotune_implement::setup_worktree(&repo_root, &hypothesis.approach, &worktree_parent)
-            .context("failed to set up worktree")?;
+    let (worktree_path, branch_name) = autotune_implement::setup_worktree(
+        &repo_root,
+        &hypothesis.approach,
+        &worktree_parent,
+        &state.advancing_branch,
+    )
+    .context("failed to set up worktree")?;
     println!(
         "[autotune] worktree: {} (branch {})",
         worktree_path.display(),
@@ -476,63 +480,25 @@ fn run_integrating(
         state.current_iteration, approach.name
     );
 
-    let merge_message = format!(
-        "autotune: merge iteration {} — '{}'",
-        state.current_iteration, approach.name
-    );
+    // Rebase the worktree branch onto the advancing branch. Run the rebase
+    // inside the worktree directory since the branch is checked out there
+    // (can't checkout a worktree-attached branch from the main repo).
+    let wt = &approach.worktree_path;
+    let clean = autotune_git::rebase(wt, &state.advancing_branch)
+        .context("rebase onto advancing branch failed")?;
 
-    // Merge the worktree branch into the canonical branch.
-    autotune_git::checkout(repo_root, &state.canonical_branch)?;
-    let clean = autotune_git::merge_or_conflict(repo_root, &approach.branch_name, &merge_message)
-        .context("merge failed")?;
-
-    if !clean {
-        // There are conflicts — ask the research agent to resolve them.
-        let conflicted = autotune_git::list_conflicted_files(repo_root).unwrap_or_default();
-        println!(
-            "[autotune] merge conflict in {} file(s), asking research agent to resolve",
-            conflicted.len()
-        );
-
-        let conflict_prompt = build_conflict_resolution_prompt(&conflicted, repo_root);
-        let resolve_stream = crate::stream_ui::Stream::research("resolving merge conflicts...");
-        let resolve_handler = resolve_stream.handler();
-
-        // The research agent has read-only tools. Grant Edit for conflict resolution.
-        if let Err(e) = agent.grant_session_permission(
-            research_session,
-            autotune_agent::ToolPermission::Allow("Edit".into()),
-        ) {
-            println!("[autotune] warning: could not grant Edit to research session: {e}");
-        }
-
-        let result =
-            agent.send_streaming(research_session, &conflict_prompt, Some(&resolve_handler));
-        resolve_stream.finish();
-
-        match result {
-            Ok(_) => {
-                // Check if conflicts are resolved.
-                if autotune_git::has_merge_conflicts(repo_root).unwrap_or(true) {
-                    // Agent couldn't resolve — abort and discard.
-                    println!("[autotune] research agent could not resolve conflicts, discarding");
-                    autotune_git::merge_abort(repo_root)?;
-                    return record_discard(
-                        state,
-                        store,
-                        "merge conflict unresolved by research agent",
-                    );
-                }
-                // Conclude the merge.
-                autotune_git::conclude_merge(repo_root, &merge_message)?;
-            }
-            Err(e) => {
-                println!("[autotune] conflict resolution failed: {e}, discarding");
-                let _ = autotune_git::merge_abort(repo_root);
-                return record_discard(state, store, "conflict resolution agent error");
-            }
-        }
+    if !clean && let Err(e) = resolve_rebase_conflicts(agent, wt, research_session) {
+        println!("[autotune] conflict resolution failed: {e}, discarding");
+        let _ = autotune_git::rebase_abort(wt);
+        return record_discard(state, store, &format!("rebase conflict: {e}"));
     }
+
+    // Remove worktree first so the branch is no longer attached, then
+    // fast-forward the advancing branch to the rebased commits.
+    let _ = autotune_git::remove_worktree(repo_root, &approach.worktree_path);
+    autotune_git::checkout(repo_root, &state.advancing_branch)?;
+    autotune_git::merge_ff_only(repo_root, &approach.branch_name)
+        .context("fast-forward advancing branch failed")?;
 
     let metrics = approach.metrics.clone().unwrap_or_default();
     let rank = approach.rank.unwrap_or(0.0);
@@ -554,12 +520,63 @@ fn run_integrating(
     };
     store.append_ledger(&record)?;
 
-    // Clean up worktree
-    let _ = autotune_git::remove_worktree(repo_root, &approach.worktree_path);
-
     state.current_phase = Phase::Recorded;
     store.save_state(state)?;
     Ok(())
+}
+
+/// Resolve rebase conflicts by repeatedly asking the research agent to fix
+/// conflicted files and continuing the rebase until it completes or fails.
+fn resolve_rebase_conflicts(
+    agent: &dyn Agent,
+    repo_root: &Path,
+    research_session: &AgentSession,
+) -> Result<()> {
+    // Grant Edit so the research agent can resolve conflict markers.
+    if let Err(e) = agent.grant_session_permission(
+        research_session,
+        autotune_agent::ToolPermission::Allow("Edit".into()),
+    ) {
+        println!("[autotune] warning: could not grant Edit to research session: {e}");
+    }
+
+    // A rebase may hit multiple conflict steps (one per commit being replayed).
+    // Loop until the rebase completes or we give up.
+    const MAX_CONFLICT_ROUNDS: usize = 10;
+    for round in 0..MAX_CONFLICT_ROUNDS {
+        let conflicted = autotune_git::list_conflicted_files(repo_root).unwrap_or_default();
+        if conflicted.is_empty() {
+            break;
+        }
+        println!(
+            "[autotune] rebase conflict round {} — {} file(s)",
+            round + 1,
+            conflicted.len()
+        );
+
+        let prompt = build_conflict_resolution_prompt(&conflicted, repo_root);
+        let stream = crate::stream_ui::Stream::research("resolving rebase conflicts...");
+        let handler = stream.handler();
+        let result = agent.send_streaming(research_session, &prompt, Some(&handler));
+        stream.finish();
+        result.context("research agent failed during conflict resolution")?;
+
+        // Check the agent actually resolved the conflicts.
+        if autotune_git::has_merge_conflicts(repo_root).unwrap_or(true) {
+            anyhow::bail!(
+                "research agent did not resolve all conflicts (round {})",
+                round + 1
+            );
+        }
+
+        // Continue the rebase — may hit the next commit's conflicts.
+        match autotune_git::rebase_continue(repo_root)? {
+            true => return Ok(()), // Rebase completed.
+            false => continue,     // Another conflict to resolve.
+        }
+    }
+
+    anyhow::bail!("exceeded {MAX_CONFLICT_ROUNDS} conflict resolution rounds");
 }
 
 fn build_conflict_resolution_prompt(conflicted_files: &[String], repo_root: &Path) -> String {

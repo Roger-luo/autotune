@@ -81,6 +81,23 @@ pub fn create_branch(dir: &Path, branch_name: &str) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Create a new branch starting from a specific base branch.
+pub fn create_branch_from(
+    dir: &Path,
+    branch_name: &str,
+    start_point: &str,
+) -> Result<(), GitError> {
+    git(
+        dir,
+        &[
+            OsStr::new("branch"),
+            OsStr::new(branch_name),
+            OsStr::new(start_point),
+        ],
+    )?;
+    Ok(())
+}
+
 /// Create a git worktree at `worktree_path` on `branch_name`.
 /// The branch must already exist.
 pub fn create_worktree(
@@ -289,6 +306,65 @@ pub fn conclude_merge(dir: &Path, message: &str) -> Result<(), GitError> {
     git(
         dir,
         &[OsStr::new("commit"), OsStr::new("-m"), OsStr::new(message)],
+    )?;
+    Ok(())
+}
+
+/// Rebase the current branch onto `onto`. Returns `Ok(true)` if clean,
+/// `Ok(false)` if there are conflicts to resolve.
+pub fn rebase(dir: &Path, onto: &str) -> Result<bool, GitError> {
+    let result = git(dir, &[OsStr::new("rebase"), OsStr::new(onto)]);
+    match result {
+        Ok(_) => Ok(true),
+        Err(_) => {
+            if has_merge_conflicts(dir)? {
+                Ok(false)
+            } else {
+                Err(GitError::CommandFailed {
+                    command: format!("git rebase {onto}"),
+                    stderr: "rebase failed for an unexpected reason".to_string(),
+                })
+            }
+        }
+    }
+}
+
+/// Stage resolved files and continue an in-progress rebase.
+/// Returns `Ok(true)` if rebase completed, `Ok(false)` if another
+/// conflict was hit.
+pub fn rebase_continue(dir: &Path) -> Result<bool, GitError> {
+    git(dir, &[OsStr::new("add"), OsStr::new("-A")])?;
+    let result = git(dir, &[OsStr::new("rebase"), OsStr::new("--continue")]);
+    match result {
+        Ok(_) => Ok(true),
+        Err(_) => {
+            if has_merge_conflicts(dir)? {
+                Ok(false)
+            } else {
+                Err(GitError::CommandFailed {
+                    command: "git rebase --continue".to_string(),
+                    stderr: "rebase --continue failed unexpectedly".to_string(),
+                })
+            }
+        }
+    }
+}
+
+/// Abort an in-progress rebase.
+pub fn rebase_abort(dir: &Path) -> Result<(), GitError> {
+    git(dir, &[OsStr::new("rebase"), OsStr::new("--abort")])?;
+    Ok(())
+}
+
+/// Fast-forward `branch` to the current HEAD. Fails if not a fast-forward.
+pub fn merge_ff_only(dir: &Path, branch: &str) -> Result<(), GitError> {
+    git(
+        dir,
+        &[
+            OsStr::new("merge"),
+            OsStr::new("--ff-only"),
+            OsStr::new(branch),
+        ],
     )?;
     Ok(())
 }

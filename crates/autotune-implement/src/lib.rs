@@ -187,12 +187,13 @@ pub fn setup_worktree(
     repo_root: &Path,
     approach_name: &str,
     worktree_parent: &Path,
+    start_branch: &str,
 ) -> Result<(PathBuf, String), ImplementError> {
     let slug = slugify(approach_name);
     let branch_name = format!("autotune/{}", slug);
     let worktree_path = worktree_parent.join(&slug);
 
-    autotune_git::create_branch(repo_root, &branch_name)?;
+    autotune_git::create_branch_from(repo_root, &branch_name, start_branch)?;
     autotune_git::create_worktree(repo_root, &worktree_path, &branch_name)?;
 
     Ok((worktree_path, branch_name))
