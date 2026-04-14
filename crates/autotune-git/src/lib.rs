@@ -218,3 +218,77 @@ pub fn merge(dir: &Path, branch: &str, message: &str) -> Result<(), GitError> {
     )?;
     Ok(())
 }
+
+/// Attempt to merge a branch. Returns `Ok(true)` if the merge completed
+/// cleanly, `Ok(false)` if there are conflicts that need resolution.
+pub fn merge_or_conflict(dir: &Path, branch: &str, message: &str) -> Result<bool, GitError> {
+    let result = git(
+        dir,
+        &[
+            OsStr::new("merge"),
+            OsStr::new(branch),
+            OsStr::new("--no-ff"),
+            OsStr::new("-m"),
+            OsStr::new(message),
+        ],
+    );
+    match result {
+        Ok(_) => Ok(true),
+        Err(_) => {
+            // Check if we're in a conflicted merge state.
+            if has_merge_conflicts(dir)? {
+                Ok(false)
+            } else {
+                // Some other merge error (e.g. unrelated dirty files).
+                Err(GitError::CommandFailed {
+                    command: format!("git merge {} --no-ff -m '{}'", branch, message),
+                    stderr: "merge failed for an unexpected reason".to_string(),
+                })
+            }
+        }
+    }
+}
+
+/// Returns true if there are unresolved merge conflicts in the working tree.
+pub fn has_merge_conflicts(dir: &Path) -> Result<bool, GitError> {
+    let output = git(dir, &[OsStr::new("diff"), OsStr::new("--check")]);
+    match output {
+        Ok(_) => Ok(false),
+        // `git diff --check` exits non-zero when conflict markers are present.
+        Err(_) => Ok(true),
+    }
+}
+
+/// List files with unresolved merge conflicts.
+pub fn list_conflicted_files(dir: &Path) -> Result<Vec<String>, GitError> {
+    let output = git(
+        dir,
+        &[
+            OsStr::new("diff"),
+            OsStr::new("--name-only"),
+            OsStr::new("--diff-filter=U"),
+        ],
+    )?;
+    Ok(output
+        .stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
+}
+
+/// Abort an in-progress merge.
+pub fn merge_abort(dir: &Path) -> Result<(), GitError> {
+    git(dir, &[OsStr::new("merge"), OsStr::new("--abort")])?;
+    Ok(())
+}
+
+/// Stage all changes and finalize the merge (commit the resolved merge).
+pub fn conclude_merge(dir: &Path, message: &str) -> Result<(), GitError> {
+    git(dir, &[OsStr::new("add"), OsStr::new("-A")])?;
+    git(
+        dir,
+        &[OsStr::new("commit"), OsStr::new("-m"), OsStr::new(message)],
+    )?;
+    Ok(())
+}

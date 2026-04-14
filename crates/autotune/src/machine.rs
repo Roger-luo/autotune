@@ -57,7 +57,7 @@ pub fn run_single_phase(
             run_scoring(scorer, store, state)?;
         }
         Phase::Integrating => {
-            run_integrating(repo_root, store, state)?;
+            run_integrating(config, agent, repo_root, store, state, &research_session)?;
         }
         Phase::Recorded => {
             run_recorded(config, store, state)?;
@@ -459,7 +459,14 @@ fn run_scoring(
     Ok(())
 }
 
-fn run_integrating(repo_root: &Path, store: &TaskStore, state: &mut TaskState) -> Result<()> {
+fn run_integrating(
+    _config: &AutotuneConfig,
+    agent: &dyn Agent,
+    repo_root: &Path,
+    store: &TaskStore,
+    state: &mut TaskState,
+    research_session: &AgentSession,
+) -> Result<()> {
     let approach = state
         .current_approach
         .as_ref()
@@ -469,14 +476,63 @@ fn run_integrating(repo_root: &Path, store: &TaskStore, state: &mut TaskState) -
         state.current_iteration, approach.name
     );
 
-    let commit_sha = approach
-        .commit_sha
-        .as_ref()
-        .context("no commit SHA in Integrating phase")?;
+    let merge_message = format!(
+        "autotune: merge iteration {} — '{}'",
+        state.current_iteration, approach.name
+    );
 
-    // Cherry-pick onto canonical branch
+    // Merge the worktree branch into the canonical branch.
     autotune_git::checkout(repo_root, &state.canonical_branch)?;
-    autotune_git::cherry_pick(repo_root, commit_sha)?;
+    let clean = autotune_git::merge_or_conflict(repo_root, &approach.branch_name, &merge_message)
+        .context("merge failed")?;
+
+    if !clean {
+        // There are conflicts — ask the research agent to resolve them.
+        let conflicted = autotune_git::list_conflicted_files(repo_root).unwrap_or_default();
+        println!(
+            "[autotune] merge conflict in {} file(s), asking research agent to resolve",
+            conflicted.len()
+        );
+
+        let conflict_prompt = build_conflict_resolution_prompt(&conflicted, repo_root);
+        let resolve_stream = crate::stream_ui::Stream::research("resolving merge conflicts...");
+        let resolve_handler = resolve_stream.handler();
+
+        // The research agent has read-only tools. Grant Edit for conflict resolution.
+        if let Err(e) = agent.grant_session_permission(
+            research_session,
+            autotune_agent::ToolPermission::Allow("Edit".into()),
+        ) {
+            println!("[autotune] warning: could not grant Edit to research session: {e}");
+        }
+
+        let result =
+            agent.send_streaming(research_session, &conflict_prompt, Some(&resolve_handler));
+        resolve_stream.finish();
+
+        match result {
+            Ok(_) => {
+                // Check if conflicts are resolved.
+                if autotune_git::has_merge_conflicts(repo_root).unwrap_or(true) {
+                    // Agent couldn't resolve — abort and discard.
+                    println!("[autotune] research agent could not resolve conflicts, discarding");
+                    autotune_git::merge_abort(repo_root)?;
+                    return record_discard(
+                        state,
+                        store,
+                        "merge conflict unresolved by research agent",
+                    );
+                }
+                // Conclude the merge.
+                autotune_git::conclude_merge(repo_root, &merge_message)?;
+            }
+            Err(e) => {
+                println!("[autotune] conflict resolution failed: {e}, discarding");
+                let _ = autotune_git::merge_abort(repo_root);
+                return record_discard(state, store, "conflict resolution agent error");
+            }
+        }
+    }
 
     let metrics = approach.metrics.clone().unwrap_or_default();
     let rank = approach.rank.unwrap_or(0.0);
@@ -504,6 +560,29 @@ fn run_integrating(repo_root: &Path, store: &TaskStore, state: &mut TaskState) -
     state.current_phase = Phase::Recorded;
     store.save_state(state)?;
     Ok(())
+}
+
+fn build_conflict_resolution_prompt(conflicted_files: &[String], repo_root: &Path) -> String {
+    let mut prompt = String::new();
+    prompt.push_str("# Merge Conflict Resolution\n\n");
+    prompt.push_str("The iteration's branch is being merged into the canonical branch, but there are merge conflicts.\n\n");
+    prompt.push_str("## Conflicted files\n\n");
+    for f in conflicted_files {
+        prompt.push_str(&format!("- `{f}`\n"));
+    }
+    prompt.push_str("\n## Instructions\n\n");
+    prompt.push_str("1. Read each conflicted file to understand the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).\n");
+    prompt.push_str(
+        "2. Use Edit to resolve each conflict, keeping the intent of BOTH sides where possible.\n",
+    );
+    prompt.push_str(&format!(
+        "3. The working directory is `{}`.\n",
+        repo_root.display()
+    ));
+    prompt
+        .push_str("4. Do NOT run any commands. Just resolve the conflicts by editing the files.\n");
+    prompt.push_str("5. After resolving, end your response with `RESOLVED` on its own line.\n");
+    prompt
 }
 
 fn run_recorded(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
