@@ -44,6 +44,9 @@ impl ClaudeAgent {
             config.prompt.clone(),
             "--output-format".to_string(),
             "json".to_string(),
+            // Bypass the interactive permission prompt — the caller already
+            // scopes what the agent can do via --allowedTools / --disallowedTools.
+            "--dangerously-skip-permissions".to_string(),
         ];
 
         if let Some(sid) = session_id {
