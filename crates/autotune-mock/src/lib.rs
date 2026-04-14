@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 
-use autotune_agent::{Agent, AgentConfig, AgentError, AgentResponse, AgentSession};
+use autotune_agent::{Agent, AgentConfig, AgentError, AgentResponse, AgentSession, ToolPermission};
 
 /// Configures what the mock implementation agent does when `spawn()` is called.
 pub enum ImplBehavior {
@@ -39,6 +39,12 @@ pub struct MockAgent {
     research_turn: Mutex<usize>,
     last_spawn_config: Mutex<Option<AgentConfig>>,
     last_send_message: Mutex<Option<String>>,
+    /// History of all spawn configs (prompt + permissions + model).
+    spawn_configs: Mutex<Vec<AgentConfig>>,
+    /// History of all send messages.
+    send_messages: Mutex<Vec<String>>,
+    /// Permissions granted via `grant_session_permission`.
+    granted_permissions: Mutex<Vec<ToolPermission>>,
 }
 
 /// Builder for [`MockAgent`].
@@ -100,6 +106,9 @@ impl MockAgentBuilder {
             research_turn: Mutex::new(0),
             last_spawn_config: Mutex::new(None),
             last_send_message: Mutex::new(None),
+            spawn_configs: Mutex::new(Vec::new()),
+            send_messages: Mutex::new(Vec::new()),
+            granted_permissions: Mutex::new(Vec::new()),
         }
     }
 }
@@ -134,6 +143,21 @@ impl MockAgent {
     pub fn last_send_message(&self) -> Option<String> {
         self.last_send_message.lock().unwrap().clone()
     }
+
+    /// All configs passed to `spawn()`, in order.
+    pub fn spawn_configs(&self) -> Vec<AgentConfig> {
+        self.spawn_configs.lock().unwrap().clone()
+    }
+
+    /// All messages passed to `send()`, in order.
+    pub fn send_messages(&self) -> Vec<String> {
+        self.send_messages.lock().unwrap().clone()
+    }
+
+    /// All permissions granted via `grant_session_permission()`.
+    pub fn granted_permissions(&self) -> Vec<ToolPermission> {
+        self.granted_permissions.lock().unwrap().clone()
+    }
 }
 
 impl Agent for MockAgent {
@@ -144,6 +168,7 @@ impl Agent for MockAgent {
         drop(count);
 
         *self.last_spawn_config.lock().unwrap() = Some(config.clone());
+        self.spawn_configs.lock().unwrap().push(config.clone());
 
         // First spawn call may be the research agent initialization (if the
         // caller uses spawn for that). We detect implementation spawns by
@@ -196,6 +221,7 @@ impl Agent for MockAgent {
 
     fn send(&self, _session: &AgentSession, message: &str) -> Result<AgentResponse, AgentError> {
         *self.last_send_message.lock().unwrap() = Some(message.to_string());
+        self.send_messages.lock().unwrap().push(message.to_string());
 
         let mut count = self.send_count.lock().unwrap();
         let idx = *count;
@@ -269,6 +295,15 @@ impl Agent for MockAgent {
 
     fn handover_command(&self, _session: &AgentSession) -> String {
         "mock-handover".to_string()
+    }
+
+    fn grant_session_permission(
+        &self,
+        _session: &AgentSession,
+        permission: ToolPermission,
+    ) -> Result<(), AgentError> {
+        self.granted_permissions.lock().unwrap().push(permission);
+        Ok(())
     }
 }
 

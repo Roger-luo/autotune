@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 
+use autotune_agent::ToolPermission;
 use autotune_benchmark::run_all_measures;
 use autotune_config::AutotuneConfig;
 use autotune_mock::{ImplBehavior, MockAgent};
@@ -691,4 +692,139 @@ fn test_config_loads_and_measures_run() {
     let metrics = run_all_measures(&config.measure, dir).expect("measures failed");
     assert!(metrics.contains_key("metric_value"));
     assert!((metrics["metric_value"] - 42.0).abs() < f64::EPSILON);
+}
+
+// ===========================================================================
+// Test: implementation agent prompt and permissions
+// ===========================================================================
+
+#[test]
+fn test_implementation_prompt_contains_instructions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_root = tmp.path();
+
+    init_temp_repo(repo_root);
+    write_config(repo_root);
+
+    // Write an AGENTS.md so the implementation agent should pick it up.
+    std::fs::write(
+        repo_root.join("AGENTS.md"),
+        "# Project Rules\n\nUse snake_case for all functions.\n",
+    )
+    .unwrap();
+    Command::new("git")
+        .args(["add", "AGENTS.md"])
+        .current_dir(repo_root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "add AGENTS.md"])
+        .current_dir(repo_root)
+        .output()
+        .unwrap();
+
+    let config = load_test_config(repo_root);
+    let store = setup_task(repo_root, &config);
+
+    let agent = MockAgent::builder()
+        .hypothesis("opt-1", "reduce allocations", &["src/lib.rs"])
+        .build();
+    let scorer = build_test_scorer();
+    let shutdown = AtomicBool::new(false);
+
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+        .unwrap();
+
+    // run_task starts at Planning — the research agent was already spawned
+    // in cmd_run, so the first spawn here is the implementation agent.
+    let configs = agent.spawn_configs();
+    assert!(!configs.is_empty(), "need at least 1 spawn");
+    let impl_config = &configs[0]; // implementation agent
+
+    // Prompt should contain AGENTS.md content
+    assert!(
+        impl_config.prompt.contains("snake_case"),
+        "implementation prompt should include AGENTS.md content"
+    );
+
+    // Prompt should contain the hypothesis
+    assert!(
+        impl_config.prompt.contains("reduce allocations"),
+        "implementation prompt should include hypothesis"
+    );
+
+    // Prompt should tell the agent not to ask for permission
+    assert!(
+        impl_config.prompt.contains("Do NOT ask for permission"),
+        "implementation prompt should include permission guidance"
+    );
+
+    // Prompt should tell the agent to only modify listed files
+    assert!(
+        impl_config.prompt.contains("Only create or modify"),
+        "implementation prompt should restrict file modifications"
+    );
+
+    // Permissions should include scoped Edit and Write
+    let has_scoped_edit = impl_config
+        .allowed_tools
+        .iter()
+        .any(|p| matches!(p, ToolPermission::AllowScoped(tool, _) if tool == "Edit"));
+    let has_scoped_write = impl_config
+        .allowed_tools
+        .iter()
+        .any(|p| matches!(p, ToolPermission::AllowScoped(tool, _) if tool == "Write"));
+    assert!(has_scoped_edit, "should have scoped Edit permission");
+    assert!(has_scoped_write, "should have scoped Write permission");
+
+    // Should deny Bash and Agent
+    let has_deny_bash = impl_config
+        .allowed_tools
+        .iter()
+        .any(|p| matches!(p, ToolPermission::Deny(tool) if tool == "Bash"));
+    let has_deny_agent = impl_config
+        .allowed_tools
+        .iter()
+        .any(|p| matches!(p, ToolPermission::Deny(tool) if tool == "Agent"));
+    assert!(has_deny_bash, "should deny Bash");
+    assert!(has_deny_agent, "should deny Agent");
+}
+
+// ===========================================================================
+// Test: research agent planning prompt content
+// ===========================================================================
+
+#[test]
+fn test_research_planning_prompt_contains_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_root = tmp.path();
+
+    init_temp_repo(repo_root);
+    write_config(repo_root);
+    let config = load_test_config(repo_root);
+    let store = setup_task(repo_root, &config);
+
+    let agent = MockAgent::builder()
+        .hypothesis("opt-1", "optimize", &["src/lib.rs"])
+        .build();
+    let scorer = build_test_scorer();
+    let shutdown = AtomicBool::new(false);
+
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+        .unwrap();
+
+    // The planning prompt is sent via send() — check the first message.
+    let messages = agent.send_messages();
+    assert!(!messages.is_empty(), "should have at least one send");
+    let planning_msg = &messages[0];
+
+    // Should contain iteration number and task description
+    assert!(
+        planning_msg.contains("Iteration 1"),
+        "planning prompt should reference iteration number"
+    );
+    assert!(
+        planning_msg.contains("integration test task"),
+        "planning prompt should reference task description"
+    );
 }
