@@ -44,10 +44,19 @@ impl ClaudeAgent {
             config.prompt.clone(),
             "--output-format".to_string(),
             "json".to_string(),
-            // Bypass interactive permission prompts so agents run
-            // non-interactively. Tool access is still scoped by
-            // --allowedTools / --disallowedTools which are enforced
-            // regardless of the permission mode.
+            // Why --dangerously-skip-permissions instead of --permission-mode dontAsk:
+            //
+            // We need scoped tool permissions like `Edit:/worktree/crates/**/*.rs`
+            // to restrict the implementation agent to its worktree. The scoped
+            // syntax `Tool:path` is NOT supported by dontAsk mode — it silently
+            // rejects the tool even when listed in --allowedTools.
+            //
+            // --dangerously-skip-permissions bypasses the interactive permission
+            // *prompt* but does NOT override tool-level restrictions:
+            //   - --disallowedTools still blocks denied tools entirely
+            //   - --allowedTools scoped paths (Edit:/path) still restrict edits
+            // Tested: `--dangerously-skip-permissions --disallowedTools Bash`
+            // correctly prevents the agent from using Bash.
             "--dangerously-skip-permissions".to_string(),
         ];
 
