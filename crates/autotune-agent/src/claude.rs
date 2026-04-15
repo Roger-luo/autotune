@@ -281,10 +281,10 @@ impl ClaudeAgent {
                                     });
                                 }
                                 Some("text") => {
-                                    if let Some(text) = block.get("text").and_then(Value::as_str) {
-                                        if !text.is_empty() {
-                                            event_handler(AgentEvent::Text(text.to_string()));
-                                        }
+                                    if let Some(text) = block.get("text").and_then(Value::as_str)
+                                        && !text.is_empty()
+                                    {
+                                        event_handler(AgentEvent::Text(text.to_string()));
                                     }
                                 }
                                 _ => {}
@@ -314,10 +314,9 @@ impl ClaudeAgent {
                         .filter(|d| d.get("type").and_then(Value::as_str) == Some("text_delta"))
                         .and_then(|d| d.get("text"))
                         .and_then(Value::as_str)
+                        && !text.is_empty()
                     {
-                        if !text.is_empty() {
-                            event_handler(AgentEvent::Text(text.to_string()));
-                        }
+                        event_handler(AgentEvent::Text(text.to_string()));
                     }
                 }
                 "result" => {

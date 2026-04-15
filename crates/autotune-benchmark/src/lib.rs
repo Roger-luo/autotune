@@ -285,6 +285,61 @@ fn terminate_child(child: &mut Child) {
     let _ = child.kill();
 }
 
+struct ScriptAdaptorWithWorkingDir {
+    command: Vec<String>,
+    working_dir: PathBuf,
+}
+
+impl ScriptAdaptorWithWorkingDir {
+    fn new(command: Vec<String>, working_dir: PathBuf) -> Self {
+        Self {
+            command,
+            working_dir,
+        }
+    }
+}
+
+impl MetricAdaptor for ScriptAdaptorWithWorkingDir {
+    fn extract(&self, output: &MeasureOutput) -> Result<Metrics, autotune_adaptor::AdaptorError> {
+        let Some((program, args)) = self.command.split_first() else {
+            return Err(autotune_adaptor::AdaptorError::ScriptEmptyCommand);
+        };
+
+        let mut child = Command::new(program)
+            .args(args)
+            .current_dir(&self.working_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|source| autotune_adaptor::AdaptorError::Io { source })?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            let combined = format!("{}\n{}", output.stdout, output.stderr);
+            stdin
+                .write_all(combined.as_bytes())
+                .map_err(|source| autotune_adaptor::AdaptorError::Io { source })?;
+        }
+
+        let result = child
+            .wait_with_output()
+            .map_err(|source| autotune_adaptor::AdaptorError::Io { source })?;
+
+        if !result.status.success() {
+            return Err(autotune_adaptor::AdaptorError::ScriptFailed {
+                code: result.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&result.stderr).to_string(),
+            });
+        }
+
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        let metrics: Metrics = serde_json::from_str(&stdout)
+            .map_err(|source| autotune_adaptor::AdaptorError::ScriptOutputParse { source })?;
+
+        Ok(metrics)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,60 +515,5 @@ mod tests {
         let metrics = run_all_measures(&[m1, m2], tmp.path()).unwrap();
         assert_eq!(*metrics.get("metric-a").unwrap(), 1.0);
         assert_eq!(*metrics.get("metric-b").unwrap(), 2.0);
-    }
-}
-
-struct ScriptAdaptorWithWorkingDir {
-    command: Vec<String>,
-    working_dir: PathBuf,
-}
-
-impl ScriptAdaptorWithWorkingDir {
-    fn new(command: Vec<String>, working_dir: PathBuf) -> Self {
-        Self {
-            command,
-            working_dir,
-        }
-    }
-}
-
-impl MetricAdaptor for ScriptAdaptorWithWorkingDir {
-    fn extract(&self, output: &MeasureOutput) -> Result<Metrics, autotune_adaptor::AdaptorError> {
-        let Some((program, args)) = self.command.split_first() else {
-            return Err(autotune_adaptor::AdaptorError::ScriptEmptyCommand);
-        };
-
-        let mut child = Command::new(program)
-            .args(args)
-            .current_dir(&self.working_dir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|source| autotune_adaptor::AdaptorError::Io { source })?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            let combined = format!("{}\n{}", output.stdout, output.stderr);
-            stdin
-                .write_all(combined.as_bytes())
-                .map_err(|source| autotune_adaptor::AdaptorError::Io { source })?;
-        }
-
-        let result = child
-            .wait_with_output()
-            .map_err(|source| autotune_adaptor::AdaptorError::Io { source })?;
-
-        if !result.status.success() {
-            return Err(autotune_adaptor::AdaptorError::ScriptFailed {
-                code: result.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&result.stderr).to_string(),
-            });
-        }
-
-        let stdout = String::from_utf8_lossy(&result.stdout);
-        let metrics: Metrics = serde_json::from_str(&stdout)
-            .map_err(|source| autotune_adaptor::AdaptorError::ScriptOutputParse { source })?;
-
-        Ok(metrics)
     }
 }

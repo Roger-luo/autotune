@@ -247,18 +247,18 @@ mod tests {
     #[test]
     fn mock_input_prompt_approve_yes() {
         let mock = MockInput::new("yes");
-        assert_eq!(mock.prompt_approve("msg").unwrap(), true);
+        assert!(mock.prompt_approve("msg").unwrap());
     }
 
     #[test]
     fn mock_input_prompt_approve_y() {
         let mock = MockInput::new("y");
-        assert_eq!(mock.prompt_approve("msg").unwrap(), true);
+        assert!(mock.prompt_approve("msg").unwrap());
     }
 
     #[test]
     fn mock_input_prompt_approve_no() {
         let mock = MockInput::new("no");
-        assert_eq!(mock.prompt_approve("msg").unwrap(), false);
+        assert!(!mock.prompt_approve("msg").unwrap());
     }
 }

@@ -412,6 +412,23 @@ fn run_script_turn(turn: &Mutex<usize>, entries: &[String], wd: &Path) {
         .output();
 }
 
+fn create_dummy_commit(dir: &Path, idx: usize) {
+    let dummy = dir.join("mock_change.txt");
+    std::fs::write(&dummy, format!("mock change #{idx}")).unwrap();
+
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+
+    Command::new("git")
+        .args(["commit", "-m", &format!("mock: implementation #{idx}")])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,7 +581,7 @@ mod tests {
     fn implementation_script_entry_converts_non_script_behavior() {
         // When impl_behavior is not Script, the first call should replace it
         // with Script containing the single entry.
-        let agent = MockAgent::builder()
+        let _agent = MockAgent::builder()
             .implementation_script_entry("echo hello")
             .build();
         // Verify the build succeeded without panic (behavior was converted).
@@ -714,21 +731,4 @@ mod tests {
             resp.session_id
         );
     }
-}
-
-fn create_dummy_commit(dir: &Path, idx: usize) {
-    let dummy = dir.join("mock_change.txt");
-    std::fs::write(&dummy, format!("mock change #{idx}")).unwrap();
-
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(dir)
-        .output()
-        .unwrap();
-
-    Command::new("git")
-        .args(["commit", "-m", &format!("mock: implementation #{idx}")])
-        .current_dir(dir)
-        .output()
-        .unwrap();
 }

@@ -837,19 +837,20 @@ mod tests {
     }
 
     fn complete_accumulator() -> ConfigAccumulator {
-        let mut acc = ConfigAccumulator::default();
-        acc.task = Some(minimal_task());
-        acc.paths = Some(minimal_paths());
-        acc.measures.push(regex_measure("bench", "coverage"));
-        acc.score = Some(ScoreConfig::WeightedSum {
-            primary_metrics: vec![PrimaryMetric {
-                name: "coverage".to_string(),
-                direction: Direction::Maximize,
-                weight: 1.0,
-            }],
-            guardrail_metrics: vec![],
-        });
-        acc
+        ConfigAccumulator {
+            task: Some(minimal_task()),
+            paths: Some(minimal_paths()),
+            measures: vec![regex_measure("bench", "coverage")],
+            score: Some(ScoreConfig::WeightedSum {
+                primary_metrics: vec![PrimaryMetric {
+                    name: "coverage".to_string(),
+                    direction: Direction::Maximize,
+                    weight: 1.0,
+                }],
+                guardrail_metrics: vec![],
+            }),
+            ..Default::default()
+        }
     }
 
     // --- ConfigAccumulator tests ---
@@ -875,9 +876,11 @@ mod tests {
 
     #[test]
     fn accumulator_missing_sections_partial() {
-        let mut acc = ConfigAccumulator::default();
-        acc.task = Some(minimal_task());
-        acc.paths = Some(minimal_paths());
+        let acc = ConfigAccumulator {
+            task: Some(minimal_task()),
+            paths: Some(minimal_paths()),
+            ..Default::default()
+        };
         let missing = acc.missing_sections();
         assert!(!missing.contains(&"task"));
         assert!(!missing.contains(&"paths"));
@@ -887,9 +890,11 @@ mod tests {
 
     #[test]
     fn accumulator_clone_assemble_returns_none_when_incomplete() {
-        let mut acc = ConfigAccumulator::default();
-        acc.task = Some(minimal_task());
-        acc.paths = Some(minimal_paths());
+        let acc = ConfigAccumulator {
+            task: Some(minimal_task()),
+            paths: Some(minimal_paths()),
+            ..Default::default()
+        };
         // no measures, no score
         assert!(acc.clone_assemble().is_none());
     }

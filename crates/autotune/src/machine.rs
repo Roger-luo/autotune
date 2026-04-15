@@ -246,10 +246,9 @@ fn parse_reset_in_timezone(
             .from_local_datetime(&local_dt)
             .earliest()
             .or_else(|| tz.from_local_datetime(&local_dt).latest())
+            && candidate > local_now
         {
-            if candidate > local_now {
-                return Some(candidate.with_timezone(&Utc));
-            }
+            return Some(candidate.with_timezone(&Utc));
         }
         date = date.checked_add_days(Days::new(1))?;
     }
@@ -265,10 +264,10 @@ fn parse_reset_in_offset(
 
     loop {
         let local_dt = date.and_time(time);
-        if let Some(candidate) = offset.from_local_datetime(&local_dt).single() {
-            if candidate > local_now {
-                return Some(candidate.with_timezone(&Utc));
-            }
+        if let Some(candidate) = offset.from_local_datetime(&local_dt).single()
+            && candidate > local_now
+        {
+            return Some(candidate.with_timezone(&Utc));
         }
         date = date.checked_add_days(Days::new(1))?;
     }
@@ -1094,6 +1093,80 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
     Ok(())
 }
 
+fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
+    let ledger = store.load_ledger()?;
+
+    // Check max_iterations
+    if let Some(ref max_iter) = config.task.max_iterations {
+        match max_iter {
+            autotune_config::StopValue::Finite(max) => {
+                let non_baseline_count = ledger
+                    .iter()
+                    .filter(|r| r.status != IterationStatus::Baseline)
+                    .count() as u64;
+                if non_baseline_count >= *max {
+                    println!("[autotune] stop: reached max iterations ({max})");
+                    return Ok(true);
+                }
+            }
+            autotune_config::StopValue::Infinite => {}
+        }
+    }
+
+    // Check target_improvement
+    if let Some(target) = config.task.target_improvement
+        && let Some(last_kept) = ledger
+            .iter()
+            .rev()
+            .find(|r| r.status == IterationStatus::Kept)
+        && last_kept.rank >= target
+    {
+        println!(
+            "[autotune] stop: target improvement reached (rank {:.4} >= {:.4})",
+            last_kept.rank, target
+        );
+        return Ok(true);
+    }
+
+    // Check target_metric — absolute thresholds on specific metrics.
+    // Uses the most recent measured metrics (baseline or any iteration with metrics).
+    if !config.task.target_metric.is_empty()
+        && let Some(latest) = ledger.iter().rev().find(|r| !r.metrics.is_empty())
+    {
+        let all_met = config.task.target_metric.iter().all(|tm| {
+            latest
+                .metrics
+                .get(&tm.name)
+                .is_some_and(|v| match tm.direction {
+                    autotune_config::Direction::Maximize => *v >= tm.value,
+                    autotune_config::Direction::Minimize => *v <= tm.value,
+                })
+        });
+        if all_met {
+            let summary: Vec<String> = config
+                .task
+                .target_metric
+                .iter()
+                .map(|tm| {
+                    let cur = latest.metrics.get(&tm.name).copied().unwrap_or(f64::NAN);
+                    let op = match tm.direction {
+                        autotune_config::Direction::Maximize => ">=",
+                        autotune_config::Direction::Minimize => "<=",
+                    };
+                    format!("{}={:.4} {} {:.4}", tm.name, cur, op, tm.value)
+                })
+                .collect();
+            println!(
+                "[autotune] stop: target metric(s) reached ({})",
+                summary.join(", ")
+            );
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1444,78 +1517,4 @@ mod tests {
         store.append_ledger(&make_kept_record(0.5)).unwrap();
         assert!(!should_stop(&config, &store).unwrap());
     }
-}
-
-fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
-    let ledger = store.load_ledger()?;
-
-    // Check max_iterations
-    if let Some(ref max_iter) = config.task.max_iterations {
-        match max_iter {
-            autotune_config::StopValue::Finite(max) => {
-                let non_baseline_count = ledger
-                    .iter()
-                    .filter(|r| r.status != IterationStatus::Baseline)
-                    .count() as u64;
-                if non_baseline_count >= *max {
-                    println!("[autotune] stop: reached max iterations ({max})");
-                    return Ok(true);
-                }
-            }
-            autotune_config::StopValue::Infinite => {}
-        }
-    }
-
-    // Check target_improvement
-    if let Some(target) = config.task.target_improvement
-        && let Some(last_kept) = ledger
-            .iter()
-            .rev()
-            .find(|r| r.status == IterationStatus::Kept)
-        && last_kept.rank >= target
-    {
-        println!(
-            "[autotune] stop: target improvement reached (rank {:.4} >= {:.4})",
-            last_kept.rank, target
-        );
-        return Ok(true);
-    }
-
-    // Check target_metric — absolute thresholds on specific metrics.
-    // Uses the most recent measured metrics (baseline or any iteration with metrics).
-    if !config.task.target_metric.is_empty()
-        && let Some(latest) = ledger.iter().rev().find(|r| !r.metrics.is_empty())
-    {
-        let all_met = config.task.target_metric.iter().all(|tm| {
-            latest
-                .metrics
-                .get(&tm.name)
-                .is_some_and(|v| match tm.direction {
-                    autotune_config::Direction::Maximize => *v >= tm.value,
-                    autotune_config::Direction::Minimize => *v <= tm.value,
-                })
-        });
-        if all_met {
-            let summary: Vec<String> = config
-                .task
-                .target_metric
-                .iter()
-                .map(|tm| {
-                    let cur = latest.metrics.get(&tm.name).copied().unwrap_or(f64::NAN);
-                    let op = match tm.direction {
-                        autotune_config::Direction::Maximize => ">=",
-                        autotune_config::Direction::Minimize => "<=",
-                    };
-                    format!("{}={:.4} {} {:.4}", tm.name, cur, op, tm.value)
-                })
-                .collect();
-            println!(
-                "[autotune] stop: target metric(s) reached ({})",
-                summary.join(", ")
-            );
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
 }
