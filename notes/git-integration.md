@@ -59,6 +59,15 @@ cherry-pick only moves one.
 - Repeats up to `MAX_CONFLICT_ROUNDS = 10` iterations. Gives up → discards
   the iteration and aborts the rebase.
 
+## Baseline is measured against the working tree, not canonical
+
+`cmd_run` measures the baseline before creating the advancing branch, in
+whatever state the working tree happens to be in — no checkout, no reset.
+This matters when a prior task's advancing branch has been merged (or not)
+back into canonical: the new run's baseline will only reflect those prior
+wins if canonical is both updated *and* currently checked out. Full matrix
+in `config-and-tasks.md` § "Baseline semantics on fork".
+
 ## Resume behavior
 
 If the CLI crashes during integration, `resume` checks whether the approach's

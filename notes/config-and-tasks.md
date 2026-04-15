@@ -26,6 +26,37 @@ the directory is cleaned up and reused — no fork.
 
 Users who want to continue the existing task should use `autotune resume`.
 
+## Baseline semantics on fork
+
+Every `autotune run` — whether fresh or auto-forked — re-runs sanity tests
+and baseline measures from scratch. There is no baseline inheritance from
+the parent task's ledger.
+
+Baseline is measured against whatever the working tree currently holds:
+
+```rust
+// crates/autotune/src/main.rs ~line 346
+run_all_measures_with_output(&config.measure, &repo_root)
+```
+
+No branch switching, no stash, no checkout of canonical. The advancing
+branch is created **after** baseline, from `config.task.canonical_branch`
+(see `git-integration.md`).
+
+This means improvements from a previous task only carry over into a fork's
+baseline when the user has merged the previous advancing branch back into
+canonical *and* currently has canonical checked out. The footgun matrix:
+
+| Working tree at `run` time              | Baseline picks up prior wins?                           |
+| --------------------------------------- | ------------------------------------------------------- |
+| canonical, prior advancing merged in    | yes — baseline and iterations agree                     |
+| canonical, prior advancing NOT merged   | no — prior wins are orphaned on the old advancing branch|
+| still on the prior `autotune-<task>`    | baseline sees the wins, but iterations start from canonical — baseline and iteration 1 disagree (looks like a regression) |
+
+If reliable carryover matters, the workflow is: merge the advancing PR →
+`git checkout <canonical>` → `autotune run`. The CLI does not yet enforce
+or assert any of this; it's implicit user discipline.
+
 ## Project instructions for the implementation agent
 
 The implementation agent runs in an ephemeral worktree and receives its

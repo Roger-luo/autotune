@@ -166,6 +166,25 @@ When you spot a bug or a behavior that isn't covered by tests, follow this order
 
 **Why:** every real bug is a test gap. Fixing without a test lets the same bug recur; fixing with only a unit test misses integration-level regressions. And when scenario infrastructure is the bottleneck, we'd rather grow it deliberately than let tests rot because "the harness can't do that yet."
 
+## After finishing a task: consider updating [notes/](notes/)
+
+Before declaring a task done, pause and ask: **did I just learn something that wasn't obvious from the code, and would the next agent (or future-me) re-derive it from scratch without a note?** If yes, capture it in `notes/` before moving on.
+
+Good triggers to write (or extend) a note:
+
+- A non-obvious interaction between subsystems you had to trace through code to understand (e.g. baseline measurement vs. advancing-branch state).
+- A footgun or surprising default that bit you — even if you didn't "fix" anything, the next person will hit it too.
+- Rationale for a design choice that's not captured in a commit message or doc comment.
+- A pitfall in an external dep, CLI, or protocol that forced a workaround.
+
+Do **not** write a note for:
+
+- Things already obvious from reading the code, types, or tests.
+- Single-function fixes whose intent is clear from the diff + commit message.
+- Ephemeral task state or todo lists.
+
+When in doubt, extend an existing note rather than creating a new file — the notes index in [notes/README.md](notes/README.md) stays useful only while it's short. If you do add a new file, update both `notes/README.md` and the "Further reading" list above so it's actually discoverable.
+
 ## Git Conventions
 
 - **Conventional commits:** `feat:`, `fix:`, `docs:`, `test:`, `ci:`, `refactor:`, `perf:`, `build:`, `chore:`
