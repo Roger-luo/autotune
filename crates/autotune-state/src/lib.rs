@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[cfg(test)]
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 
 pub type Metrics = HashMap<String, f64>;
 
@@ -407,20 +407,20 @@ fn sync_directory(path: &Path) -> Result<(), StateError> {
 
 #[cfg(test)]
 fn record_synced_directory(path: &Path) {
-    let synced = SYNCED_DIRECTORIES.get_or_init(|| Mutex::new(Vec::new()));
-    synced.lock().unwrap().push(path.to_path_buf());
+    SYNCED_DIRECTORIES.with(|synced| synced.borrow_mut().push(path.to_path_buf()));
 }
 
 #[cfg(not(test))]
 fn record_synced_directory(_path: &Path) {}
 
 #[cfg(test)]
-static SYNCED_DIRECTORIES: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+thread_local! {
+    static SYNCED_DIRECTORIES: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 fn take_synced_directories() -> Vec<PathBuf> {
-    let synced = SYNCED_DIRECTORIES.get_or_init(|| Mutex::new(Vec::new()));
-    std::mem::take(&mut *synced.lock().unwrap())
+    SYNCED_DIRECTORIES.with(|synced| std::mem::take(&mut *synced.borrow_mut()))
 }
 
 #[cfg(test)]
