@@ -587,4 +587,281 @@ max_fresh_spawns = 2
         assert_eq!(role.effective_max_fix_attempts(), 5);
         assert_eq!(role.effective_max_fresh_spawns(), 2);
     }
+
+    fn make_config_direct(
+        task: TaskConfig,
+        paths: PathsConfig,
+        test: Vec<TestConfig>,
+        measure: Vec<MeasureConfig>,
+        score: ScoreConfig,
+    ) -> AutotuneConfig {
+        AutotuneConfig {
+            task,
+            paths,
+            test,
+            measure,
+            score,
+            agent: AgentConfig::default(),
+        }
+    }
+
+    fn default_task_with_stop() -> TaskConfig {
+        TaskConfig {
+            name: "t".to_string(),
+            description: None,
+            canonical_branch: "main".to_string(),
+            max_iterations: Some(StopValue::Finite(5)),
+            target_improvement: None,
+            max_duration: None,
+            target_metric: vec![],
+        }
+    }
+
+    fn default_paths() -> PathsConfig {
+        PathsConfig {
+            tunable: vec!["src/**".to_string()],
+            denied: vec![],
+        }
+    }
+
+    fn regex_measure(name: &str, metric_name: &str) -> MeasureConfig {
+        MeasureConfig {
+            name: name.to_string(),
+            command: vec!["echo".to_string()],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: metric_name.to_string(),
+                    pattern: "([0-9]+)".to_string(),
+                }],
+            },
+        }
+    }
+
+    fn weighted_sum_score(metric_name: &str) -> ScoreConfig {
+        ScoreConfig::WeightedSum {
+            primary_metrics: vec![PrimaryMetric {
+                name: metric_name.to_string(),
+                direction: Direction::Maximize,
+                weight: 1.0,
+            }],
+            guardrail_metrics: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_rejects_no_stop_conditions() {
+        let toml = r#"
+[task]
+name = "t"
+canonical_branch = "main"
+
+[[measure]]
+name = "m"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "val", pattern = "x([0-9]+)" }] }
+
+[paths]
+tunable = ["src/**"]
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("stop condition"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_measures() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![],
+            ScoreConfig::Script {
+                command: vec!["sh".to_string()],
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("measure"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_measure_command() {
+        let measure = MeasureConfig {
+            name: "m".to_string(),
+            command: vec![],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex { patterns: vec![] },
+        };
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![measure],
+            ScoreConfig::Script {
+                command: vec!["sh".to_string()],
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_script_adaptor_command() {
+        let measure = MeasureConfig {
+            name: "m".to_string(),
+            command: vec!["echo".to_string()],
+            timeout: 30,
+            adaptor: AdaptorConfig::Script { command: vec![] },
+        };
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![measure],
+            ScoreConfig::Script {
+                command: vec!["sh".to_string()],
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_test_command() {
+        let test = TestConfig {
+            name: "t".to_string(),
+            command: vec![],
+            timeout: 30,
+        };
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![test],
+            vec![regex_measure("m", "val")],
+            weighted_sum_score("val"),
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_tunable_paths() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            PathsConfig {
+                tunable: vec![],
+                denied: vec![],
+            },
+            vec![],
+            vec![regex_measure("m", "val")],
+            weighted_sum_score("val"),
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("tunable"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_tunable_glob() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            PathsConfig {
+                tunable: vec!["[invalid".to_string()],
+                denied: vec![],
+            },
+            vec![],
+            vec![regex_measure("m", "val")],
+            weighted_sum_score("val"),
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_invalid_denied_glob() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            PathsConfig {
+                tunable: vec!["src/**".to_string()],
+                denied: vec!["[bad".to_string()],
+            },
+            vec![],
+            vec![regex_measure("m", "val")],
+            weighted_sum_score("val"),
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("invalid"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_metric_names() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![regex_measure("m1", "val"), regex_measure("m2", "val")],
+            weighted_sum_score("val"),
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_primary_metric_not_in_adaptor() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![regex_measure("m", "val")],
+            ScoreConfig::WeightedSum {
+                primary_metrics: vec![PrimaryMetric {
+                    name: "nonexistent".to_string(),
+                    direction: Direction::Maximize,
+                    weight: 1.0,
+                }],
+                guardrail_metrics: vec![],
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nonexistent"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_guardrail_metric_not_in_adaptor() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![regex_measure("m", "val")],
+            ScoreConfig::WeightedSum {
+                primary_metrics: vec![PrimaryMetric {
+                    name: "val".to_string(),
+                    direction: Direction::Maximize,
+                    weight: 1.0,
+                }],
+                guardrail_metrics: vec![GuardrailMetric {
+                    name: "missing-guard".to_string(),
+                    direction: Direction::Minimize,
+                    max_regression: 0.1,
+                }],
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("missing-guard"), "error: {err}");
+    }
+
+    #[test]
+    fn effective_max_fresh_spawns_with_explicit_value() {
+        let role = AgentRoleConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+            max_fix_attempts: None,
+            max_fresh_spawns: Some(5),
+        };
+        assert_eq!(role.effective_max_fresh_spawns(), 5);
+    }
 }

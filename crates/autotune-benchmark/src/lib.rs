@@ -285,6 +285,107 @@ fn terminate_child(child: &mut Child) {
     let _ = child.kill();
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autotune_config::{AdaptorConfig, MeasureConfig, RegexPattern};
+    use std::path::Path;
+
+    #[test]
+    fn build_adaptor_regex_produces_regex_adaptor() {
+        let config = AdaptorConfig::Regex {
+            patterns: vec![RegexPattern {
+                name: "m".to_string(),
+                pattern: "([0-9]+)".to_string(),
+            }],
+        };
+        let adaptor = build_adaptor(&config, Path::new("."));
+        let output = MeasureOutput {
+            stdout: "value: 42\n".to_string(),
+            stderr: String::new(),
+        };
+        let metrics = adaptor.extract(&output).unwrap();
+        assert_eq!(*metrics.get("m").unwrap(), 42.0);
+    }
+
+    #[test]
+    fn build_adaptor_script_returns_adaptor() {
+        let config = AdaptorConfig::Script {
+            command: vec!["echo".to_string()],
+        };
+        let _adaptor = build_adaptor(&config, Path::new("."));
+        // Just verify no panic on construction.
+    }
+
+    #[test]
+    fn run_measure_returns_error_on_command_failure() {
+        let config = MeasureConfig {
+            name: "fail-test".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex { patterns: vec![] },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let result = run_measure(&config, tmp.path());
+        assert!(
+            matches!(result, Err(MeasureError::CommandFailed { ref name, .. }) if name == "fail-test"),
+            "expected CommandFailed, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn run_measure_extracts_metrics_on_success() {
+        let config = MeasureConfig {
+            name: "score-test".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'score: 99.5'".to_string(),
+            ],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "metric-name".to_string(),
+                    pattern: r"score: ([0-9.]+)".to_string(),
+                }],
+            },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let metrics = run_measure(&config, tmp.path()).unwrap();
+        assert_eq!(*metrics.get("metric-name").unwrap(), 99.5);
+    }
+
+    #[test]
+    fn run_all_measures_merges_metrics() {
+        let m1 = MeasureConfig {
+            name: "first".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "echo 'a: 1'".to_string()],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "metric-a".to_string(),
+                    pattern: r"a: ([0-9]+)".to_string(),
+                }],
+            },
+        };
+        let m2 = MeasureConfig {
+            name: "second".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "echo 'b: 2'".to_string()],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "metric-b".to_string(),
+                    pattern: r"b: ([0-9]+)".to_string(),
+                }],
+            },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let metrics = run_all_measures(&[m1, m2], tmp.path()).unwrap();
+        assert_eq!(*metrics.get("metric-a").unwrap(), 1.0);
+        assert_eq!(*metrics.get("metric-b").unwrap(), 2.0);
+    }
+}
+
 struct ScriptAdaptorWithWorkingDir {
     command: Vec<String>,
     working_dir: PathBuf,

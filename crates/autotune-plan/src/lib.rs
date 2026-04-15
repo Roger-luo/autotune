@@ -530,4 +530,43 @@ This should give us a 10% improvement."#;
         assert!(prompt.contains("no <plan>"), "prompt: {prompt}");
         assert!(prompt.contains("<plan>"), "prompt: {prompt}");
     }
+
+    #[test]
+    fn is_retryable_agent_parse_failed_is_true() {
+        let err = PlanError::Agent {
+            source: AgentError::ParseFailed {
+                message: "m".to_string(),
+            },
+        };
+        assert!(is_retryable(&err));
+    }
+
+    #[test]
+    fn is_retryable_agent_command_failed_is_false() {
+        let err = PlanError::Agent {
+            source: AgentError::CommandFailed {
+                message: "m".to_string(),
+            },
+        };
+        assert!(!is_retryable(&err));
+    }
+
+    #[test]
+    fn collect_measure_output_files_returns_none_for_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        assert!(collect_measure_output_files(&store, 1, "approach").is_none());
+    }
+
+    #[test]
+    fn collect_measure_output_files_returns_sorted_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        store
+            .save_measure_output(1, "opt", "bench", "out", "err")
+            .unwrap();
+        let files = collect_measure_output_files(&store, 1, "opt").unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.windows(2).all(|w| w[0] <= w[1]));
+    }
 }

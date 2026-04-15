@@ -486,4 +486,121 @@ mod tests {
         assert_eq!(record.fix_attempts, 0);
         assert_eq!(record.fresh_spawns, 0);
     }
+
+    #[test]
+    fn task_store_open_returns_not_found_error() {
+        let result = TaskStore::open(std::path::Path::new("/nonexistent/path/that/does/not/exist"));
+        assert!(matches!(result, Err(StateError::NotFound { .. })));
+    }
+
+    #[test]
+    fn task_store_open_succeeds_for_existing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        TaskStore::new(tmp.path()).unwrap();
+        let result = TaskStore::open(tmp.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn task_store_root_returns_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        assert_eq!(store.root(), tmp.path());
+    }
+
+    #[test]
+    fn save_and_load_config_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        store.save_config_snapshot("config content").unwrap();
+        let loaded = store.load_config_snapshot().unwrap();
+        assert_eq!(loaded, "config content");
+    }
+
+    #[test]
+    fn save_iteration_prompt_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        store.save_iteration_prompt(1, "opt", "my prompt").unwrap();
+        let prompt_path = store.iteration_dir(1, "opt").join("prompt.md");
+        let content = fs::read_to_string(prompt_path).unwrap();
+        assert_eq!(content, "my prompt");
+    }
+
+    #[test]
+    fn save_measure_output_writes_both_streams() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let written = store
+            .save_measure_output(1, "opt", "bench", "stdout content", "stderr content")
+            .unwrap();
+        assert_eq!(written.len(), 2);
+        for (_, path) in &written {
+            assert!(path.exists());
+        }
+    }
+
+    #[test]
+    fn save_measure_output_only_stdout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let written = store
+            .save_measure_output(1, "opt", "bench", "stdout content", "")
+            .unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].0, "stdout");
+    }
+
+    #[test]
+    fn save_measure_output_only_stderr() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let written = store
+            .save_measure_output(1, "opt", "bench", "", "stderr content")
+            .unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].0, "stderr");
+    }
+
+    #[test]
+    fn save_measure_output_both_empty_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let written = store
+            .save_measure_output(1, "opt", "bench", "", "")
+            .unwrap();
+        assert_eq!(written.len(), 0);
+        assert!(!store.measure_output_dir(1, "opt").exists());
+    }
+
+    #[test]
+    fn append_log_creates_and_appends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        store.append_log("first entry").unwrap();
+        store.append_log("second entry").unwrap();
+        let log = store.read_log().unwrap();
+        assert!(log.contains("first entry"));
+        assert!(log.contains("second entry"));
+    }
+
+    #[test]
+    fn list_tasks_empty_when_no_tasks_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let names = TaskStore::list_tasks(tmp.path()).unwrap();
+        assert_eq!(names, Vec::<String>::new());
+    }
+
+    #[test]
+    fn list_tasks_returns_sorted_task_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks_dir = tmp.path().join(".autotune").join("tasks");
+        fs::create_dir_all(tasks_dir.join("beta-task")).unwrap();
+        fs::create_dir_all(tasks_dir.join("alpha-task")).unwrap();
+        let names = TaskStore::list_tasks(&tmp.path().join(".autotune")).unwrap();
+        assert_eq!(
+            names,
+            vec!["alpha-task".to_string(), "beta-task".to_string()]
+        );
+    }
 }
