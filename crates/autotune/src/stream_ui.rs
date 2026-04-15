@@ -372,4 +372,24 @@ mod tests {
         let md = build_hypothesis_markdown(1, &h);
         assert!(!md.contains("Files to modify"));
     }
+
+    #[test]
+    fn describe_tool_use_no_input() {
+        assert_eq!(describe_tool_use("Read", ""), "Read()");
+    }
+
+    #[test]
+    fn describe_tool_use_short_input() {
+        assert_eq!(describe_tool_use("Glob", "src/**/*.rs"), "Glob(src/**/*.rs)");
+    }
+
+    #[test]
+    fn describe_tool_use_long_input_truncated() {
+        let long_input = "a".repeat(70);
+        let result = describe_tool_use("Grep", &long_input);
+        // The result is "{tool}({summary})" where summary ends with "..."
+        // so result ends with "...)" not "..."
+        assert!(result.contains("..."), "expected truncation marker in: {result}");
+        assert!(result.starts_with("Grep("), "expected Grep( prefix: {result}");
+    }
 }

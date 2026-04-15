@@ -919,3 +919,182 @@ fn parse_stop_value(s: &str) -> Result<StopValue, AgentError> {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autotune_config::{AdaptorConfig, Direction, ScoreConfig, StopValue};
+
+    #[test]
+    fn parse_measure_with_criterion_adaptor() {
+        let xml = r#"<measure><name>bench</name><command><segment>cargo</segment><segment>bench</segment></command><adaptor><type>criterion</type><measure-name>bench/sort</measure-name></adaptor></measure>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Measure(m) => {
+                assert_eq!(m.name, "bench");
+                assert!(matches!(&m.adaptor, AdaptorConfig::Criterion { measure_name } if measure_name == "bench/sort"));
+            }
+            _ => panic!("expected Measure"),
+        }
+    }
+
+    #[test]
+    fn parse_measure_with_script_adaptor() {
+        let xml = r#"<measure><name>custom</name><command><segment>sh</segment></command><adaptor><type>script</type><command><segment>sh</segment><segment>-c</segment><segment>cat</segment></command></adaptor></measure>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Measure(m) => {
+                assert!(matches!(&m.adaptor, AdaptorConfig::Script { command } if command == &["sh", "-c", "cat"]));
+            }
+            _ => panic!("expected Measure"),
+        }
+    }
+
+    #[test]
+    fn parse_measure_missing_adaptor_errors() {
+        let xml = r#"<measure><name>x</name><command><segment>sh</segment></command></measure>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("adaptor"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_adaptor_unknown_type_errors() {
+        let xml = r#"<measure><name>x</name><command><segment>sh</segment></command><adaptor><type>unknown_xyz</type></adaptor></measure>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("unknown_xyz"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_score_threshold() {
+        let xml = r#"<score><type>threshold</type><condition><metric>latency_ms</metric><direction>Minimize</direction><threshold>5.0</threshold></condition></score>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Score(ScoreConfig::Threshold { conditions }) => {
+                assert_eq!(conditions.len(), 1);
+                assert_eq!(conditions[0].metric, "latency_ms");
+                assert!(matches!(conditions[0].direction, Direction::Minimize));
+                assert_eq!(conditions[0].threshold, 5.0);
+            }
+            _ => panic!("expected Threshold score"),
+        }
+    }
+
+    #[test]
+    fn parse_score_script() {
+        let xml = r#"<score><type>script</type><command><segment>sh</segment><segment>-c</segment><segment>echo</segment></command></score>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Score(ScoreConfig::Script { command }) => {
+                assert_eq!(command, &["sh", "-c", "echo"]);
+            }
+            _ => panic!("expected Script score"),
+        }
+    }
+
+    #[test]
+    fn parse_score_command() {
+        let xml = r#"<score><type>command</type><command><segment>./score.sh</segment></command></score>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Score(ScoreConfig::Command { command }) => {
+                assert_eq!(command, &["./score.sh"]);
+            }
+            _ => panic!("expected Command score"),
+        }
+    }
+
+    #[test]
+    fn parse_score_missing_type_errors() {
+        let xml = r#"<score><primary-metric><name>m</name><direction>Maximize</direction><weight>1.0</weight></primary-metric></score>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("type"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_score_unknown_type_errors() {
+        let xml = r#"<score><type>neural_net</type></score>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("neural_net"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_score_weighted_sum_with_guardrail_and_minimize() {
+        let xml = r#"<score><type>weighted_sum</type><primary-metric><name>latency_ms</name><direction>Minimize</direction><weight>2.0</weight></primary-metric><guardrail-metric><name>accuracy</name><direction>Maximize</direction><max-regression>0.05</max-regression></guardrail-metric></score>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Score(ScoreConfig::WeightedSum { primary_metrics, guardrail_metrics }) => {
+                assert_eq!(primary_metrics[0].direction, Direction::Minimize);
+                assert_eq!(primary_metrics[0].weight, 2.0);
+                assert_eq!(guardrail_metrics[0].name, "accuracy");
+                assert_eq!(guardrail_metrics[0].max_regression, 0.05);
+            }
+            _ => panic!("expected WeightedSum score"),
+        }
+    }
+
+    #[test]
+    fn parse_agent_fragment() {
+        let xml = r#"<agent><backend>claude</backend><research><model>claude-opus</model><max-turns>20</max-turns></research><implementation><backend>claude</backend></implementation></agent>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Agent(agent) => {
+                assert_eq!(agent.backend, "claude");
+                let research = agent.research.as_ref().unwrap();
+                assert_eq!(research.model.as_deref(), Some("claude-opus"));
+                assert_eq!(research.max_turns, Some(20));
+                assert_eq!(agent.implementation.as_ref().unwrap().backend.as_deref(), Some("claude"));
+            }
+            _ => panic!("expected Agent"),
+        }
+    }
+
+    #[test]
+    fn parse_test_fragment() {
+        let xml = r#"<test><name>unit</name><command><segment>cargo</segment><segment>nextest</segment><segment>run</segment></command><timeout>120</timeout></test>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Test(t) => {
+                assert_eq!(t.name, "unit");
+                assert_eq!(t.command, vec!["cargo", "nextest", "run"]);
+                assert_eq!(t.timeout, 120);
+            }
+            _ => panic!("expected Test"),
+        }
+    }
+
+    #[test]
+    fn parse_bool_false_values() {
+        for val in &["false", "no", "0"] {
+            let xml = format!(r#"<question><text>q</text><allow-free-response>{val}</allow-free-response></question>"#);
+            let frags = parse_agent_response(&xml).unwrap();
+            match &frags[0] {
+                AgentFragment::Question { allow_free_response, .. } => {
+                    assert!(!allow_free_response, "expected false for '{val}'");
+                }
+                _ => panic!("expected Question"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_task_invalid_stop_value_errors() {
+        let xml = r#"<task><name>t</name><max-iterations>not_a_number</max-iterations></task>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("not_a_number"), "error was: {err}");
+    }
+
+    #[test]
+    fn lenient_find_all_unterminated_is_skipped() {
+        let matches = lenient_find_all("<foo>no close", "foo");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn lenient_find_all_finds_multiple() {
+        let text = "<foo>first</foo> prose <foo>second</foo>";
+        let matches = lenient_find_all(text, "foo");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].inner, "first");
+        assert_eq!(matches[1].inner, "second");
+    }
+}
