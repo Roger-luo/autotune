@@ -583,6 +583,7 @@ fn extract_summary(response: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn fix_prompt_includes_latest_output_and_is_terse_without_history() {
@@ -660,5 +661,65 @@ mod tests {
     #[test]
     fn extract_summary_returns_none_when_absent() {
         assert_eq!(extract_summary("no summary here"), None);
+    }
+
+    #[test]
+    fn slugify_single_word() {
+        assert_eq!(slugify("hello"), "hello");
+    }
+
+    #[test]
+    fn slugify_spaces_become_hyphens() {
+        assert_eq!(slugify("foo bar baz"), "foo-bar-baz");
+    }
+
+    #[test]
+    fn slugify_consecutive_specials_collapse() {
+        assert_eq!(slugify("foo!!bar"), "foo-bar");
+    }
+
+    #[test]
+    fn slugify_trims_leading_trailing_hyphens() {
+        assert_eq!(slugify("  foo  "), "foo");
+    }
+
+    #[test]
+    fn slugify_long_name_truncated_to_60() {
+        let result = slugify(&"x".repeat(70));
+        assert!(result.len() <= 60);
+    }
+
+    #[test]
+    fn load_project_instructions_returns_none_when_empty_dir() {
+        let tmp = tempdir().unwrap();
+        assert!(load_project_instructions(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn load_project_instructions_returns_agents_md() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "agents rules").unwrap();
+        let result = load_project_instructions(tmp.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("agents rules"));
+    }
+
+    #[test]
+    fn load_project_instructions_returns_claude_md_as_fallback() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "claude rules").unwrap();
+        let result = load_project_instructions(tmp.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("claude rules"));
+    }
+
+    #[test]
+    fn load_project_instructions_prefers_agents_md_over_claude_md() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "agents content").unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "claude content").unwrap();
+        let result = load_project_instructions(tmp.path()).unwrap();
+        assert!(result.contains("agents content"));
+        assert!(!result.contains("claude content"));
     }
 }

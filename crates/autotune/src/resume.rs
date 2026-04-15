@@ -112,3 +112,197 @@ pub fn prepare_resume(store: &TaskStore, repo_root: &Path) -> Result<TaskState> 
     store.save_state(&state)?;
     Ok(state)
 }
+
+#[cfg(test)]
+mod tests {
+    use autotune_state::{ApproachState, Phase, TaskState, TaskStore};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn make_state(phase: Phase, approach: Option<ApproachState>) -> TaskState {
+        TaskState {
+            task_name: "t".to_string(),
+            canonical_branch: "main".to_string(),
+            advancing_branch: "autotune/t-main".to_string(),
+            research_session_id: "sess-1".to_string(),
+            current_iteration: 1,
+            current_phase: phase,
+            current_approach: approach,
+        }
+    }
+
+    fn make_approach(
+        commit_sha: Option<&str>,
+        metrics: Option<HashMap<String, f64>>,
+        worktree_path: PathBuf,
+    ) -> ApproachState {
+        ApproachState {
+            name: "opt".to_string(),
+            hypothesis: "h".to_string(),
+            worktree_path,
+            branch_name: "autotune/t/opt".to_string(),
+            commit_sha: commit_sha.map(|s| s.to_string()),
+            test_results: vec![],
+            metrics,
+            rank: None,
+            files_to_modify: vec![],
+            impl_session_id: None,
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            fix_history: vec![],
+        }
+    }
+
+    #[test]
+    fn resume_planning_stays_at_planning() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Planning, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Planning);
+    }
+
+    #[test]
+    fn resume_implementing_with_commit_advances_to_testing() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let approach = make_approach(Some("abc123"), None, tmp.path().join("wt"));
+        let state = make_state(Phase::Implementing, Some(approach));
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Testing);
+        assert!(result.current_approach.is_some());
+    }
+
+    #[test]
+    fn resume_implementing_without_commit_resets_to_planning() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let approach = make_approach(None, None, tmp.path().join("nonexistent"));
+        let state = make_state(Phase::Implementing, Some(approach));
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Planning);
+        assert!(result.current_approach.is_none());
+    }
+
+    #[test]
+    fn resume_implementing_without_approach_resets_to_planning() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Implementing, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Planning);
+    }
+
+    #[test]
+    fn resume_testing_stays_at_testing() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Testing, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Testing);
+    }
+
+    #[test]
+    fn resume_fixing_advances_to_testing() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Fixing, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Testing);
+    }
+
+    #[test]
+    fn resume_measuring_stays_at_measuring() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Measuring, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Measuring);
+    }
+
+    #[test]
+    fn resume_scoring_with_metrics_stays_at_scoring() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let approach = make_approach(None, Some(HashMap::new()), tmp.path().join("wt"));
+        let state = make_state(Phase::Scoring, Some(approach));
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Scoring);
+    }
+
+    #[test]
+    fn resume_scoring_without_metrics_falls_back_to_measuring() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let approach = make_approach(None, None, tmp.path().join("wt"));
+        let state = make_state(Phase::Scoring, Some(approach));
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Measuring);
+    }
+
+    #[test]
+    fn resume_scoring_without_approach_stays_at_scoring() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Scoring, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Scoring);
+    }
+
+    #[test]
+    fn resume_integrating_with_commit_stays_at_integrating() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let approach = make_approach(Some("abc"), None, tmp.path().join("wt"));
+        let state = make_state(Phase::Integrating, Some(approach));
+        store.save_state(&state).unwrap();
+        // tmp.path() is not a git repo, so has_commits_ahead returns Err → unwrap_or(false) → stays at Integrating
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Integrating);
+    }
+
+    #[test]
+    fn resume_integrating_without_commit_sha_resets_to_planning() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let approach = make_approach(None, None, tmp.path().join("wt"));
+        let state = make_state(Phase::Integrating, Some(approach));
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Planning);
+        assert!(result.current_approach.is_none());
+    }
+
+    #[test]
+    fn resume_recorded_stays_at_recorded() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Recorded, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Recorded);
+    }
+
+    #[test]
+    fn resume_done_stays_at_done() {
+        let tmp = tempdir().unwrap();
+        let store = TaskStore::new(&tmp.path().join("task")).unwrap();
+        let state = make_state(Phase::Done, None);
+        store.save_state(&state).unwrap();
+        let result = prepare_resume(&store, tmp.path()).unwrap();
+        assert_eq!(result.current_phase, Phase::Done);
+    }
+}

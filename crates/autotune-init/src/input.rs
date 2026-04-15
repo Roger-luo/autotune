@@ -160,3 +160,105 @@ impl UserInput for MockInput {
         Ok(self.response.to_lowercase() == "yes" || self.response.to_lowercase() == "y")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autotune_agent::protocol::QuestionOption;
+
+    fn opt(key: &str, label: &str, description: Option<&str>) -> QuestionOption {
+        QuestionOption {
+            key: key.to_string(),
+            label: label.to_string(),
+            description: description.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn format_option_with_description() {
+        let o = opt("k", "Label", Some("Desc"));
+        assert_eq!(format_option(&o), "Label \u{2014} Desc");
+    }
+
+    #[test]
+    fn format_option_without_description() {
+        let o = opt("k", "Label", None);
+        assert_eq!(format_option(&o), "Label");
+    }
+
+    #[test]
+    fn format_option_with_empty_description() {
+        let o = opt("k", "Label", Some(""));
+        assert_eq!(format_option(&o), "Label");
+    }
+
+    #[test]
+    fn match_option_by_exact_key() {
+        let options = vec![opt("opt1", "Option 1", None)];
+        assert_eq!(TerminalInput::match_option("opt1", &options), "opt1");
+    }
+
+    #[test]
+    fn match_option_case_insensitive() {
+        let options = vec![opt("opt1", "Option 1", None)];
+        assert_eq!(TerminalInput::match_option("OPT1", &options), "opt1");
+    }
+
+    #[test]
+    fn match_option_by_1based_index() {
+        let options = vec![opt("first", "First", None), opt("second", "Second", None)];
+        assert_eq!(TerminalInput::match_option("2", &options), "second");
+    }
+
+    #[test]
+    fn match_option_index_out_of_range() {
+        let options = vec![opt("first", "First", None), opt("second", "Second", None)];
+        assert_eq!(TerminalInput::match_option("99", &options), "99");
+    }
+
+    #[test]
+    fn match_option_free_text_when_no_match() {
+        let options = vec![opt("opt1", "Option 1", None)];
+        assert_eq!(
+            TerminalInput::match_option("custom answer", &options),
+            "custom answer"
+        );
+    }
+
+    #[test]
+    fn mock_input_prompt_text_returns_configured_response() {
+        let mock = MockInput::new("hello");
+        assert_eq!(mock.prompt_text("q").unwrap(), "hello");
+    }
+
+    #[test]
+    fn mock_input_prompt_select_returns_first_option_key() {
+        let mock = MockInput::new("x");
+        let options = vec![opt("k", "L", None)];
+        assert_eq!(mock.prompt_select("q", &options, false).unwrap(), "k");
+    }
+
+    #[test]
+    fn mock_input_prompt_select_with_no_options_returns_response() {
+        let mock = MockInput::new("custom");
+        assert_eq!(mock.prompt_select("q", &[], false).unwrap(), "custom");
+    }
+
+    #[test]
+    fn mock_input_prompt_approve_yes() {
+        let mock = MockInput::new("yes");
+        assert_eq!(mock.prompt_approve("msg").unwrap(), true);
+    }
+
+    #[test]
+    fn mock_input_prompt_approve_y() {
+        let mock = MockInput::new("y");
+        assert_eq!(mock.prompt_approve("msg").unwrap(), true);
+    }
+
+    #[test]
+    fn mock_input_prompt_approve_no() {
+        let mock = MockInput::new("no");
+        assert_eq!(mock.prompt_approve("msg").unwrap(), false);
+    }
+}
