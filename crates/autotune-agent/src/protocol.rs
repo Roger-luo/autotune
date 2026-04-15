@@ -933,7 +933,7 @@ fn parse_stop_value(s: &str) -> Result<StopValue, AgentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autotune_config::{AdaptorConfig, Direction, ScoreConfig};
+    use autotune_config::{AdaptorConfig, Direction, ScoreConfig, StopValue};
 
     #[test]
     fn parse_measure_with_criterion_adaptor() {
@@ -1121,5 +1121,109 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].inner, "first");
         assert_eq!(matches[1].inner, "second");
+    }
+
+    #[test]
+    fn parse_bool_yes_and_one_values() {
+        for val in &["yes", "1"] {
+            let xml = format!(
+                r#"<question><text>q</text><allow-free-response>{val}</allow-free-response></question>"#
+            );
+            let frags = parse_agent_response(&xml).unwrap();
+            match &frags[0] {
+                AgentFragment::Question { allow_free_response, .. } => {
+                    assert!(*allow_free_response, "expected true for '{val}'");
+                }
+                _ => panic!("expected Question"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_bool_invalid_errors() {
+        let xml = r#"<question><text>q</text><allow-free-response>maybe</allow-free-response></question>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("invalid boolean"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_u64_invalid_errors() {
+        let xml = r#"<test><name>t</name><command><segment>sh</segment></command><timeout>not_a_number</timeout></test>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("invalid integer"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_f64_invalid_errors() {
+        let xml = r#"<score><type>weighted_sum</type><primary-metric><name>m</name><direction>Maximize</direction><weight>not_a_float</weight></primary-metric></score>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("invalid number"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_direction_invalid_errors() {
+        let xml = r#"<score><type>threshold</type><condition><metric>m</metric><direction>Sideways</direction><threshold>5.0</threshold></condition></score>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("Sideways"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_task_with_description_and_extra_fields() {
+        let xml = r#"<task><name>my-task</name><description>desc text</description><canonical-branch>main</canonical-branch><max-iterations>10</max-iterations><target-improvement>0.05</target-improvement><max-duration>1h</max-duration></task>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Task(task) => {
+                assert_eq!(task.description.as_deref(), Some("desc text"));
+                assert_eq!(task.target_improvement, Some(0.05));
+                assert_eq!(task.max_duration.as_deref(), Some("1h"));
+            }
+            _ => panic!("expected Task"),
+        }
+    }
+
+    #[test]
+    fn parse_criterion_adaptor_missing_measure_name_errors() {
+        let xml = r#"<measure><name>x</name><command><segment>sh</segment></command><adaptor><type>criterion</type></adaptor></measure>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("criterion"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_agent_with_fix_and_spawn_budgets() {
+        let xml = r#"<agent><backend>claude</backend><implementation><max-fix-attempts>3</max-fix-attempts><max-fresh-spawns>2</max-fresh-spawns></implementation></agent>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Agent(agent) => {
+                let impl_cfg = agent.implementation.as_ref().unwrap();
+                assert_eq!(impl_cfg.max_fix_attempts, Some(3));
+                assert_eq!(impl_cfg.max_fresh_spawns, Some(2));
+            }
+            _ => panic!("expected Agent"),
+        }
+    }
+
+    #[test]
+    fn parse_agent_with_init_section() {
+        let xml = r#"<agent><backend>claude</backend><init><model>claude-haiku</model></init></agent>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Agent(agent) => {
+                let init_cfg = agent.init.as_ref().unwrap();
+                assert_eq!(init_cfg.model.as_deref(), Some("claude-haiku"));
+            }
+            _ => panic!("expected Agent"),
+        }
+    }
+
+    #[test]
+    fn parse_stop_value_finite_number() {
+        let xml = r#"<task><name>t</name><max-iterations>5</max-iterations></task>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Task(task) => {
+                assert!(matches!(task.max_iterations, Some(StopValue::Finite(5))));
+            }
+            _ => panic!("expected Task"),
+        }
     }
 }

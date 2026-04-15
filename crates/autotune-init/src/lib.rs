@@ -784,3 +784,503 @@ fn run_init_inner(
         baseline_metrics: validated_metrics,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autotune_agent::ToolPermission;
+    use autotune_config::{
+        AdaptorConfig, Direction, GuardrailMetric, MeasureConfig, PathsConfig, PrimaryMetric,
+        RegexPattern, ScoreConfig, StopValue, TaskConfig, TestConfig, ThresholdCondition,
+    };
+    use std::io;
+
+    fn minimal_task() -> TaskConfig {
+        TaskConfig {
+            name: "my-task".to_string(),
+            description: None,
+            canonical_branch: "main".to_string(),
+            max_iterations: Some(StopValue::Finite(10)),
+            target_improvement: None,
+            max_duration: None,
+            target_metric: vec![],
+        }
+    }
+
+    fn minimal_paths() -> PathsConfig {
+        PathsConfig {
+            tunable: vec!["src/**".to_string()],
+            denied: vec![],
+        }
+    }
+
+    fn minimal_test() -> TestConfig {
+        TestConfig {
+            name: "run-tests".to_string(),
+            command: vec!["cargo".to_string(), "test".to_string()],
+            timeout: 300,
+        }
+    }
+
+    fn regex_measure(name: &str, metric_name: &str) -> MeasureConfig {
+        MeasureConfig {
+            name: name.to_string(),
+            command: vec!["sh".to_string()],
+            timeout: 600,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: metric_name.to_string(),
+                    pattern: "([0-9.]+)".to_string(),
+                }],
+            },
+        }
+    }
+
+    fn complete_accumulator() -> ConfigAccumulator {
+        let mut acc = ConfigAccumulator::default();
+        acc.task = Some(minimal_task());
+        acc.paths = Some(minimal_paths());
+        acc.measures.push(regex_measure("bench", "coverage"));
+        acc.score = Some(ScoreConfig::WeightedSum {
+            primary_metrics: vec![PrimaryMetric {
+                name: "coverage".to_string(),
+                direction: Direction::Maximize,
+                weight: 1.0,
+            }],
+            guardrail_metrics: vec![],
+        });
+        acc
+    }
+
+    // --- ConfigAccumulator tests ---
+
+    #[test]
+    fn accumulator_default_is_not_complete() {
+        assert!(!ConfigAccumulator::default().is_complete());
+    }
+
+    #[test]
+    fn accumulator_complete_when_all_sections_set() {
+        assert!(complete_accumulator().is_complete());
+    }
+
+    #[test]
+    fn accumulator_missing_sections_all() {
+        let missing = ConfigAccumulator::default().missing_sections();
+        assert!(missing.contains(&"task"));
+        assert!(missing.contains(&"paths"));
+        assert!(missing.contains(&"measure (at least one)"));
+        assert!(missing.contains(&"score"));
+    }
+
+    #[test]
+    fn accumulator_missing_sections_partial() {
+        let mut acc = ConfigAccumulator::default();
+        acc.task = Some(minimal_task());
+        acc.paths = Some(minimal_paths());
+        let missing = acc.missing_sections();
+        assert!(!missing.contains(&"task"));
+        assert!(!missing.contains(&"paths"));
+        assert!(missing.contains(&"measure (at least one)"));
+        assert!(missing.contains(&"score"));
+    }
+
+    #[test]
+    fn accumulator_clone_assemble_returns_none_when_incomplete() {
+        let mut acc = ConfigAccumulator::default();
+        acc.task = Some(minimal_task());
+        acc.paths = Some(minimal_paths());
+        // no measures, no score
+        assert!(acc.clone_assemble().is_none());
+    }
+
+    #[test]
+    fn accumulator_clone_assemble_returns_some_when_complete() {
+        let config = complete_accumulator().clone_assemble().expect("should be Some");
+        assert_eq!(config.task.name, "my-task");
+    }
+
+    #[test]
+    fn accumulator_assemble_preview_contains_task_name() {
+        let preview = complete_accumulator().assemble_preview();
+        assert!(preview.contains("my-task"), "preview: {preview}");
+    }
+
+    #[test]
+    fn accumulator_assemble_consumes_self() {
+        assert!(complete_accumulator().assemble().is_some());
+    }
+
+    // --- validate_task tests ---
+
+    #[test]
+    fn validate_task_rejects_empty_name() {
+        let mut task = minimal_task();
+        task.name = String::new();
+        match validate_task(&task) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("empty"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_task_rejects_no_stop_conditions() {
+        let task = TaskConfig {
+            name: "t".to_string(),
+            description: None,
+            canonical_branch: "main".to_string(),
+            max_iterations: None,
+            target_improvement: None,
+            max_duration: None,
+            target_metric: vec![],
+        };
+        match validate_task(&task) {
+            FragmentOutcome::Rejected(msg) => {
+                assert!(msg.contains("stop condition"), "msg: {msg}")
+            }
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_task_accepts_with_max_iterations() {
+        assert!(matches!(validate_task(&minimal_task()), FragmentOutcome::Accepted(_)));
+    }
+
+    #[test]
+    fn validate_task_accepts_with_target_improvement() {
+        let task = TaskConfig {
+            name: "t".to_string(),
+            description: None,
+            canonical_branch: "main".to_string(),
+            max_iterations: None,
+            target_improvement: Some(0.1),
+            max_duration: None,
+            target_metric: vec![],
+        };
+        assert!(matches!(validate_task(&task), FragmentOutcome::Accepted(_)));
+    }
+
+    #[test]
+    fn validate_task_accepts_with_max_duration() {
+        let task = TaskConfig {
+            name: "t".to_string(),
+            description: None,
+            canonical_branch: "main".to_string(),
+            max_iterations: None,
+            target_improvement: None,
+            max_duration: Some("30m".to_string()),
+            target_metric: vec![],
+        };
+        assert!(matches!(validate_task(&task), FragmentOutcome::Accepted(_)));
+    }
+
+    #[test]
+    fn validate_task_accepts_with_infinite_stop() {
+        let task = TaskConfig {
+            name: "t".to_string(),
+            description: None,
+            canonical_branch: "main".to_string(),
+            max_iterations: Some(StopValue::Infinite),
+            target_improvement: None,
+            max_duration: None,
+            target_metric: vec![],
+        };
+        assert!(matches!(validate_task(&task), FragmentOutcome::Accepted(_)));
+    }
+
+    // --- validate_paths tests ---
+
+    #[test]
+    fn validate_paths_rejects_empty_tunable() {
+        let paths = PathsConfig { tunable: vec![], denied: vec![] };
+        match validate_paths(&paths) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("tunable"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_paths_rejects_invalid_glob() {
+        let paths = PathsConfig {
+            tunable: vec!["[invalid".to_string()],
+            denied: vec![],
+        };
+        match validate_paths(&paths) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("invalid"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_paths_rejects_invalid_denied_glob() {
+        let paths = PathsConfig {
+            tunable: vec!["src/**".to_string()],
+            denied: vec!["[bad".to_string()],
+        };
+        match validate_paths(&paths) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("invalid"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_paths_accepts_valid_paths() {
+        assert!(matches!(validate_paths(&minimal_paths()), FragmentOutcome::Accepted(_)));
+    }
+
+    // --- validate_test tests ---
+
+    #[test]
+    fn validate_test_rejects_empty_command() {
+        let test = TestConfig {
+            name: "t".to_string(),
+            command: vec![],
+            timeout: 300,
+        };
+        match validate_test(&test) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("empty"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_test_accepts_valid() {
+        assert!(matches!(validate_test(&minimal_test()), FragmentOutcome::Accepted(_)));
+    }
+
+    // --- validate_measure tests ---
+
+    #[test]
+    fn validate_measure_rejects_empty_command() {
+        let measure = MeasureConfig {
+            name: "m".to_string(),
+            command: vec![],
+            timeout: 600,
+            adaptor: AdaptorConfig::Script { command: vec![] },
+        };
+        match validate_measure(&measure, &ConfigAccumulator::default()) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("empty"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_measure_accepts_valid() {
+        let measure = regex_measure("bench", "coverage");
+        assert!(matches!(
+            validate_measure(&measure, &ConfigAccumulator::default()),
+            FragmentOutcome::Accepted(_)
+        ));
+    }
+
+    #[test]
+    fn validate_measure_rejects_duplicate_metric_name() {
+        let mut acc = ConfigAccumulator::default();
+        acc.measures.push(regex_measure("first", "coverage"));
+        let duplicate = regex_measure("second", "coverage");
+        match validate_measure(&duplicate, &acc) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("duplicate"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    // --- validate_score tests ---
+
+    #[test]
+    fn validate_score_accepts_weighted_sum_with_known_metric() {
+        let mut acc = ConfigAccumulator::default();
+        acc.measures.push(regex_measure("bench", "coverage"));
+        let score = ScoreConfig::WeightedSum {
+            primary_metrics: vec![PrimaryMetric {
+                name: "coverage".to_string(),
+                direction: Direction::Maximize,
+                weight: 1.0,
+            }],
+            guardrail_metrics: vec![],
+        };
+        assert!(matches!(validate_score(&score, &acc), FragmentOutcome::Accepted(_)));
+    }
+
+    #[test]
+    fn validate_score_rejects_primary_metric_unknown() {
+        let mut acc = ConfigAccumulator::default();
+        acc.measures.push(regex_measure("bench", "coverage"));
+        let score = ScoreConfig::WeightedSum {
+            primary_metrics: vec![PrimaryMetric {
+                name: "unknown_metric".to_string(),
+                direction: Direction::Maximize,
+                weight: 1.0,
+            }],
+            guardrail_metrics: vec![],
+        };
+        match validate_score(&score, &acc) {
+            FragmentOutcome::Rejected(msg) => {
+                assert!(msg.contains("unknown_metric"), "msg: {msg}")
+            }
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_score_rejects_guardrail_metric_unknown() {
+        let mut acc = ConfigAccumulator::default();
+        acc.measures.push(regex_measure("bench", "coverage"));
+        let score = ScoreConfig::WeightedSum {
+            primary_metrics: vec![PrimaryMetric {
+                name: "coverage".to_string(),
+                direction: Direction::Maximize,
+                weight: 1.0,
+            }],
+            guardrail_metrics: vec![GuardrailMetric {
+                name: "missing_metric".to_string(),
+                direction: Direction::Minimize,
+                max_regression: 0.05,
+            }],
+        };
+        match validate_score(&score, &acc) {
+            FragmentOutcome::Rejected(msg) => {
+                assert!(msg.contains("missing_metric"), "msg: {msg}")
+            }
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_score_accepts_threshold_with_known_metric() {
+        let mut acc = ConfigAccumulator::default();
+        acc.measures.push(regex_measure("bench", "latency_ms"));
+        let score = ScoreConfig::Threshold {
+            conditions: vec![ThresholdCondition {
+                metric: "latency_ms".to_string(),
+                direction: Direction::Minimize,
+                threshold: 5.0,
+            }],
+        };
+        assert!(matches!(validate_score(&score, &acc), FragmentOutcome::Accepted(_)));
+    }
+
+    #[test]
+    fn validate_score_rejects_threshold_metric_unknown() {
+        let mut acc = ConfigAccumulator::default();
+        acc.measures.push(regex_measure("bench", "latency_ms"));
+        let score = ScoreConfig::Threshold {
+            conditions: vec![ThresholdCondition {
+                metric: "unknown_threshold_metric".to_string(),
+                direction: Direction::Minimize,
+                threshold: 5.0,
+            }],
+        };
+        match validate_score(&score, &acc) {
+            FragmentOutcome::Rejected(msg) => {
+                assert!(msg.contains("unknown_threshold_metric"), "msg: {msg}")
+            }
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_score_rejects_empty_script_command() {
+        let score = ScoreConfig::Script { command: vec![] };
+        match validate_score(&score, &ConfigAccumulator::default()) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("empty"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    #[test]
+    fn validate_score_accepts_nonempty_script_command() {
+        let score = ScoreConfig::Script {
+            command: vec!["sh".to_string(), "-c".to_string(), "echo 1".to_string()],
+        };
+        assert!(matches!(
+            validate_score(&score, &ConfigAccumulator::default()),
+            FragmentOutcome::Accepted(_)
+        ));
+    }
+
+    #[test]
+    fn validate_score_rejects_empty_command_score() {
+        let score = ScoreConfig::Command { command: vec![] };
+        match validate_score(&score, &ConfigAccumulator::default()) {
+            FragmentOutcome::Rejected(msg) => assert!(msg.contains("empty"), "msg: {msg}"),
+            _ => panic!("expected Rejected"),
+        }
+    }
+
+    // --- adaptor_metric_names tests ---
+
+    #[test]
+    fn adaptor_metric_names_regex_returns_pattern_names() {
+        let adaptor = AdaptorConfig::Regex {
+            patterns: vec![
+                RegexPattern { name: "a".to_string(), pattern: "([0-9]+)".to_string() },
+                RegexPattern { name: "b".to_string(), pattern: "([0-9]+)".to_string() },
+            ],
+        };
+        let names = adaptor_metric_names(&adaptor);
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn adaptor_metric_names_criterion_returns_fixed_set() {
+        let adaptor = AdaptorConfig::Criterion { measure_name: "bench/sort".to_string() };
+        let names = adaptor_metric_names(&adaptor);
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"mean".to_string()));
+        assert!(names.contains(&"median".to_string()));
+        assert!(names.contains(&"std_dev".to_string()));
+    }
+
+    #[test]
+    fn adaptor_metric_names_script_returns_empty() {
+        let adaptor = AdaptorConfig::Script { command: vec!["sh".to_string()] };
+        assert!(adaptor_metric_names(&adaptor).is_empty());
+    }
+
+    // --- map_io tests ---
+
+    #[test]
+    fn map_io_interrupted_becomes_user_aborted() {
+        let err = io::Error::new(io::ErrorKind::Interrupted, "x");
+        assert!(matches!(map_io(err), InitError::UserAborted));
+    }
+
+    #[test]
+    fn map_io_other_becomes_io_variant() {
+        let err = io::Error::new(io::ErrorKind::NotFound, "x");
+        assert!(!matches!(map_io(err), InitError::UserAborted));
+    }
+
+    // --- init_agent_permissions tests ---
+
+    #[test]
+    fn init_agent_permissions_are_read_only() {
+        let perms = init_agent_permissions();
+        assert_eq!(perms.len(), 3);
+        let tool_names: Vec<&str> = perms
+            .iter()
+            .map(|p| match p {
+                ToolPermission::Allow(name) => name.as_str(),
+                _ => panic!("expected only Allow permissions"),
+            })
+            .collect();
+        assert!(tool_names.contains(&"Read"));
+        assert!(tool_names.contains(&"Glob"));
+        assert!(tool_names.contains(&"Grep"));
+    }
+
+    // --- print_trial_failure tests ---
+
+    #[test]
+    fn print_trial_failure_with_multiline() {
+        print_trial_failure("line1\nline2");
+    }
+
+    #[test]
+    fn print_trial_failure_with_empty_string() {
+        print_trial_failure("");
+    }
+}
