@@ -467,7 +467,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     autotune_git::create_branch_from(&repo_root, &advancing_branch, &config.task.canonical_branch)
         .context("failed to create advancing branch")?;
     println!(
-        "[autotune] advancing branch: {} (from {})",
+        "[autotune] created advancing branch '{}' from '{}'",
         advancing_branch, config.task.canonical_branch
     );
 

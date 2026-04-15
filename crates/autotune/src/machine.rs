@@ -182,7 +182,11 @@ fn run_planning(
     )
     .context("failed to set up worktree")?;
     println!(
-        "[autotune] worktree: {} (branch {})",
+        "[autotune] created branch '{}' from '{}'",
+        branch_name, state.advancing_branch
+    );
+    println!(
+        "[autotune] created worktree at {} on branch '{}'",
         worktree_path.display(),
         branch_name
     );
