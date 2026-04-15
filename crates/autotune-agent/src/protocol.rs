@@ -671,6 +671,11 @@ fn parse_agent(reader: &mut Reader<&[u8]>) -> Result<AgentSectionConfig, AgentEr
 
     Ok(AgentSectionConfig {
         backend: backend.unwrap_or_else(|| "claude".to_string()),
+        model: None,
+        max_turns: None,
+        reasoning_effort: None,
+        max_fix_attempts: None,
+        max_fresh_spawns: None,
         research,
         implementation,
         init,
@@ -704,6 +709,7 @@ fn parse_agent_role(reader: &mut Reader<&[u8]>, tag: &str) -> Result<AgentRoleCo
         backend,
         model,
         max_turns,
+        reasoning_effort: None,
         max_fix_attempts,
         max_fresh_spawns,
     })

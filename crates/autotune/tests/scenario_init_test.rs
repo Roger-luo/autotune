@@ -163,6 +163,53 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
 }
 
 #[test]
+fn scenario_init_uses_global_codex_backend_default_under_mock() {
+    let project = mock_project();
+    let home = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join(".config").join("autotune");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        r#"[agent]
+backend = "codex"
+reasoning_effort = "medium"
+
+[agent.init]
+backend = "codex"
+model = "gpt-5-mini"
+reasoning_effort = "low"
+"#,
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .write_stdin("optimize performance\nperf\nbench\nyes\n")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "autotune init failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("mock"),
+        "expected mock agent indicator.\nstderr:\n{stderr}"
+    );
+    assert!(
+        project.path().join(".autotune.toml").exists(),
+        ".autotune.toml should exist"
+    );
+}
+
+#[test]
 fn scenario_init_graceful_exit_on_eof() {
     let project = mock_project();
 

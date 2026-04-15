@@ -60,3 +60,20 @@ existing session. Currently used during merge conflict resolution: the
 research agent has read-only tools by default, but integration grants it
 `Edit` so it can fix conflict markers. See
 [git-integration.md](git-integration.md).
+
+## Codex backend limitation
+
+The local `codex` CLI does not currently expose Claude-style per-tool
+allowlists in exec mode. That means we cannot precisely mirror Autotune's
+`allowedTools` / `disallowedTools` contract for Codex sessions.
+
+Current behavior is the strictest supported approximation:
+
+- Run Codex with `-a untrusted` plus the sandbox/worktree restrictions Autotune
+  already applies.
+- Persist the backend name in task state and explicitly re-hydrate the session
+  on resume, because the CLI contract is session-based rather than
+  re-derivable from a fresh process invocation alone.
+
+This is intentionally narrower than Claude's explicit tool allowlisting, not
+equivalent to it.

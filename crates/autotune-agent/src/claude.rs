@@ -472,6 +472,14 @@ impl Agent for ClaudeAgent {
         format!("claude -r {}", session.session_id)
     }
 
+    fn hydrate_session(
+        &self,
+        session: &AgentSession,
+        config: &AgentConfig,
+    ) -> Result<(), AgentError> {
+        self.remember_session(&session.session_id, config)
+    }
+
     fn grant_session_permission(
         &self,
         session: &AgentSession,
