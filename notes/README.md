@@ -20,3 +20,6 @@ took you a while to figure out and would not be obvious from reading the code.
 - [config-and-tasks.md](config-and-tasks.md) — Global vs project config merge
   rules, task auto-forking, how the implementation agent receives project
   instructions (AGENTS.md / CLAUDE.md).
+- [scoring-and-rank.md](scoring-and-rank.md) — What `rank` means today, why the
+  baseline row is always `0.0`, and how weighted-sum scoring compares against
+  the current best kept result rather than the raw metric value.
