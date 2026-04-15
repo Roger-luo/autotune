@@ -78,12 +78,12 @@ impl UserInput for TerminalInput {
         println!("\n{}", question);
 
         if io::stdin().is_terminal() {
-            // Interactive: arrow-key selection with inline text input
+            // Interactive: arrow-key selection with an optional free-text fallback.
             let items: Vec<String> = options.iter().map(format_option).collect();
 
             match select::interactive_select(&items, allow_free_response)? {
                 SelectResult::Option(idx) => Ok(options[idx].key.clone()),
-                SelectResult::FreeText(text) => Ok(text),
+                SelectResult::FreeText => self.prompt_text("Type your own answer:"),
             }
         } else {
             // Piped: numbered list, accept number or free text
