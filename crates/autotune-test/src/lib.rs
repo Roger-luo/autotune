@@ -158,3 +158,93 @@ pub fn run_all_tests(
 pub fn all_passed(results: &[TestResult]) -> bool {
     results.iter().all(|r| r.passed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_result(passed: bool) -> TestResult {
+        TestResult {
+            name: "test".to_string(),
+            passed,
+            duration_secs: 0.0,
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    }
+
+    fn make_config(name: &str, cmd: &[&str]) -> TestConfig {
+        TestConfig {
+            name: name.to_string(),
+            command: cmd.iter().map(|s| s.to_string()).collect(),
+            timeout: 30,
+        }
+    }
+
+    #[test]
+    fn all_passed_empty_slice_returns_true() {
+        assert!(all_passed(&[]));
+    }
+
+    #[test]
+    fn all_passed_all_passing() {
+        let results = vec![make_result(true), make_result(true)];
+        assert!(all_passed(&results));
+    }
+
+    #[test]
+    fn all_passed_mixed_returns_false() {
+        let results = vec![make_result(true), make_result(false)];
+        assert!(!all_passed(&results));
+    }
+
+    #[test]
+    fn all_passed_single_failure() {
+        let results = vec![make_result(false)];
+        assert!(!all_passed(&results));
+    }
+
+    #[test]
+    fn run_test_passing_command() {
+        let tmp = std::env::temp_dir();
+        let config = make_config("pass", &["sh", "-c", "exit 0"]);
+        let result = run_test(&config, &tmp).unwrap();
+        assert!(result.passed);
+        assert_eq!(result.name, "pass");
+    }
+
+    #[test]
+    fn run_test_failing_command_returns_not_passed() {
+        let tmp = std::env::temp_dir();
+        let config = make_config("fail", &["sh", "-c", "exit 1"]);
+        let result = run_test(&config, &tmp).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.name, "fail");
+    }
+
+    #[test]
+    fn run_all_tests_short_circuits_after_first_failure() {
+        let tmp = std::env::temp_dir();
+        // second test succeeds but should never run
+        let configs = vec![
+            make_config("fail", &["sh", "-c", "exit 1"]),
+            make_config("pass", &["sh", "-c", "exit 0"]),
+        ];
+        let results = run_all_tests(&configs, &tmp).unwrap();
+        // Only one result — stopped after the failure
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].passed);
+    }
+
+    #[test]
+    fn run_all_tests_all_pass_returns_all_results() {
+        let tmp = std::env::temp_dir();
+        let configs = vec![
+            make_config("a", &["sh", "-c", "exit 0"]),
+            make_config("b", &["sh", "-c", "exit 0"]),
+        ];
+        let results = run_all_tests(&configs, &tmp).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(all_passed(&results));
+    }
+}

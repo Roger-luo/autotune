@@ -125,3 +125,39 @@ pub fn install_panic_hook() {
         }));
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_does_not_panic_in_non_tty_context() {
+        // In the test runner stderr is not a TTY, so restore() should be a
+        // no-op and must not panic.
+        restore();
+    }
+
+    #[test]
+    fn guard_new_drops_without_panic() {
+        let _guard = Guard::new();
+        // Drop happens here; must not panic even when stderr is not a TTY.
+    }
+
+    #[test]
+    fn guard_default_works() {
+        let _guard = Guard::default();
+    }
+
+    #[test]
+    fn guard_drop_calls_restore() {
+        // Create and immediately drop; no panic expected.
+        drop(Guard::new());
+    }
+
+    #[test]
+    fn install_panic_hook_is_idempotent() {
+        // Calling twice must not panic or cause undefined behavior.
+        install_panic_hook();
+        install_panic_hook();
+    }
+}

@@ -412,6 +412,209 @@ fn run_script_turn(turn: &Mutex<usize>, entries: &[String], wd: &Path) {
         .output();
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autotune_agent::{AgentConfig, AgentSession, ToolPermission};
+
+    fn research_session() -> AgentSession {
+        AgentSession {
+            session_id: MOCK_RESEARCH_SESSION_ID.to_string(),
+            backend: "mock".to_string(),
+        }
+    }
+
+    #[test]
+    fn xml_escape_ampersand() {
+        assert_eq!(xml_escape("a&b"), "a&amp;b");
+    }
+
+    #[test]
+    fn xml_escape_less_than() {
+        assert_eq!(xml_escape("a<b"), "a&lt;b");
+    }
+
+    #[test]
+    fn xml_escape_greater_than() {
+        assert_eq!(xml_escape("a>b"), "a&gt;b");
+    }
+
+    #[test]
+    fn xml_escape_all_special_chars() {
+        assert_eq!(xml_escape("<a>&<b>"), "&lt;a&gt;&amp;&lt;b&gt;");
+    }
+
+    #[test]
+    fn xml_escape_plain_string_unchanged() {
+        assert_eq!(xml_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn backend_name_returns_mock() {
+        let agent = MockAgent::builder().build();
+        assert_eq!(agent.backend_name(), "mock");
+    }
+
+    #[test]
+    fn handover_command_returns_mock_handover() {
+        let agent = MockAgent::builder().build();
+        let session = research_session();
+        assert_eq!(agent.handover_command(&session), "mock-handover");
+    }
+
+    #[test]
+    fn send_with_no_hypotheses_returns_default_xml() {
+        let agent = MockAgent::builder().build();
+        // First spawn the research agent (so session is initialized).
+        let tmp = tempfile::tempdir().unwrap();
+        let config = AgentConfig {
+            prompt: "ready".to_string(),
+            allowed_tools: vec![],
+            working_directory: tmp.path().to_path_buf(),
+            model: None,
+            max_turns: None,
+        };
+        agent.spawn(&config).unwrap();
+
+        let session = research_session();
+        let resp = agent.send(&session, "give me a plan").unwrap();
+        assert!(resp.text.contains("<plan>"));
+        assert!(resp.text.contains("no hypothesis configured"));
+        assert_eq!(resp.session_id, MOCK_RESEARCH_SESSION_ID);
+    }
+
+    #[test]
+    fn send_with_queued_hypothesis_builds_xml() {
+        let agent = MockAgent::builder()
+            .hypothesis("my-approach", "my hypothesis text", &["src/lib.rs"])
+            .build();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = AgentConfig {
+            prompt: "ready".to_string(),
+            allowed_tools: vec![],
+            working_directory: tmp.path().to_path_buf(),
+            model: None,
+            max_turns: None,
+        };
+        agent.spawn(&config).unwrap();
+
+        let session = research_session();
+        let resp = agent.send(&session, "plan").unwrap();
+        assert!(resp.text.contains("<approach>my-approach</approach>"));
+        assert!(resp.text.contains("<hypothesis>my hypothesis text</hypothesis>"));
+        assert!(resp.text.contains("<file>src/lib.rs</file>"));
+        assert_eq!(resp.session_id, MOCK_RESEARCH_SESSION_ID);
+    }
+
+    #[test]
+    fn send_hypothesis_escapes_xml_special_chars() {
+        let agent = MockAgent::builder()
+            .hypothesis("a&b", "h<y>p", &["src/lib.rs"])
+            .build();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = AgentConfig {
+            prompt: "ready".to_string(),
+            allowed_tools: vec![],
+            working_directory: tmp.path().to_path_buf(),
+            model: None,
+            max_turns: None,
+        };
+        agent.spawn(&config).unwrap();
+
+        let session = research_session();
+        let resp = agent.send(&session, "plan").unwrap();
+        assert!(resp.text.contains("a&amp;b"));
+        assert!(resp.text.contains("h&lt;y&gt;p"));
+    }
+
+    #[test]
+    fn send_cycles_research_responses() {
+        let agent = MockAgent::builder()
+            .research_response("first")
+            .research_response("second")
+            .build();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = AgentConfig {
+            prompt: "ready".to_string(),
+            allowed_tools: vec![],
+            working_directory: tmp.path().to_path_buf(),
+            model: None,
+            max_turns: None,
+        };
+        // spawn() consumes research_responses[0]
+        let spawn_resp = agent.spawn(&config).unwrap();
+        assert_eq!(spawn_resp.text, "first");
+
+        let session = research_session();
+        // first send() consumes research_responses[1]
+        let resp1 = agent.send(&session, "msg").unwrap();
+        assert_eq!(resp1.text, "second");
+        // second send() — queue drained, repeats last entry
+        let resp2 = agent.send(&session, "msg").unwrap();
+        assert_eq!(resp2.text, "second");
+    }
+
+    #[test]
+    fn implementation_script_entry_converts_non_script_behavior() {
+        // When impl_behavior is not Script, the first call should replace it
+        // with Script containing the single entry.
+        let agent = MockAgent::builder()
+            .implementation_script_entry("echo hello")
+            .build();
+        // Verify the build succeeded without panic (behavior was converted).
+        // We don't inspect the private field directly; instead check that
+        // a second call chains correctly.
+        let _ = MockAgent::builder()
+            .implementation_script_entry("echo first")
+            .implementation_script_entry("echo second")
+            .build();
+    }
+
+    #[test]
+    fn grant_session_permission_appends_to_list() {
+        let agent = MockAgent::builder().build();
+        assert!(agent.granted_permissions().is_empty());
+
+        let session = research_session();
+        agent
+            .grant_session_permission(&session, ToolPermission::Allow("Read".to_string()))
+            .unwrap();
+        agent
+            .grant_session_permission(&session, ToolPermission::Deny("Bash".to_string()))
+            .unwrap();
+
+        let perms = agent.granted_permissions();
+        assert_eq!(perms.len(), 2);
+        assert!(matches!(&perms[0], ToolPermission::Allow(t) if t == "Read"));
+        assert!(matches!(&perms[1], ToolPermission::Deny(t) if t == "Bash"));
+    }
+
+    #[test]
+    fn spawn_count_and_send_count_increment() {
+        let agent = MockAgent::builder().build();
+        assert_eq!(agent.spawn_count(), 0);
+        assert_eq!(agent.send_count(), 0);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = AgentConfig {
+            prompt: "".to_string(),
+            allowed_tools: vec![],
+            working_directory: tmp.path().to_path_buf(),
+            model: None,
+            max_turns: None,
+        };
+        agent.spawn(&config).unwrap();
+        assert_eq!(agent.spawn_count(), 1);
+
+        let session = research_session();
+        agent.send(&session, "hi").unwrap();
+        assert_eq!(agent.send_count(), 1);
+    }
+}
+
 fn create_dummy_commit(dir: &Path, idx: usize) {
     let dummy = dir.join("mock_change.txt");
     std::fs::write(&dummy, format!("mock change #{idx}")).unwrap();

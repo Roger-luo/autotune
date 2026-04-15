@@ -583,6 +583,7 @@ fn extract_summary(response: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use autotune_agent::ToolPermission;
     use tempfile::tempdir;
 
     #[test]
@@ -721,5 +722,135 @@ mod tests {
         let result = load_project_instructions(tmp.path()).unwrap();
         assert!(result.contains("agents content"));
         assert!(!result.contains("claude content"));
+    }
+
+    #[test]
+    fn implementation_agent_permissions_includes_read_glob_grep() {
+        let perms = implementation_agent_permissions(&[]);
+        let allows: Vec<&str> = perms
+            .iter()
+            .filter_map(|p| {
+                if let ToolPermission::Allow(t) = p {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(allows.contains(&"Read"));
+        assert!(allows.contains(&"Glob"));
+        assert!(allows.contains(&"Grep"));
+    }
+
+    #[test]
+    fn implementation_agent_permissions_scoped_edit_and_write_per_path() {
+        let paths = vec!["crates/foo/**".to_string(), "crates/bar/**".to_string()];
+        let perms = implementation_agent_permissions(&paths);
+        let scoped: Vec<(&str, &str)> = perms
+            .iter()
+            .filter_map(|p| {
+                if let ToolPermission::AllowScoped(tool, scope) = p {
+                    Some((tool.as_str(), scope.as_str()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Each path gets both Edit and Write entries
+        assert!(scoped.contains(&("Edit", "crates/foo/**")));
+        assert!(scoped.contains(&("Write", "crates/foo/**")));
+        assert!(scoped.contains(&("Edit", "crates/bar/**")));
+        assert!(scoped.contains(&("Write", "crates/bar/**")));
+    }
+
+    #[test]
+    fn implementation_agent_permissions_denies_dangerous_tools() {
+        let perms = implementation_agent_permissions(&[]);
+        let denied: Vec<&str> = perms
+            .iter()
+            .filter_map(|p| {
+                if let ToolPermission::Deny(t) = p {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(denied.contains(&"Bash"));
+        assert!(denied.contains(&"Agent"));
+        assert!(denied.contains(&"WebFetch"));
+        assert!(denied.contains(&"WebSearch"));
+    }
+
+    #[test]
+    fn build_implementation_prompt_includes_approach_and_hypothesis() {
+        let hyp = Hypothesis {
+            approach: "cache-inline".to_string(),
+            hypothesis: "inline the cache".to_string(),
+            files_to_modify: vec!["src/cache.rs".to_string()],
+        };
+        let prompt = build_implementation_prompt(&hyp, "", &[]);
+        assert!(prompt.contains("# Approach: cache-inline"));
+        assert!(prompt.contains("## Hypothesis"));
+        assert!(prompt.contains("inline the cache"));
+    }
+
+    #[test]
+    fn build_implementation_prompt_lists_files_to_modify() {
+        let hyp = Hypothesis {
+            approach: "test".to_string(),
+            hypothesis: "h".to_string(),
+            files_to_modify: vec!["src/a.rs".to_string(), "src/b.rs".to_string()],
+        };
+        let prompt = build_implementation_prompt(&hyp, "", &[]);
+        assert!(prompt.contains("- src/a.rs"));
+        assert!(prompt.contains("- src/b.rs"));
+    }
+
+    #[test]
+    fn build_implementation_prompt_denied_paths_section_when_nonempty() {
+        let hyp = Hypothesis {
+            approach: "test".to_string(),
+            hypothesis: "h".to_string(),
+            files_to_modify: vec![],
+        };
+        let denied = vec!["target/**".to_string()];
+        let prompt = build_implementation_prompt(&hyp, "", &denied);
+        assert!(prompt.contains("target/**"));
+        assert!(prompt.contains("denied patterns"));
+    }
+
+    #[test]
+    fn build_implementation_prompt_no_denied_section_when_empty() {
+        let hyp = Hypothesis {
+            approach: "test".to_string(),
+            hypothesis: "h".to_string(),
+            files_to_modify: vec![],
+        };
+        let prompt = build_implementation_prompt(&hyp, "", &[]);
+        assert!(!prompt.contains("denied patterns"));
+    }
+
+    #[test]
+    fn build_implementation_prompt_log_section_when_nonempty() {
+        let hyp = Hypothesis {
+            approach: "test".to_string(),
+            hypothesis: "h".to_string(),
+            files_to_modify: vec![],
+        };
+        let prompt = build_implementation_prompt(&hyp, "some log findings\n", &[]);
+        assert!(prompt.contains("Prior findings from log.md"));
+        assert!(prompt.contains("some log findings"));
+    }
+
+    #[test]
+    fn build_implementation_prompt_no_log_section_when_empty() {
+        let hyp = Hypothesis {
+            approach: "test".to_string(),
+            hypothesis: "h".to_string(),
+            files_to_modify: vec![],
+        };
+        let prompt = build_implementation_prompt(&hyp, "", &[]);
+        assert!(!prompt.contains("Prior findings from log.md"));
     }
 }
