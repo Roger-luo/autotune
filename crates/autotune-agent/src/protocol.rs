@@ -1226,4 +1226,186 @@ mod tests {
             _ => panic!("expected Task"),
         }
     }
+
+    #[test]
+    fn parse_message_fragment() {
+        let xml = r#"<message>Hello, world!</message>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 1);
+        match &frags[0] {
+            AgentFragment::Message(text) => {
+                assert_eq!(text, "Hello, world!");
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn parse_question_with_options() {
+        let xml = r#"<question>
+            <text>Which approach?</text>
+            <option><key>a</key><label>Option A</label><description>The first one</description></option>
+            <option><key>b</key><label>Option B</label></option>
+            <allow-free-response>true</allow-free-response>
+        </question>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 1);
+        match &frags[0] {
+            AgentFragment::Question { text, options, allow_free_response } => {
+                assert_eq!(text, "Which approach?");
+                assert_eq!(options.len(), 2);
+                assert_eq!(options[0].key, "a");
+                assert_eq!(options[0].label, "Option A");
+                assert_eq!(options[0].description.as_deref(), Some("The first one"));
+                assert_eq!(options[1].key, "b");
+                assert_eq!(options[1].label, "Option B");
+                assert!(options[1].description.is_none());
+                assert!(*allow_free_response);
+            }
+            _ => panic!("expected Question"),
+        }
+    }
+
+    #[test]
+    fn parse_paths_fragment() {
+        let xml = r#"<paths>
+            <tunable>src/lib.rs</tunable>
+            <tunable>src/main.rs</tunable>
+            <denied>target/**</denied>
+        </paths>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 1);
+        match &frags[0] {
+            AgentFragment::Paths(paths) => {
+                assert_eq!(paths.tunable, vec!["src/lib.rs", "src/main.rs"]);
+                assert_eq!(paths.denied, vec!["target/**"]);
+            }
+            _ => panic!("expected Paths"),
+        }
+    }
+
+    #[test]
+    fn parse_task_with_target_metric() {
+        let xml = r#"<task>
+            <name>opt</name>
+            <target-metric>
+                <name>throughput</name>
+                <value>1000.0</value>
+                <direction>Maximize</direction>
+            </target-metric>
+        </task>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 1);
+        match &frags[0] {
+            AgentFragment::Task(task) => {
+                assert_eq!(task.name, "opt");
+                assert_eq!(task.target_metric.len(), 1);
+                assert_eq!(task.target_metric[0].name, "throughput");
+                assert_eq!(task.target_metric[0].value, 1000.0);
+                assert!(matches!(task.target_metric[0].direction, Direction::Maximize));
+            }
+            _ => panic!("expected Task"),
+        }
+    }
+
+    #[test]
+    fn parse_measure_with_regex_adaptor() {
+        let xml = r#"<measure>
+            <name>perf</name>
+            <command><segment>cargo</segment><segment>run</segment></command>
+            <adaptor>
+                <type>regex</type>
+                <pattern>
+                    <name>elapsed_ms</name>
+                    <regex>elapsed: (\d+)ms</regex>
+                </pattern>
+            </adaptor>
+        </measure>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 1);
+        match &frags[0] {
+            AgentFragment::Measure(m) => {
+                assert_eq!(m.name, "perf");
+                match &m.adaptor {
+                    AdaptorConfig::Regex { patterns } => {
+                        assert_eq!(patterns.len(), 1);
+                        assert_eq!(patterns[0].name, "elapsed_ms");
+                        assert_eq!(patterns[0].pattern, r"elapsed: (\d+)ms");
+                    }
+                    _ => panic!("expected Regex adaptor"),
+                }
+            }
+            _ => panic!("expected Measure"),
+        }
+    }
+
+    #[test]
+    fn parse_stop_value_inf() {
+        let xml = r#"<task><name>t</name><max-iterations>inf</max-iterations></task>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Task(task) => {
+                assert!(matches!(task.max_iterations, Some(StopValue::Infinite)));
+            }
+            _ => panic!("expected Task"),
+        }
+    }
+
+    #[test]
+    fn parse_tool_request_basic() {
+        let xml = r#"<request-tool><tool>WebFetch</tool><reason>Need to fetch docs</reason></request-tool>"#;
+        let requests = parse_tool_requests(xml).unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].tool, "WebFetch");
+        assert_eq!(requests[0].reason, "Need to fetch docs");
+        assert!(requests[0].scope.is_none());
+    }
+
+    #[test]
+    fn parse_tool_request_with_scope() {
+        let xml = r#"<request-tool><tool>Bash</tool><scope>cargo tree:*</scope><reason>Inspect dependencies</reason></request-tool>"#;
+        let requests = parse_tool_requests(xml).unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].tool, "Bash");
+        assert_eq!(requests[0].scope.as_deref(), Some("cargo tree:*"));
+        assert_eq!(requests[0].reason, "Inspect dependencies");
+    }
+
+    #[test]
+    fn parse_tool_request_nested_in_plan_is_filtered() {
+        let xml = r#"<plan><hypothesis>We could use <request-tool><tool>Bash</tool><reason>example</reason></request-tool> here.</hypothesis></plan>"#;
+        let requests = parse_tool_requests(xml).unwrap();
+        assert!(requests.is_empty(), "nested request-tool should be filtered");
+    }
+
+    #[test]
+    fn parse_tool_request_missing_tool_errors() {
+        let xml = r#"<request-tool><reason>Need something</reason></request-tool>"#;
+        let err = parse_tool_requests(xml).unwrap_err();
+        assert!(err.to_string().contains("missing <tool>"), "error was: {err}");
+    }
+
+    #[test]
+    fn parse_tool_request_missing_reason_errors() {
+        let xml = r#"<request-tool><tool>Bash</tool></request-tool>"#;
+        let err = parse_tool_requests(xml).unwrap_err();
+        assert!(err.to_string().contains("missing <reason>"), "error was: {err}");
+    }
+
+    #[test]
+    fn lenient_find_all_no_matches_returns_empty() {
+        let text = "No XML tags here at all, just plain prose.";
+        let matches = lenient_find_all(text, "foo");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn parse_agent_response_multiple_fragments_sorted() {
+        // test fragment appears before message fragment in document order
+        let xml = r#"<test><name>unit</name><command><segment>cargo</segment><segment>test</segment></command></test> some prose <message>hello</message>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 2);
+        assert!(matches!(frags[0], AgentFragment::Test(_)), "first fragment should be Test");
+        assert!(matches!(frags[1], AgentFragment::Message(_)), "second fragment should be Message");
+    }
 }

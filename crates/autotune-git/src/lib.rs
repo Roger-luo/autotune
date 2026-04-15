@@ -405,3 +405,134 @@ pub fn merge_ff_only(dir: &Path, branch: &str) -> Result<(), GitError> {
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Create a temporary git repository with an initial commit.
+    /// Returns the TempDir (caller must hold it to keep the directory alive).
+    fn make_repo() -> TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .output()
+                .expect("git command");
+            assert!(
+                status.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&status.stderr)
+            );
+        };
+
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+
+        fs::write(path.join("README.md"), b"hello").expect("write file");
+
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "initial commit"]);
+
+        dir
+    }
+
+    #[test]
+    fn repo_root_returns_dir() {
+        let dir = make_repo();
+        let root = repo_root(dir.path()).unwrap();
+        // The root should be the same directory (canonicalized paths may differ on macOS due to /private)
+        assert!(
+            root.ends_with(dir.path().file_name().unwrap()),
+            "repo_root {root:?} should end with temp dir name"
+        );
+    }
+
+    #[test]
+    fn head_sha_returns_nonempty() {
+        let dir = make_repo();
+        let sha = head_sha(dir.path()).unwrap();
+        assert!(!sha.is_empty());
+        // Short SHA is 7+ hex characters
+        assert!(sha.len() >= 7);
+    }
+
+    #[test]
+    fn current_branch_returns_string() {
+        let dir = make_repo();
+        let branch = current_branch(dir.path()).unwrap();
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn latest_commit_sha_returns_nonempty() {
+        let dir = make_repo();
+        let sha = latest_commit_sha(dir.path()).unwrap();
+        assert!(!sha.is_empty());
+        // Full SHA is 40 hex characters
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[test]
+    fn has_uncommitted_changes_false_on_clean() {
+        let dir = make_repo();
+        let dirty = has_uncommitted_changes(dir.path()).unwrap();
+        assert!(!dirty);
+    }
+
+    #[test]
+    fn has_uncommitted_changes_true_after_write() {
+        let dir = make_repo();
+        fs::write(dir.path().join("new_file.txt"), b"content").unwrap();
+        let dirty = has_uncommitted_changes(dir.path()).unwrap();
+        assert!(dirty);
+    }
+
+    #[test]
+    fn stage_all_and_commit_creates_commit() {
+        let dir = make_repo();
+        let sha_before = latest_commit_sha(dir.path()).unwrap();
+        fs::write(dir.path().join("extra.txt"), b"extra").unwrap();
+        stage_all_and_commit(dir.path(), "add extra file").unwrap();
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_ne!(sha_before, sha_after, "commit should advance HEAD");
+    }
+
+    #[test]
+    fn branch_exists_false_for_missing() {
+        let dir = make_repo();
+        let exists = branch_exists(dir.path(), "nonexistent-branch-xyz").unwrap();
+        assert!(!exists);
+    }
+
+    #[test]
+    fn create_branch_makes_branch_exist() {
+        let dir = make_repo();
+        assert!(!branch_exists(dir.path(), "feature-x").unwrap());
+        create_branch(dir.path(), "feature-x").unwrap();
+        assert!(branch_exists(dir.path(), "feature-x").unwrap());
+    }
+
+    #[test]
+    fn log_oneline_empty_at_base() {
+        let dir = make_repo();
+        // HEAD..HEAD range produces no commits
+        let lines = log_oneline(dir.path(), "HEAD").unwrap();
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn has_commits_ahead_false_same_branch() {
+        let dir = make_repo();
+        // HEAD vs HEAD: zero commits ahead
+        let ahead = has_commits_ahead(dir.path(), "HEAD", "HEAD").unwrap();
+        assert!(!ahead);
+    }
+}
