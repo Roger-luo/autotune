@@ -89,16 +89,20 @@ fn scenario_init_creates_config_and_baseline() {
         "expected mock agent indicator.\nstderr:\n{stderr}"
     );
 
-    // Verify .autotune.toml was written with correct content
+    // Verify .autotune.toml was written with the mock agent's proposed content.
+    // Note: `init` writes only the config; the task directory and baseline are
+    // created later by `autotune run`, not during init.
     let config_path = project.path().join(".autotune.toml");
     assert!(config_path.exists(), ".autotune.toml should exist");
     let config_content = std::fs::read_to_string(&config_path).unwrap();
-    assert!(config_content.contains("mock-task"));
-
-    // Verify task initialized
-    let task_dir = project.path().join(".autotune/tasks/mock-task");
-    assert!(task_dir.exists(), "task directory should exist");
-    assert!(task_dir.join("ledger.json").exists(), "ledger should exist");
+    assert!(
+        config_content.contains("mock-task"),
+        "config should include the mock task name"
+    );
+    assert!(
+        config_content.contains("mock-bench"),
+        "config should include the mock measure name"
+    );
 }
 
 #[test]
@@ -141,9 +145,20 @@ primary_metrics = [{ name = "time_us", direction = "Minimize" }]
         output.status.success(),
         "failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    // When a config already exists, init skips the agent and just confirms
+    // the loaded task name. Output should reference the existing task and
+    // indicate it's ready to run (no agent conversation in stderr).
     assert!(
-        stdout.contains("existing-exp") && stdout.contains("initialized"),
-        "expected direct init.\nstdout:\n{stdout}"
+        stdout.contains("existing-exp"),
+        "expected the existing task name in output.\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("configured") || stdout.contains("autotune run"),
+        "expected init-complete guidance.\nstdout:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains("starting agent-assisted init"),
+        "should NOT run the agent when a config exists.\nstderr:\n{stderr}"
     );
 }
 

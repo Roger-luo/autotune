@@ -159,15 +159,59 @@ fn build_agent_from_global(_global_config: &GlobalConfig) -> Box<dyn Agent> {
 #[cfg(feature = "mock")]
 fn mock_init_agent() -> autotune_mock::MockAgent {
     autotune_mock::MockAgent::builder()
-        // First: ask what the user wants to optimize
-        .init_response(r#"{"type":"question","text":"I found a Rust workspace with 13 crates under crates/, a state machine architecture in the main binary, and cargo-nextest for testing. There are no existing measures or criterion dependency.\n\nWhat metric would you like autotune to improve?","options":[{"key":"perf","label":"Runtime performance","description":"execution speed and throughput of the state machine"},{"key":"size","label":"Binary size","description":"size of the compiled autotune CLI executable"},{"key":"coverage","label":"Test coverage","description":"line/branch coverage measured via cargo-tarpaulin or cargo-llvm-cov"},{"key":"compile","label":"Compilation time","description":"cargo build / cargo check wall-clock time"}],"allow_free_response":true}"#)
-        // Then: ask about the measure command
-        .init_response(r#"{"type":"question","text":"Since there are no existing measures in the project, we need to set up a measure command.\n\nHow should we measure the target metric?","options":[{"key":"bench","label":"cargo bench","description":"add a Criterion or built-in bench harness to the project"},{"key":"custom","label":"Custom command","description":"run a shell command that prints the metric to stdout"},{"key":"script","label":"External script","description":"use a Python/shell script that extracts metrics from command output"}],"allow_free_response":true}"#)
-        // Propose config sections based on "answers"
-        .init_response(r#"{"type":"config","section":{"type":"task","name":"mock-task","description":"Mock task for testing","max_iterations":"5","canonical_branch":"main"}}"#)
-        .init_response(r#"{"type":"config","section":{"type":"paths","tunable":["src/**"]}}"#)
-        .init_response(r#"{"type":"config","section":{"type":"measure","name":"mock-bench","command":["echo","time: 100.0 us"],"adaptor":{"type":"regex","patterns":[{"name":"time_us","pattern":"time: ([0-9.]+)"}]}}}"#)
-        .init_response(r#"{"type":"config","section":{"type":"score","value":{"type":"weighted_sum","primary_metrics":[{"name":"time_us","direction":"Minimize"}]}}}"#)
+        // First: ask what metric to optimize.
+        .init_response(
+            r#"<question>
+  <text>What metric would you like autotune to improve?</text>
+  <option><key>perf</key><label>Runtime performance</label><description>execution speed</description></option>
+  <option><key>size</key><label>Binary size</label><description>size of the compiled binary</description></option>
+  <option><key>coverage</key><label>Test coverage</label><description>line coverage via cargo-llvm-cov</description></option>
+  <option><key>compile</key><label>Compilation time</label><description>cargo build wall-clock time</description></option>
+  <allow-free-response>true</allow-free-response>
+</question>"#,
+        )
+        // Then: ask about the measure command.
+        .init_response(
+            r#"<question>
+  <text>How should we measure the target metric?</text>
+  <option><key>bench</key><label>cargo bench</label><description>add a Criterion harness</description></option>
+  <option><key>custom</key><label>Custom command</label><description>shell command that prints the metric</description></option>
+  <option><key>script</key><label>External script</label><description>Python/shell script extractor</description></option>
+  <allow-free-response>true</allow-free-response>
+</question>"#,
+        )
+        // Propose config sections based on "answers" — all four in one response
+        // so the accumulator completes in a single turn.
+        .init_response(
+            r#"<task>
+  <name>mock-task</name>
+  <description><![CDATA[Mock task for testing]]></description>
+  <canonical-branch>main</canonical-branch>
+  <max-iterations>5</max-iterations>
+</task>
+<paths>
+  <tunable>src/**</tunable>
+</paths>
+<measure>
+  <name>mock-bench</name>
+  <command><segment>echo</segment><segment>time: 100.0 us</segment></command>
+  <adaptor>
+    <type>regex</type>
+    <pattern>
+      <name>time_us</name>
+      <regex><![CDATA[time: ([0-9.]+)]]></regex>
+    </pattern>
+  </adaptor>
+</measure>
+<score>
+  <type>weighted_sum</type>
+  <primary-metric>
+    <name>time_us</name>
+    <direction>Minimize</direction>
+    <weight>1.0</weight>
+  </primary-metric>
+</score>"#,
+        )
         .build()
 }
 
