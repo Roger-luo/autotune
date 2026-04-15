@@ -535,4 +535,82 @@ mod tests {
         let ahead = has_commits_ahead(dir.path(), "HEAD", "HEAD").unwrap();
         assert!(!ahead);
     }
+
+    #[test]
+    fn checkout_switches_branch() {
+        let dir = make_repo();
+        create_branch(dir.path(), "feature-checkout").unwrap();
+        checkout(dir.path(), "feature-checkout").unwrap();
+        let branch = current_branch(dir.path()).unwrap();
+        assert_eq!(branch, "feature-checkout");
+    }
+
+    #[test]
+    fn create_branch_from_creates_branch() {
+        let dir = make_repo();
+        assert!(!branch_exists(dir.path(), "from-main").unwrap());
+        create_branch_from(dir.path(), "from-main", "main").unwrap();
+        assert!(branch_exists(dir.path(), "from-main").unwrap());
+    }
+
+    #[test]
+    fn cherry_pick_applies_commit_to_main() {
+        let dir = make_repo();
+        // Create a feature branch and add a commit on it
+        create_branch(dir.path(), "cherry-src").unwrap();
+        checkout(dir.path(), "cherry-src").unwrap();
+        fs::write(dir.path().join("cherry.txt"), b"cherry content").unwrap();
+        stage_all_and_commit(dir.path(), "add cherry file").unwrap();
+        let cherry_sha = latest_commit_sha(dir.path()).unwrap();
+
+        // Go back to main and cherry-pick
+        checkout(dir.path(), "main").unwrap();
+        let sha_before = latest_commit_sha(dir.path()).unwrap();
+        cherry_pick(dir.path(), &cherry_sha).unwrap();
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_ne!(sha_before, sha_after, "cherry-pick should advance HEAD on main");
+    }
+
+    #[test]
+    fn has_commits_ahead_true_when_feature_has_commit() {
+        let dir = make_repo();
+        create_branch(dir.path(), "ahead-feature").unwrap();
+        checkout(dir.path(), "ahead-feature").unwrap();
+        fs::write(dir.path().join("ahead.txt"), b"ahead").unwrap();
+        stage_all_and_commit(dir.path(), "add ahead file").unwrap();
+        // Switch back to main so we can compare
+        checkout(dir.path(), "main").unwrap();
+        let ahead = has_commits_ahead(dir.path(), "main", "ahead-feature").unwrap();
+        assert!(ahead, "ahead-feature should have commits ahead of main");
+    }
+
+    #[test]
+    fn log_oneline_returns_nonempty_after_second_commit() {
+        let dir = make_repo();
+        // Add a second commit on main
+        fs::write(dir.path().join("second.txt"), b"second").unwrap();
+        stage_all_and_commit(dir.path(), "second commit").unwrap();
+        // log_oneline from HEAD~1 should return the second commit
+        let lines = log_oneline(dir.path(), "HEAD~1").unwrap();
+        assert!(!lines.is_empty(), "should have at least one log line");
+    }
+
+    #[test]
+    fn merge_ff_only_advances_main() {
+        let dir = make_repo();
+        // Create feature branch with one commit
+        create_branch(dir.path(), "ff-feature").unwrap();
+        checkout(dir.path(), "ff-feature").unwrap();
+        fs::write(dir.path().join("ff.txt"), b"ff content").unwrap();
+        stage_all_and_commit(dir.path(), "ff commit").unwrap();
+        let feature_sha = latest_commit_sha(dir.path()).unwrap();
+
+        // Switch back to main and fast-forward
+        checkout(dir.path(), "main").unwrap();
+        let sha_before = latest_commit_sha(dir.path()).unwrap();
+        merge_ff_only(dir.path(), "ff-feature").unwrap();
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_ne!(sha_before, sha_after, "main should have advanced");
+        assert_eq!(sha_after, feature_sha, "main should point to the feature commit");
+    }
 }

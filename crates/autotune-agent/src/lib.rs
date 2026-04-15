@@ -202,4 +202,79 @@ mod tests {
             "unexpected message: {msg}"
         );
     }
+
+    #[test]
+    fn default_spawn_streaming_delegates_to_spawn() {
+        struct ReturnAgent;
+
+        impl Agent for ReturnAgent {
+            fn spawn(&self, _config: &AgentConfig) -> Result<AgentResponse, AgentError> {
+                Ok(AgentResponse {
+                    text: "spawned".to_string(),
+                    session_id: "sess-1".to_string(),
+                })
+            }
+
+            fn send(
+                &self,
+                _session: &AgentSession,
+                _message: &str,
+            ) -> Result<AgentResponse, AgentError> {
+                unimplemented!()
+            }
+
+            fn backend_name(&self) -> &str {
+                "return"
+            }
+
+            fn handover_command(&self, _session: &AgentSession) -> String {
+                String::new()
+            }
+        }
+
+        let agent = ReturnAgent;
+        let config = AgentConfigWithEvents::new(dummy_config());
+        let response = agent.spawn_streaming(config).unwrap();
+        assert_eq!(response.text, "spawned");
+        assert_eq!(response.session_id, "sess-1");
+    }
+
+    #[test]
+    fn default_send_streaming_delegates_to_send() {
+        struct ReturnAgent;
+
+        impl Agent for ReturnAgent {
+            fn spawn(&self, _config: &AgentConfig) -> Result<AgentResponse, AgentError> {
+                unimplemented!()
+            }
+
+            fn send(
+                &self,
+                _session: &AgentSession,
+                _message: &str,
+            ) -> Result<AgentResponse, AgentError> {
+                Ok(AgentResponse {
+                    text: "sent".to_string(),
+                    session_id: "sess-2".to_string(),
+                })
+            }
+
+            fn backend_name(&self) -> &str {
+                "return"
+            }
+
+            fn handover_command(&self, _session: &AgentSession) -> String {
+                String::new()
+            }
+        }
+
+        let agent = ReturnAgent;
+        let session = AgentSession {
+            session_id: "sess-2".to_string(),
+            backend: "return".to_string(),
+        };
+        let response = agent.send_streaming(&session, "hello", None).unwrap();
+        assert_eq!(response.text, "sent");
+        assert_eq!(response.session_id, "sess-2");
+    }
 }

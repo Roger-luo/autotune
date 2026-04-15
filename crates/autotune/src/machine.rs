@@ -933,6 +933,45 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn is_interrupt_error_true_for_interrupted() {
+        let err = anyhow::Error::from(autotune_agent::AgentError::Interrupted);
+        assert!(is_interrupt_error(&err));
+    }
+
+    #[test]
+    fn is_interrupt_error_false_for_other_errors() {
+        let err = anyhow::Error::from(autotune_agent::AgentError::CommandFailed {
+            message: "something went wrong".to_string(),
+        });
+        assert!(!is_interrupt_error(&err));
+    }
+
+    #[test]
+    fn build_conflict_resolution_prompt_contains_files() {
+        let files = vec!["src/foo.rs".to_string(), "src/bar.rs".to_string()];
+        let repo = PathBuf::from("/tmp/repo");
+        let prompt = build_conflict_resolution_prompt(&files, &repo);
+        assert!(prompt.contains("src/foo.rs"), "prompt should mention foo.rs");
+        assert!(prompt.contains("src/bar.rs"), "prompt should mention bar.rs");
+        assert!(prompt.contains("RESOLVED"), "prompt should contain RESOLVED marker");
+    }
+
+    #[test]
+    fn build_conflict_resolution_prompt_with_empty_files() {
+        let files: Vec<String> = vec![];
+        let repo = PathBuf::from("/tmp/repo");
+        let prompt = build_conflict_resolution_prompt(&files, &repo);
+        assert!(!prompt.is_empty(), "prompt should be non-empty even with no files");
+        assert!(prompt.contains("RESOLVED"), "prompt should always contain RESOLVED marker");
+    }
+}
+
 fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
     let ledger = store.load_ledger()?;
 
