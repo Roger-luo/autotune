@@ -1,8 +1,11 @@
 use autotune_agent::claude::ClaudeAgent;
-use autotune_agent::{Agent, AgentConfig, AgentError, AgentSession, ToolPermission};
+use autotune_agent::{
+    Agent, AgentConfig, AgentConfigWithEvents, AgentError, AgentEvent, AgentSession, ToolPermission,
+};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -117,6 +120,36 @@ fn claude_spawn_rejects_missing_result() {
 
     let error = agent.spawn(&basic_config(&harness.root)).unwrap_err();
     assert!(matches!(error, AgentError::ParseFailed { .. }));
+}
+
+#[test]
+fn claude_streaming_preserves_text_delta_newlines() {
+    let harness = FakeClaudeHarness::new(
+        r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"\n<plan>\n"}}
+{"type":"result","session_id":"sess-123","result":"<plan></plan>"}"#,
+    );
+    let agent = ClaudeAgent::with_command(harness.claude_path());
+    let seen = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+    let seen_for_handler = Arc::clone(&seen);
+
+    let response = agent
+        .spawn_streaming(
+            AgentConfigWithEvents::new(basic_config(&harness.root)).with_event_handler(Box::new(
+                move |event| {
+                    seen_for_handler.lock().unwrap().push(event);
+                },
+            )),
+        )
+        .unwrap();
+
+    assert_eq!(response.session_id, "sess-123");
+    let events = seen.lock().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Text(text) if text == "\n<plan>\n")),
+        "expected raw text delta with surrounding newlines, got {events:?}"
+    );
 }
 
 fn basic_config(root: &Path) -> AgentConfig {

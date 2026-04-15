@@ -154,10 +154,10 @@ impl StreamState {
         // accidentally swallow an inline `<` inside prose.
         if self.suppress_mode == SuppressMode::Xml
             && !self.suppressed
-            && self.pending.is_empty()
             && !self.in_code_fence
             && trimmed.starts_with('<')
         {
+            self.flush_pending();
             self.suppressed = true;
             return;
         }
@@ -443,6 +443,19 @@ mod tests {
         handler(AgentEvent::Text("<plan>\n".to_string()));
         handler(AgentEvent::Text("  <approach>x</approach>\n".to_string()));
         stream.finish();
+    }
+
+    #[test]
+    fn stream_research_suppresses_xml_after_buffered_prose() {
+        let mut state = StreamState::new(SuppressMode::Xml);
+        state.process_line("Some reasoning.".to_string());
+        state.process_line("<plan>".to_string());
+
+        assert!(state.suppressed, "XML should suppress even after prose");
+        assert!(
+            !state.pending.contains("<plan>"),
+            "protocol XML must not leak into pending rendered content"
+        );
     }
 
     #[test]

@@ -282,9 +282,8 @@ impl ClaudeAgent {
                                 }
                                 Some("text") => {
                                     if let Some(text) = block.get("text").and_then(Value::as_str) {
-                                        let trimmed = text.trim();
-                                        if !trimmed.is_empty() {
-                                            event_handler(AgentEvent::Text(trimmed.to_string()));
+                                        if !text.is_empty() {
+                                            event_handler(AgentEvent::Text(text.to_string()));
                                         }
                                     }
                                 }
@@ -316,9 +315,8 @@ impl ClaudeAgent {
                         .and_then(|d| d.get("text"))
                         .and_then(Value::as_str)
                     {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            event_handler(AgentEvent::Text(trimmed.to_string()));
+                        if !text.is_empty() {
+                            event_handler(AgentEvent::Text(text.to_string()));
                         }
                     }
                 }

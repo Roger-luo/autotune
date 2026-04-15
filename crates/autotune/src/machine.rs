@@ -1,8 +1,10 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Days, FixedOffset, NaiveTime, Offset, TimeZone, Utc};
+use chrono_tz::Tz;
 
 use autotune_agent::{Agent, AgentSession};
 use autotune_config::AutotuneConfig;
@@ -14,6 +16,13 @@ use autotune_state::{
 };
 
 pub type ShutdownFlag = AtomicBool;
+
+#[derive(Debug)]
+enum PhaseFailure {
+    ExitCleanly,
+    WaitAndRetry { until: DateTime<Utc> },
+    Fatal(anyhow::Error),
+}
 
 /// Execute exactly one phase transition, returning the expected phase that was
 /// executed. Returns `Ok(true)` if the task has reached the Done phase.
@@ -98,16 +107,27 @@ pub fn run_task(
             Ok(true) => break,
             Ok(false) => continue,
             Err(e) => {
-                // If the user pressed Ctrl+C while an agent call was in-flight,
-                // the subprocess dies with SIGINT and the phase returns an
-                // error. Recognize that and exit cleanly with saved state.
-                if shutdown.load(Ordering::SeqCst) || is_interrupt_error(&e) {
-                    println!("[autotune] interrupted — saving state and exiting");
-                    shutdown.store(true, Ordering::SeqCst);
-                    store.save_state(&state)?;
-                    return Ok(());
+                match classify_phase_failure(e, shutdown.load(Ordering::SeqCst), Utc::now()) {
+                    // If the user pressed Ctrl+C while an agent call was in-flight,
+                    // the subprocess dies with SIGINT and the phase returns an
+                    // error. Recognize that and exit cleanly with saved state.
+                    PhaseFailure::ExitCleanly => {
+                        println!("[autotune] interrupted — saving state and exiting");
+                        shutdown.store(true, Ordering::SeqCst);
+                        store.save_state(&state)?;
+                        return Ok(());
+                    }
+                    PhaseFailure::WaitAndRetry { until } => {
+                        println!(
+                            "[autotune] agent rate limited — waiting until {} and retrying",
+                            until.format("%Y-%m-%d %H:%M:%S UTC")
+                        );
+                        store.save_state(&state)?;
+                        sleep_until(until, Utc::now());
+                        continue;
+                    }
+                    PhaseFailure::Fatal(e) => return Err(e),
                 }
-                return Err(e);
             }
         }
     }
@@ -122,6 +142,147 @@ fn is_interrupt_error(err: &anyhow::Error) -> bool {
             .downcast_ref::<autotune_agent::AgentError>()
             .is_some_and(|a| matches!(a, autotune_agent::AgentError::Interrupted))
     })
+}
+
+fn classify_phase_failure(
+    err: anyhow::Error,
+    shutdown_requested: bool,
+    now: DateTime<Utc>,
+) -> PhaseFailure {
+    if shutdown_requested || is_interrupt_error(&err) {
+        return PhaseFailure::ExitCleanly;
+    }
+    if let Some(until) = extract_rate_limit_reset(&err, now) {
+        return PhaseFailure::WaitAndRetry { until };
+    }
+    PhaseFailure::Fatal(err)
+}
+
+fn extract_rate_limit_reset(err: &anyhow::Error, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    err.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<autotune_agent::AgentError>()
+            .and_then(|agent_err| match agent_err {
+                autotune_agent::AgentError::CommandFailed { message } => {
+                    parse_rate_limit_reset(message, now)
+                }
+                _ => None,
+            })
+    })
+}
+
+fn parse_rate_limit_reset(message: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let reset_idx = message.find("resets ")?;
+    let tail = &message[reset_idx + "resets ".len()..];
+    let clause = tail
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())?;
+
+    let (time_str, timezone) = if let Some(paren_start) = clause.find('(') {
+        let paren_end = clause[paren_start..].find(')')? + paren_start;
+        (
+            clause[..paren_start].trim(),
+            Some(clause[paren_start + 1..paren_end].trim()),
+        )
+    } else {
+        (clause, None)
+    };
+
+    let time = parse_reset_time(time_str)?;
+    match timezone {
+        Some(tz_name) if !tz_name.is_empty() => parse_reset_in_timezone(time, tz_name, now),
+        _ => parse_reset_in_offset(time, now.fixed_offset().offset().fix(), now),
+    }
+}
+
+fn parse_reset_time(raw: &str) -> Option<NaiveTime> {
+    let normalized = raw.to_ascii_lowercase().replace(' ', "");
+
+    if let Some(suffix) = normalized
+        .strip_suffix("am")
+        .map(|rest| (rest, "am"))
+        .or_else(|| normalized.strip_suffix("pm").map(|rest| (rest, "pm")))
+    {
+        let (rest, meridiem) = suffix;
+        let (hour_str, minute_str) = rest.split_once(':').map_or((rest, "0"), |(h, m)| (h, m));
+        let mut hour: u32 = hour_str.parse().ok()?;
+        let minute: u32 = minute_str.parse().ok()?;
+        if hour > 12 || minute > 59 {
+            return None;
+        }
+        hour %= 12;
+        if meridiem == "pm" {
+            hour += 12;
+        }
+        return NaiveTime::from_hms_opt(hour, minute, 0);
+    }
+
+    if let Some((hour_str, minute_str)) = normalized.split_once(':') {
+        let hour: u32 = hour_str.parse().ok()?;
+        let minute: u32 = minute_str.parse().ok()?;
+        return NaiveTime::from_hms_opt(hour, minute, 0);
+    }
+
+    normalized
+        .parse::<u32>()
+        .ok()
+        .and_then(|hour| NaiveTime::from_hms_opt(hour, 0, 0))
+}
+
+fn parse_reset_in_timezone(
+    time: NaiveTime,
+    timezone_name: &str,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let tz: Tz = timezone_name.parse().ok()?;
+    let local_now = now.with_timezone(&tz);
+    let mut date = local_now.date_naive();
+
+    loop {
+        let local_dt = date.and_time(time);
+        if let Some(candidate) = tz
+            .from_local_datetime(&local_dt)
+            .earliest()
+            .or_else(|| tz.from_local_datetime(&local_dt).latest())
+        {
+            if candidate > local_now {
+                return Some(candidate.with_timezone(&Utc));
+            }
+        }
+        date = date.checked_add_days(Days::new(1))?;
+    }
+}
+
+fn parse_reset_in_offset(
+    time: NaiveTime,
+    offset: FixedOffset,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let local_now = now.with_timezone(&offset);
+    let mut date = local_now.date_naive();
+
+    loop {
+        let local_dt = date.and_time(time);
+        if let Some(candidate) = offset.from_local_datetime(&local_dt).single() {
+            if candidate > local_now {
+                return Some(candidate.with_timezone(&Utc));
+            }
+        }
+        date = date.checked_add_days(Days::new(1))?;
+    }
+}
+
+fn sleep_until(until: DateTime<Utc>, now: DateTime<Utc>) {
+    let wait = wait_duration(now, until);
+    if !wait.is_zero() {
+        std::thread::sleep(wait);
+    }
+}
+
+fn wait_duration(now: DateTime<Utc>, until: DateTime<Utc>) -> Duration {
+    (until - now).to_std().unwrap_or_default()
 }
 
 fn run_planning(
@@ -995,8 +1156,14 @@ mod tests {
     fn fix_budget_defaults_without_impl_config() {
         let config = make_minimal_config(None, Some(0.1));
         let (max_fix, max_fresh) = fix_budget(&config);
-        assert_eq!(max_fix, autotune_config::AgentRoleConfig::DEFAULT_MAX_FIX_ATTEMPTS);
-        assert_eq!(max_fresh, autotune_config::AgentRoleConfig::DEFAULT_MAX_FRESH_SPAWNS);
+        assert_eq!(
+            max_fix,
+            autotune_config::AgentRoleConfig::DEFAULT_MAX_FIX_ATTEMPTS
+        );
+        assert_eq!(
+            max_fresh,
+            autotune_config::AgentRoleConfig::DEFAULT_MAX_FRESH_SPAWNS
+        );
     }
 
     #[test]
@@ -1085,13 +1252,54 @@ mod tests {
     }
 
     #[test]
+    fn parse_rate_limit_reset_parses_named_timezone() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 15, 16, 30, 0).unwrap();
+        let reset =
+            parse_rate_limit_reset("You've hit your limit · resets 2pm (America/Toronto)", now)
+                .unwrap();
+        assert_eq!(reset, Utc.with_ymd_and_hms(2026, 4, 15, 18, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn classify_phase_failure_waits_and_retries_on_rate_limit() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 15, 16, 30, 0).unwrap();
+        let err = anyhow::Error::from(autotune_agent::AgentError::CommandFailed {
+            message: "claude exited with exit status: 1\nstdout: You've hit your limit · resets 2pm (America/Toronto)"
+                .to_string(),
+        });
+
+        match classify_phase_failure(err, false, now) {
+            PhaseFailure::WaitAndRetry { until } => {
+                assert_eq!(until, Utc.with_ymd_and_hms(2026, 4, 15, 18, 0, 0).unwrap());
+            }
+            other => panic!("expected WaitAndRetry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wait_duration_saturates_for_past_reset() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 15, 16, 30, 0).unwrap();
+        let earlier = Utc.with_ymd_and_hms(2026, 4, 15, 16, 0, 0).unwrap();
+        assert_eq!(wait_duration(now, earlier), Duration::ZERO);
+    }
+
+    #[test]
     fn build_conflict_resolution_prompt_contains_files() {
         let files = vec!["src/foo.rs".to_string(), "src/bar.rs".to_string()];
         let repo = PathBuf::from("/tmp/repo");
         let prompt = build_conflict_resolution_prompt(&files, &repo);
-        assert!(prompt.contains("src/foo.rs"), "prompt should mention foo.rs");
-        assert!(prompt.contains("src/bar.rs"), "prompt should mention bar.rs");
-        assert!(prompt.contains("RESOLVED"), "prompt should contain RESOLVED marker");
+        assert!(
+            prompt.contains("src/foo.rs"),
+            "prompt should mention foo.rs"
+        );
+        assert!(
+            prompt.contains("src/bar.rs"),
+            "prompt should mention bar.rs"
+        );
+        assert!(
+            prompt.contains("RESOLVED"),
+            "prompt should contain RESOLVED marker"
+        );
     }
 
     #[test]
@@ -1099,8 +1307,14 @@ mod tests {
         let files: Vec<String> = vec![];
         let repo = PathBuf::from("/tmp/repo");
         let prompt = build_conflict_resolution_prompt(&files, &repo);
-        assert!(!prompt.is_empty(), "prompt should be non-empty even with no files");
-        assert!(prompt.contains("RESOLVED"), "prompt should always contain RESOLVED marker");
+        assert!(
+            !prompt.is_empty(),
+            "prompt should be non-empty even with no files"
+        );
+        assert!(
+            prompt.contains("RESOLVED"),
+            "prompt should always contain RESOLVED marker"
+        );
     }
 
     fn make_task_state(iteration: usize, phase: Phase) -> autotune_state::TaskState {
@@ -1174,7 +1388,8 @@ mod tests {
 
     #[test]
     fn should_stop_true_when_maximize_target_metric_reached() {
-        let config = make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
+        let config =
+            make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
         let tmp = tempfile::tempdir().unwrap();
         let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
         let mut m = std::collections::HashMap::new();
@@ -1185,7 +1400,8 @@ mod tests {
 
     #[test]
     fn should_stop_false_when_maximize_target_metric_not_reached() {
-        let config = make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
+        let config =
+            make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
         let tmp = tempfile::tempdir().unwrap();
         let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
         let mut m = std::collections::HashMap::new();
@@ -1196,7 +1412,8 @@ mod tests {
 
     #[test]
     fn should_stop_true_when_minimize_target_metric_reached() {
-        let config = make_config_with_target_metric("latency", 10.0, autotune_config::Direction::Minimize);
+        let config =
+            make_config_with_target_metric("latency", 10.0, autotune_config::Direction::Minimize);
         let tmp = tempfile::tempdir().unwrap();
         let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
         let mut m = std::collections::HashMap::new();
@@ -1207,7 +1424,8 @@ mod tests {
 
     #[test]
     fn should_stop_false_when_minimize_target_metric_not_reached() {
-        let config = make_config_with_target_metric("latency", 10.0, autotune_config::Direction::Minimize);
+        let config =
+            make_config_with_target_metric("latency", 10.0, autotune_config::Direction::Minimize);
         let tmp = tempfile::tempdir().unwrap();
         let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
         let mut m = std::collections::HashMap::new();
@@ -1218,7 +1436,8 @@ mod tests {
 
     #[test]
     fn should_stop_false_when_target_metric_has_no_ledger_entries_with_metrics() {
-        let config = make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
+        let config =
+            make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
         let tmp = tempfile::tempdir().unwrap();
         let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
         // Append a record with empty metrics — the target_metric check should not fire
