@@ -938,6 +938,138 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn make_minimal_config(
+        max_iterations: Option<autotune_config::StopValue>,
+        target_improvement: Option<f64>,
+    ) -> autotune_config::AutotuneConfig {
+        autotune_config::AutotuneConfig {
+            task: autotune_config::TaskConfig {
+                name: "test-task".to_string(),
+                description: None,
+                canonical_branch: "main".to_string(),
+                max_iterations,
+                target_improvement,
+                max_duration: None,
+                target_metric: vec![],
+            },
+            paths: autotune_config::PathsConfig {
+                tunable: vec!["**/*.rs".to_string()],
+                denied: vec![],
+            },
+            test: vec![],
+            measure: vec![autotune_config::MeasureConfig {
+                name: "perf".to_string(),
+                command: vec!["cargo".to_string(), "bench".to_string()],
+                timeout: 600,
+                adaptor: autotune_config::AdaptorConfig::Regex { patterns: vec![] },
+            }],
+            score: autotune_config::ScoreConfig::WeightedSum {
+                primary_metrics: vec![autotune_config::PrimaryMetric {
+                    name: "perf".to_string(),
+                    direction: autotune_config::Direction::Maximize,
+                    weight: 1.0,
+                }],
+                guardrail_metrics: vec![],
+            },
+            agent: autotune_config::AgentConfig::default(),
+        }
+    }
+
+    fn make_kept_record(rank: f64) -> autotune_state::IterationRecord {
+        autotune_state::IterationRecord {
+            iteration: 1,
+            approach: "test-approach".to_string(),
+            status: autotune_state::IterationStatus::Kept,
+            hypothesis: None,
+            metrics: std::collections::HashMap::new(),
+            rank,
+            score: None,
+            reason: None,
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn fix_budget_defaults_without_impl_config() {
+        let config = make_minimal_config(None, Some(0.1));
+        let (max_fix, max_fresh) = fix_budget(&config);
+        assert_eq!(max_fix, autotune_config::AgentRoleConfig::DEFAULT_MAX_FIX_ATTEMPTS);
+        assert_eq!(max_fresh, autotune_config::AgentRoleConfig::DEFAULT_MAX_FRESH_SPAWNS);
+    }
+
+    #[test]
+    fn fix_budget_custom_values_from_impl_config() {
+        let mut config = make_minimal_config(None, Some(0.1));
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+            max_fix_attempts: Some(5),
+            max_fresh_spawns: Some(2),
+        });
+        let (max_fix, max_fresh) = fix_budget(&config);
+        assert_eq!(max_fix, 5);
+        assert_eq!(max_fresh, 2);
+    }
+
+    #[test]
+    fn should_stop_false_with_no_conditions() {
+        let config = make_minimal_config(None, None);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_true_when_max_iterations_reached() {
+        let config = make_minimal_config(Some(autotune_config::StopValue::Finite(2)), None);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        store.append_ledger(&make_kept_record(0.0)).unwrap();
+        store.append_ledger(&make_kept_record(0.0)).unwrap();
+        assert!(should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_false_when_below_max_iterations() {
+        let config = make_minimal_config(Some(autotune_config::StopValue::Finite(5)), None);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        store.append_ledger(&make_kept_record(0.0)).unwrap();
+        assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_infinite_iterations_never_stops() {
+        let config = make_minimal_config(Some(autotune_config::StopValue::Infinite), None);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        for _ in 0..10 {
+            store.append_ledger(&make_kept_record(0.0)).unwrap();
+        }
+        assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_true_when_target_improvement_reached() {
+        let config = make_minimal_config(None, Some(0.1));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        store.append_ledger(&make_kept_record(0.15)).unwrap();
+        assert!(should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_false_when_target_improvement_not_reached() {
+        let config = make_minimal_config(None, Some(0.5));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        store.append_ledger(&make_kept_record(0.1)).unwrap();
+        assert!(!should_stop(&config, &store).unwrap());
+    }
+
     #[test]
     fn is_interrupt_error_true_for_interrupted() {
         let err = anyhow::Error::from(autotune_agent::AgentError::Interrupted);

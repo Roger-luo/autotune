@@ -613,6 +613,100 @@ mod tests {
         agent.send(&session, "hi").unwrap();
         assert_eq!(agent.send_count(), 1);
     }
+
+    #[test]
+    fn create_dummy_commit_creates_a_git_commit() {
+        use std::fs;
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .output()
+                .expect("git command");
+            assert!(
+                out.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+        fs::write(path.join("README.md"), b"hello").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "initial commit"]);
+
+        let sha_before = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        create_dummy_commit(path, 0);
+
+        let sha_after = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        assert_ne!(sha_before.trim(), sha_after.trim(), "HEAD should have advanced after create_dummy_commit");
+    }
+
+    #[test]
+    fn spawn_no_commit_impl_returns_impl_session_id() {
+        use std::fs;
+
+        // Create a tempdir that looks like a git worktree (.git is a file, not a dir).
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join(".git"), "gitdir: ../fake").unwrap();
+
+        let agent = MockAgent::builder()
+            .implementation_behavior(ImplBehavior::NoCommit)
+            .build();
+
+        // First spawn: non-worktree research agent (uses a dir without .git file).
+        let research_tmp = tempfile::tempdir().unwrap();
+        let research_config = AgentConfig {
+            prompt: "ready".to_string(),
+            allowed_tools: vec![],
+            working_directory: research_tmp.path().to_path_buf(),
+            model: None,
+            max_turns: None,
+        };
+        agent.spawn(&research_config).unwrap();
+
+        // Second spawn: worktree implementation agent.
+        let impl_config = AgentConfig {
+            prompt: "implement".to_string(),
+            allowed_tools: vec![],
+            working_directory: tmp.path().to_path_buf(),
+            model: None,
+            max_turns: None,
+        };
+        let resp = agent.spawn(&impl_config).unwrap();
+
+        assert!(
+            resp.session_id.starts_with(MOCK_IMPL_SESSION_PREFIX),
+            "expected impl session id prefix, got: {}",
+            resp.session_id
+        );
+    }
 }
 
 fn create_dummy_commit(dir: &Path, idx: usize) {
