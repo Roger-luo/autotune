@@ -346,6 +346,69 @@ fn parse_tool_request_skips_unterminated_open() {
     assert!(reqs.is_empty());
 }
 
+/// Reproduces a production crash: the research agent embeds an illustrative
+/// `<request-tool>` example inside its `<plan>`'s `<hypothesis>` (while
+/// describing a test case that parses such a fragment). The lenient scanner
+/// must NOT treat that embedded example as a real tool request — it's prose
+/// inside another top-level fragment, not a top-level request.
+#[test]
+fn parse_tool_request_ignores_examples_inside_plan_hypothesis() {
+    let xml = r#"
+I'll propose an iteration.
+
+<plan>
+  <approach>add-inline-tests</approach>
+  <hypothesis>
+  Add tests for error paths. Example: parse `<request-tool><reason>r</reason></request-tool>`
+  and assert the error contains "missing <tool>".
+  </hypothesis>
+  <files-to-modify><file>crates/foo/src/lib.rs</file></files-to-modify>
+</plan>
+"#;
+    let reqs = autotune_agent::protocol::parse_tool_requests(xml).unwrap();
+    assert!(
+        reqs.is_empty(),
+        "embedded example inside <plan>/<hypothesis> must not parse as a real request, got {reqs:?}"
+    );
+}
+
+/// A real top-level `<request-tool>` must still parse even when an embedded
+/// example appears earlier inside a `<plan>` block.
+#[test]
+fn parse_tool_request_extracts_real_request_alongside_plan_example() {
+    let xml = r#"
+<plan>
+  <approach>x</approach>
+  <hypothesis>
+  ...example: `<request-tool><reason>r</reason></request-tool>`...
+  </hypothesis>
+</plan>
+
+<request-tool>
+  <tool>Bash</tool>
+  <scope>cargo tree:*</scope>
+  <reason>need the dependency graph</reason>
+</request-tool>
+"#;
+    let reqs = autotune_agent::protocol::parse_tool_requests(xml).unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].tool, "Bash");
+    assert_eq!(reqs[0].scope.as_deref(), Some("cargo tree:*"));
+}
+
+/// Same defense for examples embedded in other top-level wrapper fragments
+/// (e.g. `<message>`), not just `<plan>`.
+#[test]
+fn parse_tool_request_ignores_examples_inside_message() {
+    let xml = r#"
+<message>
+Here's how you'd request a tool: `<request-tool><tool>Bash</tool></request-tool>`.
+</message>
+"#;
+    let reqs = autotune_agent::protocol::parse_tool_requests(xml).unwrap();
+    assert!(reqs.is_empty());
+}
+
 #[test]
 fn parse_invalid_direction_errors() {
     let xml = r#"

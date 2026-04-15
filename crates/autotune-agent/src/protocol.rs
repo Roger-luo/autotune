@@ -99,6 +99,16 @@ pub struct ToolRequest {
     pub reason: String,
 }
 
+/// Top-level fragment tags that may contain free-form prose. A
+/// `<request-tool>` occurrence nested inside any of these spans is assumed to
+/// be illustrative example text (e.g. the research agent writing
+/// "`<request-tool>…</request-tool>`" inside a `<hypothesis>` while describing
+/// a test case) — not a real top-level request — and is skipped by
+/// [`parse_tool_requests`].
+const WRAPPER_TAGS: &[&str] = &[
+    "plan", "message", "question", "task", "paths", "test", "measure", "score", "agent",
+];
+
 /// Parse any `<request-tool>` top-level fragments in an agent response.
 ///
 /// Only `<request-tool>` blocks matter here — everything else is prose, plans,
@@ -113,12 +123,33 @@ pub struct ToolRequest {
 /// Whatever sits between pairs is ignored verbatim, regardless of whether it
 /// parses as XML.
 ///
+/// Matches that sit inside another known wrapper fragment (see
+/// [`WRAPPER_TAGS`]) are skipped: the research agent legitimately writes
+/// literal `<request-tool>` examples inside a `<plan>`'s `<hypothesis>` when
+/// describing tests, and those must not be parsed as real requests.
+///
 /// Attribute-bearing opens (`<request-tool foo="bar">`) are not supported —
 /// the schema doesn't use attributes on this tag, and accepting them here
 /// would force us back onto the strict walker.
 pub fn parse_tool_requests(response: &str) -> Result<Vec<ToolRequest>, AgentError> {
+    // Gather byte-ranges of all wrapper fragments so we can filter out
+    // `<request-tool>` matches nested inside them.
+    let mut wrapper_spans: Vec<(usize, usize)> = Vec::new();
+    for tag in WRAPPER_TAGS {
+        for m in lenient_find_all(response, tag) {
+            let end = m.start + m.outer.len();
+            wrapper_spans.push((m.start, end));
+        }
+    }
+
     let mut requests = Vec::new();
     for m in lenient_find_all(response, "request-tool") {
+        let nested = wrapper_spans
+            .iter()
+            .any(|&(s, e)| m.start >= s && m.start < e);
+        if nested {
+            continue;
+        }
         requests.push(parse_fragment_strict(
             m.outer,
             "request-tool",
