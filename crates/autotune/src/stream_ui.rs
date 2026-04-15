@@ -392,4 +392,66 @@ mod tests {
         assert!(result.contains("..."), "expected truncation marker in: {result}");
         assert!(result.starts_with("Grep("), "expected Grep( prefix: {result}");
     }
+
+    #[test]
+    fn stream_research_handler_processes_text_events() {
+        let stream = Stream::research("loading...");
+        let handler = stream.handler();
+        // Text with a newline flushes a line through process_line
+        handler(AgentEvent::Text("hello\n".to_string()));
+        // Blank line triggers flush_pending
+        handler(AgentEvent::Text("\n".to_string()));
+        // Trailing text without newline
+        handler(AgentEvent::Text("trailing".to_string()));
+        stream.finish();
+    }
+
+    #[test]
+    fn stream_implementation_handler_processes_tool_use() {
+        let stream = Stream::implementation("running...");
+        let handler = stream.handler();
+        // Known tool — exercises push_tool_use main path
+        handler(AgentEvent::ToolUse {
+            tool: "Read".to_string(),
+            input_summary: "src/main.rs".to_string(),
+        });
+        // Unknown tool — exercises early return in push_tool_use
+        handler(AgentEvent::ToolUse {
+            tool: "UnknownTool".to_string(),
+            input_summary: "ignored".to_string(),
+        });
+        stream.finish();
+    }
+
+    #[test]
+    fn stream_research_suppresses_xml_payload() {
+        let stream = Stream::research("thinking...");
+        let handler = stream.handler();
+        // Normal prose first
+        handler(AgentEvent::Text("Some reasoning.\n".to_string()));
+        handler(AgentEvent::Text("\n".to_string()));
+        // XML line triggers suppression in research mode
+        handler(AgentEvent::Text("<plan>\n".to_string()));
+        handler(AgentEvent::Text("  <approach>x</approach>\n".to_string()));
+        stream.finish();
+    }
+
+    #[test]
+    fn stream_processes_fenced_code_block() {
+        let stream = Stream::implementation("building...");
+        let handler = stream.handler();
+        handler(AgentEvent::Text("```rust\n".to_string()));
+        handler(AgentEvent::Text("fn main() {}\n".to_string()));
+        handler(AgentEvent::Text("```\n".to_string()));
+        stream.finish();
+    }
+
+    #[test]
+    fn stream_finish_flushes_partial_line() {
+        let stream = Stream::implementation("done");
+        let handler = stream.handler();
+        // No trailing newline — finish should flush the partial line
+        handler(AgentEvent::Text("no newline at end".to_string()));
+        stream.finish();
+    }
 }
