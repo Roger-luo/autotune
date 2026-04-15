@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod codex;
 pub mod protocol;
 pub mod terminal;
 pub mod trace;
@@ -117,6 +118,21 @@ pub trait Agent {
     fn backend_name(&self) -> &str;
 
     fn handover_command(&self, session: &AgentSession) -> String;
+
+    /// Seed backend-specific session context for a resumed session when the
+    /// process no longer has the original in-memory state from `spawn()`.
+    ///
+    /// Backends that require remembered working directory / model / permission
+    /// config across `send()` calls should override this. Backends that can
+    /// resume from session id alone may ignore it.
+    fn hydrate_session(
+        &self,
+        session: &AgentSession,
+        config: &AgentConfig,
+    ) -> Result<(), AgentError> {
+        let _ = (session, config);
+        Ok(())
+    }
 
     /// Add a tool permission to an existing session so subsequent `send_streaming`
     /// calls will include it in the allowed tools list. Used to approve runtime

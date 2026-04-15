@@ -182,6 +182,7 @@ fn setup_task(repo_root: &Path, config: &AutotuneConfig) -> TaskStore {
         canonical_branch: "main".to_string(),
         advancing_branch,
         research_session_id: "mock-session-001".to_string(),
+        research_backend: "claude".to_string(),
         current_iteration: 1,
         current_phase: Phase::Planning,
         current_approach: None,

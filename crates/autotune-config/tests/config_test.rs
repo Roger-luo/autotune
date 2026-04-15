@@ -344,6 +344,233 @@ max_turns = 50
 }
 
 #[test]
+fn parse_agent_config_with_codex_backends() {
+    let f = write_config(
+        r#"
+[task]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+
+[agent]
+backend = "codex"
+
+[agent.research]
+backend = "codex"
+model = "gpt-5"
+
+[agent.implementation]
+backend = "claude"
+model = "sonnet"
+
+[agent.init]
+backend = "codex"
+model = "gpt-5-mini"
+"#,
+    );
+    let config = AutotuneConfig::load(f.path()).unwrap();
+    assert_eq!(config.agent.backend, "codex");
+    let research = config.agent.research.unwrap();
+    assert_eq!(research.backend.as_deref(), Some("codex"));
+    assert_eq!(research.model.as_deref(), Some("gpt-5"));
+    let implementation = config.agent.implementation.unwrap();
+    assert_eq!(implementation.backend.as_deref(), Some("claude"));
+    assert_eq!(implementation.model.as_deref(), Some("sonnet"));
+    let init = config.agent.init.unwrap();
+    assert_eq!(init.backend.as_deref(), Some("codex"));
+    assert_eq!(init.model.as_deref(), Some("gpt-5-mini"));
+}
+
+#[test]
+fn parse_codex_reasoning_effort_config() {
+    let content = r#"
+[task]
+name = "agent-config"
+max_iterations = "5"
+
+[paths]
+tunable = ["crates/**"]
+
+[[measure]]
+name = "m"
+command = ["echo", "line=1"]
+adaptor = { type = "regex", patterns = [{ name = "line", pattern = 'line=([0-9.]+)' }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "line", direction = "Maximize" }]
+
+[agent]
+backend = "codex"
+model = "gpt-5.4"
+reasoning_effort = "medium"
+
+[agent.research]
+reasoning_effort = "high"
+"#;
+    let f = write_config(content);
+    let config = AutotuneConfig::load(f.path()).unwrap();
+    assert_eq!(config.agent.backend, "codex");
+    assert_eq!(config.agent.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(
+        config.agent.reasoning_effort,
+        Some(autotune_config::ReasoningEffort::Medium)
+    );
+    let research = config.agent.research.expect("research role");
+    assert_eq!(
+        research.reasoning_effort,
+        Some(autotune_config::ReasoningEffort::High)
+    );
+}
+
+#[test]
+fn codex_rejects_max_turns() {
+    let f = write_config(
+        r#"
+[task]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+
+[agent]
+backend = "codex"
+max_turns = 10
+"#,
+    );
+    let err = AutotuneConfig::load(f.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::Validation { .. }));
+    let msg = err.to_string();
+    assert!(msg.contains("max_turns"), "error: {msg}");
+    assert!(msg.contains("codex"), "error: {msg}");
+}
+
+#[test]
+fn codex_role_rejects_inherited_max_turns() {
+    let f = write_config(
+        r#"
+[task]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+
+[agent]
+backend = "codex"
+
+[agent.research]
+max_turns = 10
+"#,
+    );
+    let err = AutotuneConfig::load(f.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::Validation { .. }));
+    let msg = err.to_string();
+    assert!(msg.contains("agent.research.max_turns"), "error: {msg}");
+    assert!(msg.contains("codex"), "error: {msg}");
+}
+
+#[test]
+fn claude_rejects_reasoning_effort() {
+    let f = write_config(
+        r#"
+[task]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+
+[agent]
+backend = "claude"
+reasoning_effort = "medium"
+"#,
+    );
+    let err = AutotuneConfig::load(f.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::Validation { .. }));
+    let msg = err.to_string();
+    assert!(msg.contains("reasoning_effort"), "error: {msg}");
+    assert!(msg.contains("claude"), "error: {msg}");
+}
+
+#[test]
+fn claude_role_rejects_inherited_reasoning_effort() {
+    let f = write_config(
+        r#"
+[task]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+
+[agent]
+backend = "codex"
+reasoning_effort = "medium"
+
+[agent.research]
+backend = "claude"
+"#,
+    );
+    let err = AutotuneConfig::load(f.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::Validation { .. }));
+    let msg = err.to_string();
+    assert!(
+        msg.contains("agent.research.reasoning_effort"),
+        "error: {msg}"
+    );
+    assert!(msg.contains("claude"), "error: {msg}");
+}
+
+#[test]
 fn parse_criterion_task_with_mean_metric() {
     let f = write_config(
         r#"

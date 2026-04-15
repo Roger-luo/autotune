@@ -1,5 +1,6 @@
 mod cli;
 
+use autotune::agent_factory::{AgentRole, build_agent_for_backend, resolve_backend_name};
 use autotune::machine;
 use autotune::resume;
 
@@ -12,7 +13,6 @@ use chrono::Utc;
 use clap::Parser;
 
 use autotune_agent::Agent;
-use autotune_agent::claude::ClaudeAgent;
 use autotune_config::global::GlobalConfig;
 use autotune_config::{AutotuneConfig, ScoreConfig};
 use autotune_score::ScoreCalculator;
@@ -85,48 +85,105 @@ fn next_available_task_name(repo_root: &Path, base: &str) -> Result<String> {
 
 /// Fill in missing agent role settings from the global user config.
 ///
-/// For each role (research, implementation), if the project config has no
-/// setting for model/max_turns, use the value from the global config.
+/// Precedence is:
+/// global `[agent]` < global `[agent.<role>]` < project `[agent]` <
+/// project `[agent.<role>]`.
 fn apply_global_agent_defaults(config: &mut AutotuneConfig, global: &GlobalConfig) {
     let Some(global_agent) = &global.agent else {
         return;
     };
 
-    // Helper: merge a global role into a project role, filling None fields.
-    fn merge_role(
-        project: &mut Option<autotune_config::AgentRoleConfig>,
-        global: &Option<autotune_config::AgentRoleConfig>,
-    ) {
-        let Some(g) = global else { return };
-        let p = project.get_or_insert_with(|| autotune_config::AgentRoleConfig {
-            backend: None,
-            model: None,
-            max_turns: None,
-            max_fix_attempts: None,
-            max_fresh_spawns: None,
-        });
-        if p.model.is_none() {
-            p.model.clone_from(&g.model);
-        }
-        if p.max_turns.is_none() {
-            p.max_turns = g.max_turns;
-        }
-        if p.max_fix_attempts.is_none() {
-            p.max_fix_attempts = g.max_fix_attempts;
-        }
-        if p.max_fresh_spawns.is_none() {
-            p.max_fresh_spawns = g.max_fresh_spawns;
+    fn agent_defaults(
+        agent: &autotune_config::AgentConfig,
+        treat_default_backend_as_unset: bool,
+    ) -> autotune_config::AgentRoleConfig {
+        let backend = if treat_default_backend_as_unset
+            && agent.backend == autotune_config::AgentConfig::default().backend
+        {
+            None
+        } else {
+            Some(agent.backend.clone())
+        };
+        autotune_config::AgentRoleConfig {
+            backend,
+            model: agent.model.clone(),
+            max_turns: agent.max_turns,
+            reasoning_effort: agent.reasoning_effort,
+            max_fix_attempts: agent.max_fix_attempts,
+            max_fresh_spawns: agent.max_fresh_spawns,
         }
     }
 
-    merge_role(&mut config.agent.research, &global_agent.research);
+    fn empty_role() -> autotune_config::AgentRoleConfig {
+        autotune_config::AgentRoleConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: None,
+            max_fresh_spawns: None,
+        }
+    }
+
+    let global_defaults = agent_defaults(global_agent, false);
+    let project_defaults = agent_defaults(&config.agent, true).overlay(&global_defaults);
+
+    config.agent.backend = project_defaults
+        .backend
+        .clone()
+        .unwrap_or_else(|| autotune_config::AgentConfig::default().backend);
+    config.agent.model = project_defaults.model.clone();
+    config.agent.max_turns = project_defaults.max_turns;
+    config.agent.reasoning_effort = project_defaults.reasoning_effort;
+    config.agent.max_fix_attempts = project_defaults.max_fix_attempts;
+    config.agent.max_fresh_spawns = project_defaults.max_fresh_spawns;
+
+    fn merge_role(
+        project: &mut Option<autotune_config::AgentRoleConfig>,
+        global: &Option<autotune_config::AgentRoleConfig>,
+        project_defaults: &autotune_config::AgentRoleConfig,
+        global_defaults: &autotune_config::AgentRoleConfig,
+    ) {
+        let global_role = global
+            .as_ref()
+            .map(|role| role.overlay(global_defaults))
+            .unwrap_or_else(|| global_defaults.clone());
+        let project_role = project
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(empty_role)
+            .overlay(project_defaults);
+        *project = Some(project_role.overlay(&global_role));
+    }
+
+    merge_role(
+        &mut config.agent.research,
+        &global_agent.research,
+        &project_defaults,
+        &global_defaults,
+    );
     merge_role(
         &mut config.agent.implementation,
         &global_agent.implementation,
+        &project_defaults,
+        &global_defaults,
+    );
+    merge_role(
+        &mut config.agent.init,
+        &global_agent.init,
+        &project_defaults,
+        &global_defaults,
     );
 }
 
-fn build_agent(_config: &AutotuneConfig) -> Box<dyn Agent> {
+fn global_backend_name(global_config: &GlobalConfig, role: AgentRole) -> Option<&str> {
+    global_config
+        .agent
+        .as_ref()
+        .map(|agent_config| resolve_backend_name(agent_config, role))
+}
+
+fn build_agent(config: &AutotuneConfig, role: AgentRole) -> Result<Box<dyn Agent>> {
     #[cfg(feature = "mock")]
     if std::env::var("AUTOTUNE_MOCK").is_ok() {
         eprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
@@ -170,18 +227,38 @@ fn build_agent(_config: &AutotuneConfig) -> Box<dyn Agent> {
                 builder = builder.implementation_script_entry(entry);
             }
         }
-        return Box::new(builder.build());
+        return Ok(Box::new(builder.build()));
     }
-    Box::new(ClaudeAgent::new())
+
+    let backend = resolve_backend_name(&config.agent, role);
+    build_agent_for_backend(backend)
 }
 
-fn build_agent_from_global(_global_config: &GlobalConfig) -> Box<dyn Agent> {
+fn research_agent_session_config(
+    config: &AutotuneConfig,
+    repo_root: &Path,
+) -> autotune_agent::AgentConfig {
+    autotune_agent::AgentConfig {
+        prompt: String::new(),
+        allowed_tools: autotune_plan::research_agent_permissions(),
+        working_directory: repo_root.to_path_buf(),
+        model: config.agent.research.as_ref().and_then(|r| r.model.clone()),
+        max_turns: config.agent.research.as_ref().and_then(|r| r.max_turns),
+    }
+}
+
+fn build_agent_from_global(
+    global_config: &GlobalConfig,
+    role: AgentRole,
+) -> Result<Box<dyn Agent>> {
     #[cfg(feature = "mock")]
     if std::env::var("AUTOTUNE_MOCK").is_ok() {
         eprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
-        return Box::new(mock_init_agent());
+        return Ok(Box::new(mock_init_agent()));
     }
-    Box::new(ClaudeAgent::new())
+
+    let backend = global_backend_name(global_config, role).unwrap_or("claude");
+    build_agent_for_backend(backend)
 }
 
 #[cfg(feature = "mock")]
@@ -349,7 +426,8 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         .save_config_snapshot(&config_content)
         .context("failed to save config snapshot")?;
 
-    let agent = build_agent(&config);
+    let research_backend = resolve_backend_name(&config.agent, AgentRole::Research).to_string();
+    let agent = build_agent(&config, AgentRole::Research)?;
     let scorer = build_scorer(&config);
 
     // Run sanity tests
@@ -407,7 +485,6 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Spawn research agent
     let research_model = config.agent.research.as_ref().and_then(|r| r.model.clone());
-    let research_max_turns = config.agent.research.as_ref().and_then(|r| r.max_turns);
     println!(
         "[autotune] spawning research agent: model={}",
         research_model.as_deref().unwrap_or("default"),
@@ -415,14 +492,8 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let research_prompt =
         build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files);
 
-    let research_permissions = autotune_plan::research_agent_permissions();
-    let research_config = autotune_agent::AgentConfig {
-        prompt: research_prompt,
-        allowed_tools: research_permissions,
-        working_directory: repo_root.clone(),
-        model: research_model,
-        max_turns: research_max_turns,
-    };
+    let mut research_config = research_agent_session_config(&config, &repo_root);
+    research_config.prompt = research_prompt;
 
     // Forward streaming events (text, tool use) to stderr.
     let research_stream = autotune::stream_ui::Stream::research("exploring codebase...");
@@ -437,7 +508,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
     let initial_session = autotune_agent::AgentSession {
         session_id: research_response.session_id.clone(),
-        backend: agent.backend_name().to_string(),
+        backend: research_backend.clone(),
     };
     let spawn_stream = autotune::stream_ui::Stream::research("processing...");
     let spawn_handler = spawn_stream.handler();
@@ -477,6 +548,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         canonical_branch: config.task.canonical_branch.clone(),
         advancing_branch,
         research_session_id: research_response.session_id.clone(),
+        research_backend,
         current_iteration: 1,
         current_phase: Phase::Planning,
         current_approach: None,
@@ -507,7 +579,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let final_state = store.load_state()?;
     let research_session = autotune_agent::AgentSession {
         session_id: final_state.research_session_id.clone(),
-        backend: agent.backend_name().to_string(),
+        backend: final_state.research_backend.clone(),
     };
     println!("\n[autotune] task '{}' complete", config.task.name);
     println!(
@@ -550,7 +622,16 @@ fn cmd_resume(
         config.task.target_improvement = Some(target);
     }
 
-    let agent = build_agent(&config);
+    let persisted_state = store.load_state().context("failed to load task state")?;
+    let agent = build_agent_for_backend(&persisted_state.research_backend)?;
+    let research_session = autotune_agent::AgentSession {
+        session_id: persisted_state.research_session_id.clone(),
+        backend: persisted_state.research_backend.clone(),
+    };
+    agent.hydrate_session(
+        &research_session,
+        &research_agent_session_config(&config, &repo_root),
+    )?;
     let scorer = build_scorer(&config);
 
     // Prepare resume
@@ -582,7 +663,7 @@ fn cmd_resume(
     let final_state = store.load_state()?;
     let research_session = autotune_agent::AgentSession {
         session_id: final_state.research_session_id.clone(),
-        backend: agent.backend_name().to_string(),
+        backend: final_state.research_backend.clone(),
     };
     println!("\n[autotune] task '{}' resumed and complete", task_name);
     println!(
@@ -692,7 +773,7 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
 
         let global_config = GlobalConfig::load().context("failed to load global config")?;
 
-        let agent = build_agent_from_global(&global_config);
+        let agent = build_agent_from_global(&global_config, AgentRole::Init)?;
 
         // Build a validator that trial-runs tasks so the agent can fix bad config
         let validator_root = repo_root.clone();
@@ -1058,7 +1139,7 @@ const CONFIG_TEMPLATE: &str = r#"# Autotune global config
 # Uncomment and edit the values you want to set.
 
 # [agent]
-# backend = "claude"            # LLM backend (currently only "claude")
+# backend = "claude"            # LLM backend (supported: claude, codex)
 
 # # Research agent: persistent session that proposes optimization hypotheses.
 # [agent.research]
@@ -1255,7 +1336,15 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
         );
     }
 
-    let agent = build_agent(&config);
+    let agent = build_agent_for_backend(&state.research_backend)?;
+    let research_session = autotune_agent::AgentSession {
+        session_id: state.research_session_id.clone(),
+        backend: state.research_backend.clone(),
+    };
+    agent.hydrate_session(
+        &research_session,
+        &research_agent_session_config(&config, &repo_root),
+    )?;
     let scorer = build_scorer(&config);
 
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
@@ -1317,5 +1406,190 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..max - 1])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autotune::agent_factory::AgentRole;
+
+    #[test]
+    fn global_backend_name_prefers_init_override() {
+        let global = GlobalConfig {
+            agent: Some(autotune_config::AgentConfig {
+                backend: "claude".to_string(),
+                model: None,
+                max_turns: None,
+                reasoning_effort: None,
+                max_fix_attempts: None,
+                max_fresh_spawns: None,
+                research: None,
+                implementation: None,
+                init: Some(autotune_config::AgentRoleConfig {
+                    backend: Some("codex".to_string()),
+                    model: None,
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+            }),
+        };
+
+        assert_eq!(global_backend_name(&global, AgentRole::Init), Some("codex"));
+    }
+
+    #[test]
+    fn apply_global_agent_defaults_copies_backend_overrides() {
+        let mut config: AutotuneConfig = toml::from_str(
+            r#"
+[task]
+name = "demo"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "bench"
+command = ["echo", "metric: 1"]
+adaptor = { type = "regex", patterns = [{ name = "metric", pattern = "metric: ([0-9]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric", direction = "Minimize" }]
+"#,
+        )
+        .unwrap();
+        let global = GlobalConfig {
+            agent: Some(autotune_config::AgentConfig {
+                backend: "codex".to_string(),
+                model: None,
+                max_turns: None,
+                reasoning_effort: None,
+                max_fix_attempts: None,
+                max_fresh_spawns: None,
+                research: Some(autotune_config::AgentRoleConfig {
+                    backend: Some("codex".to_string()),
+                    model: None,
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+                implementation: None,
+                init: None,
+            }),
+        };
+
+        apply_global_agent_defaults(&mut config, &global);
+
+        assert_eq!(config.agent.backend, "codex");
+        assert_eq!(
+            config
+                .agent
+                .research
+                .as_ref()
+                .and_then(|r| r.backend.as_deref()),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn apply_global_agent_defaults_respects_global_role_and_project_precedence_for_all_roles() {
+        let mut config: AutotuneConfig = toml::from_str(
+            r#"
+[task]
+name = "demo"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "bench"
+command = ["echo", "metric: 1"]
+adaptor = { type = "regex", patterns = [{ name = "metric", pattern = "metric: ([0-9]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric", direction = "Minimize" }]
+
+[agent]
+model = "project-top"
+reasoning_effort = "high"
+
+[agent.research]
+reasoning_effort = "low"
+"#,
+        )
+        .unwrap();
+        let global = GlobalConfig {
+            agent: Some(autotune_config::AgentConfig {
+                backend: "codex".to_string(),
+                model: Some("global-top".to_string()),
+                max_turns: None,
+                reasoning_effort: Some(autotune_config::ReasoningEffort::Medium),
+                max_fix_attempts: None,
+                max_fresh_spawns: None,
+                research: Some(autotune_config::AgentRoleConfig {
+                    backend: Some("codex".to_string()),
+                    model: Some("global-research".to_string()),
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+                implementation: None,
+                init: Some(autotune_config::AgentRoleConfig {
+                    backend: None,
+                    model: None,
+                    max_turns: Some(7),
+                    reasoning_effort: Some(autotune_config::ReasoningEffort::Low),
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+            }),
+        };
+
+        apply_global_agent_defaults(&mut config, &global);
+
+        assert_eq!(config.agent.backend, "codex");
+
+        let research = config.agent.research.as_ref().expect("research role");
+        assert_eq!(research.backend.as_deref(), Some("codex"));
+        assert_eq!(research.model.as_deref(), Some("project-top"));
+        assert_eq!(
+            research.reasoning_effort,
+            Some(autotune_config::ReasoningEffort::Low)
+        );
+
+        let implementation = config
+            .agent
+            .implementation
+            .as_ref()
+            .expect("implementation role");
+        assert_eq!(implementation.backend.as_deref(), Some("codex"));
+        assert_eq!(implementation.model.as_deref(), Some("project-top"));
+        assert_eq!(
+            implementation.reasoning_effort,
+            Some(autotune_config::ReasoningEffort::High)
+        );
+
+        let init = config.agent.init.as_ref().expect("init role");
+        assert_eq!(init.backend.as_deref(), Some("codex"));
+        assert_eq!(init.model.as_deref(), Some("project-top"));
+        assert_eq!(init.max_turns, Some(7));
+        assert_eq!(
+            init.reasoning_effort,
+            Some(autotune_config::ReasoningEffort::High)
+        );
+    }
+
+    #[test]
+    fn config_template_mentions_claude_and_codex() {
+        assert!(CONFIG_TEMPLATE.contains("backend = \"claude\""));
+        assert!(CONFIG_TEMPLATE.contains("claude, codex"));
     }
 }

@@ -173,6 +173,14 @@ pub struct GuardrailMetric {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Direction {
     Minimize,
     Maximize,
@@ -190,6 +198,16 @@ pub struct AgentConfig {
     #[serde(default = "default_backend")]
     pub backend: String,
     #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub max_turns: Option<u64>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub max_fix_attempts: Option<u32>,
+    #[serde(default)]
+    pub max_fresh_spawns: Option<u32>,
+    #[serde(default)]
     pub research: Option<AgentRoleConfig>,
     #[serde(default)]
     pub implementation: Option<AgentRoleConfig>,
@@ -201,6 +219,11 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             backend: default_backend(),
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: None,
+            max_fresh_spawns: None,
             research: None,
             implementation: None,
             init: None,
@@ -220,6 +243,8 @@ pub struct AgentRoleConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub max_turns: Option<u64>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Total implementer fix-retry turns allowed per iteration when tests
     /// fail. Counts both session-continuation turns and fresh respawns.
     /// `0` disables retry (tests fail → discard immediately, legacy
@@ -254,6 +279,17 @@ impl AgentRoleConfig {
         self.max_fresh_spawns
             .unwrap_or(Self::DEFAULT_MAX_FRESH_SPAWNS)
     }
+
+    pub fn overlay(&self, defaults: &AgentRoleConfig) -> AgentRoleConfig {
+        AgentRoleConfig {
+            backend: self.backend.clone().or_else(|| defaults.backend.clone()),
+            model: self.model.clone().or_else(|| defaults.model.clone()),
+            max_turns: self.max_turns.or(defaults.max_turns),
+            reasoning_effort: self.reasoning_effort.or(defaults.reasoning_effort),
+            max_fix_attempts: self.max_fix_attempts.or(defaults.max_fix_attempts),
+            max_fresh_spawns: self.max_fresh_spawns.or(defaults.max_fresh_spawns),
+        }
+    }
 }
 
 impl AutotuneConfig {
@@ -275,6 +311,19 @@ impl AutotuneConfig {
 
     /// Validate all config constraints. Called automatically by `load`.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        let agent_defaults = self.effective_agent_defaults();
+        self.validate_agent_backend_fields("agent", &agent_defaults)?;
+        for (role_name, role) in [
+            ("research", &self.agent.research),
+            ("implementation", &self.agent.implementation),
+            ("init", &self.agent.init),
+        ] {
+            if let Some(role) = role {
+                let effective = role.overlay(&agent_defaults);
+                self.validate_agent_backend_fields(&format!("agent.{role_name}"), &effective)?;
+            }
+        }
+
         // At least one stop condition
         if self.task.max_iterations.is_none()
             && self.task.target_improvement.is_none()
@@ -399,6 +448,37 @@ impl AutotuneConfig {
         }
 
         Ok(())
+    }
+
+    fn effective_agent_defaults(&self) -> AgentRoleConfig {
+        AgentRoleConfig {
+            backend: Some(self.agent.backend.clone()),
+            model: self.agent.model.clone(),
+            max_turns: self.agent.max_turns,
+            reasoning_effort: self.agent.reasoning_effort,
+            max_fix_attempts: self.agent.max_fix_attempts,
+            max_fresh_spawns: self.agent.max_fresh_spawns,
+        }
+    }
+
+    fn validate_agent_backend_fields(
+        &self,
+        path: &str,
+        role: &AgentRoleConfig,
+    ) -> Result<(), ConfigError> {
+        let Some(backend) = role.backend.as_deref() else {
+            return Ok(());
+        };
+
+        match backend {
+            "codex" if role.max_turns.is_some() => Err(ConfigError::Validation {
+                message: format!("{path}.max_turns is not valid for backend 'codex'"),
+            }),
+            "claude" if role.reasoning_effort.is_some() => Err(ConfigError::Validation {
+                message: format!("{path}.reasoning_effort is not valid for backend 'claude'"),
+            }),
+            _ => Ok(()),
+        }
     }
 
     /// Extract metric names that an adaptor config will produce.
@@ -545,6 +625,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             backend: None,
             model: None,
             max_turns: None,
+            reasoning_effort: None,
             max_fix_attempts: None,
             max_fresh_spawns: None,
         };
@@ -560,6 +641,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             backend: None,
             model: None,
             max_turns: None,
+            reasoning_effort: None,
             max_fix_attempts: Some(0),
             max_fresh_spawns: Some(0),
         };
@@ -859,9 +941,37 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             backend: None,
             model: None,
             max_turns: None,
+            reasoning_effort: None,
             max_fix_attempts: None,
             max_fresh_spawns: Some(5),
         };
         assert_eq!(role.effective_max_fresh_spawns(), 5);
+    }
+
+    #[test]
+    fn overlay_uses_role_values_over_defaults() {
+        let defaults = AgentRoleConfig {
+            backend: Some("claude".to_string()),
+            model: Some("sonnet".to_string()),
+            max_turns: Some(12),
+            reasoning_effort: Some(ReasoningEffort::Low),
+            max_fix_attempts: Some(3),
+            max_fresh_spawns: Some(1),
+        };
+        let role = AgentRoleConfig {
+            backend: Some("codex".to_string()),
+            model: None,
+            max_turns: Some(7),
+            reasoning_effort: Some(ReasoningEffort::High),
+            max_fix_attempts: None,
+            max_fresh_spawns: Some(0),
+        };
+        let effective = role.overlay(&defaults);
+        assert_eq!(effective.backend.as_deref(), Some("codex"));
+        assert_eq!(effective.model.as_deref(), Some("sonnet"));
+        assert_eq!(effective.max_turns, Some(7));
+        assert_eq!(effective.reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(effective.max_fix_attempts, Some(3));
+        assert_eq!(effective.max_fresh_spawns, Some(0));
     }
 }

@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -6,6 +8,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Days, FixedOffset, NaiveTime, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 
+use crate::agent_factory::{AgentRole, build_agent_for_backend, resolve_backend_name};
 use autotune_agent::{Agent, AgentSession};
 use autotune_config::AutotuneConfig;
 use autotune_implement::{FixOutcome, ImplementError};
@@ -24,6 +27,16 @@ enum PhaseFailure {
     Fatal(anyhow::Error),
 }
 
+struct CachedImplementationAgent {
+    backend: String,
+    agent: Box<dyn Agent>,
+}
+
+thread_local! {
+    static IMPLEMENTATION_AGENT_CACHE: RefCell<HashMap<PathBuf, CachedImplementationAgent>> =
+        RefCell::new(HashMap::new());
+}
+
 /// Execute exactly one phase transition, returning the expected phase that was
 /// executed. Returns `Ok(true)` if the task has reached the Done phase.
 pub fn run_single_phase(
@@ -35,10 +48,7 @@ pub fn run_single_phase(
     state: &mut TaskState,
     approver: Option<&dyn ToolApprover>,
 ) -> Result<bool> {
-    let research_session = AgentSession {
-        session_id: state.research_session_id.clone(),
-        backend: agent.backend_name().to_string(),
-    };
+    let research_session = research_session_from_state(state);
 
     autotune_agent::trace::record(
         "phase.enter",
@@ -362,6 +372,7 @@ fn run_planning(
         rank: None,
         files_to_modify: hypothesis.files_to_modify.clone(),
         impl_session_id: None,
+        impl_backend: Some(implementation_backend_from_config(config)),
         fix_attempts: 0,
         fresh_spawns: 0,
         fix_history: Vec::new(),
@@ -373,7 +384,7 @@ fn run_planning(
 
 fn run_implementing(
     config: &AutotuneConfig,
-    agent: &dyn Agent,
+    research_agent: &dyn Agent,
     store: &TaskStore,
     state: &mut TaskState,
 ) -> Result<()> {
@@ -410,19 +421,22 @@ fn run_implementing(
         "iteration {} — implementing '{}'...",
         state.current_iteration, approach.name
     ));
-
-    let result = autotune_implement::run_implementation(
-        agent,
-        &impl_hypothesis,
-        &approach.worktree_path,
-        &approach.branch_name,
-        &config.paths.tunable,
-        &config.paths.denied,
-        &log_content,
-        impl_model,
-        impl_max_turns,
-        Some(impl_stream.handler()),
-    );
+    let result =
+        with_implementation_agent(config, research_agent, store, Some(approach), |agent| {
+            autotune_implement::run_implementation(
+                agent,
+                &impl_hypothesis,
+                &approach.worktree_path,
+                &approach.branch_name,
+                &config.paths.tunable,
+                &config.paths.denied,
+                &log_content,
+                impl_model,
+                impl_max_turns,
+                Some(impl_stream.handler()),
+            )
+            .map_err(anyhow::Error::from)
+        });
     impl_stream.finish();
 
     match result {
@@ -435,7 +449,10 @@ fn run_implementing(
             state.current_phase = Phase::Testing;
             store.save_state(state)?;
         }
-        Err(ImplementError::NoCommit) => {
+        Err(e)
+            if e.downcast_ref::<ImplementError>()
+                .is_some_and(|e| matches!(e, ImplementError::NoCommit)) =>
+        {
             println!(
                 "[autotune] iteration {} — implementation produced no commit, recording as crash",
                 state.current_iteration
@@ -450,9 +467,7 @@ fn run_implementing(
             );
             record_crash(state, store)?;
         }
-        Err(e) => {
-            return Err(e).context("implementation failed");
-        }
+        Err(e) => return Err(e).context("implementation failed"),
     }
     Ok(())
 }
@@ -575,7 +590,7 @@ fn fix_budget(config: &AutotuneConfig) -> (u32, u32) {
 /// through Testing afterwards.
 fn run_fixing(
     config: &AutotuneConfig,
-    agent: &dyn Agent,
+    research_agent: &dyn Agent,
     store: &TaskStore,
     state: &mut TaskState,
 ) -> Result<()> {
@@ -600,7 +615,6 @@ fn run_fixing(
     let hypothesis = approach.hypothesis.clone();
     let files_to_modify = approach.files_to_modify.clone();
     let history = approach.fix_history.clone();
-    let active_session = approach.impl_session_id.clone();
     let fresh_spawns = approach.fresh_spawns;
 
     let impl_model = config
@@ -614,14 +628,28 @@ fn run_fixing(
         .as_ref()
         .and_then(|c| c.max_turns);
 
-    // Decide tier-1 (continuation) vs tier-2 (fresh respawn). Both consume
-    // the same `fix_attempts` slot; fresh respawns additionally consume a
-    // `fresh_spawns` slot.
-    let tier_one = active_session.is_some();
+    // Same-process retries must reuse the original implementation-agent
+    // instance because Claude/Codex keep session context in memory. After a
+    // resume in a new process we still have the persisted session id, but not
+    // the cached agent context, so we degrade to a fresh respawn instead of
+    // trying a broken continuation.
+    let reused_cached_agent =
+        if std::env::var("AUTOTUNE_MOCK").is_ok() || research_agent.backend_name() == "mock" {
+            approach.impl_session_id.is_some()
+        } else {
+            prepare_implementation_agent(config, store, Some(approach))?
+        };
+    let tier_one = can_continue_implementation_session(approach, reused_cached_agent);
     if !tier_one && fresh_spawns >= max_fresh {
-        let reason = format!(
-            "implementer session unproductive and fresh-spawn budget ({max_fresh}) exhausted"
-        );
+        let reason = if approach.impl_session_id.is_some() && !reused_cached_agent {
+            format!(
+                "implementer session unavailable after restart and fresh-spawn budget ({max_fresh}) exhausted"
+            )
+        } else {
+            format!(
+                "implementer session unproductive and fresh-spawn budget ({max_fresh}) exhausted"
+            )
+        };
         println!("[autotune] iteration {iteration} — {reason}");
         return record_discard(state, store, &reason);
     }
@@ -632,47 +660,50 @@ fn run_fixing(
         format!("iteration {iteration} — fixing '{approach_name}' (fresh respawn)")
     };
     let impl_stream = crate::stream_ui::Stream::implementation(&stream_label);
-
-    let outcome: Result<FixOutcome, ImplementError> = if tier_one {
-        let session = AgentSession {
-            session_id: active_session.clone().unwrap(),
-            backend: agent.backend_name().to_string(),
-        };
-        autotune_implement::run_fix_turn(
-            agent,
-            &session,
-            &worktree_path,
-            &history[..history.len() - 1], // prior failures; latest is fed separately
-            &latest,
-            Some(impl_stream.handler()),
-        )
-    } else {
-        let log_content = store.read_log().unwrap_or_default();
-        let prior_commits =
-            autotune_git::log_oneline(&worktree_path, &state.advancing_branch).unwrap_or_default();
-        let impl_hypothesis = autotune_implement::Hypothesis {
-            approach: approach_name.clone(),
-            hypothesis: hypothesis.clone(),
-            files_to_modify: files_to_modify.clone(),
-        };
-        autotune_implement::run_fix_respawn(
-            agent,
-            &impl_hypothesis,
-            &worktree_path,
-            &config.paths.tunable,
-            &config.paths.denied,
-            &log_content,
-            &prior_commits,
-            &history,
-            impl_model,
-            impl_max_turns,
-            Some(impl_stream.handler()),
-        )
-    };
+    let outcome =
+        with_implementation_agent(config, research_agent, store, Some(approach), |agent| {
+            if tier_one {
+                let session = implementation_session_from_approach(approach)
+                    .context("missing implementation session in Fixing phase")?;
+                autotune_implement::run_fix_turn(
+                    agent,
+                    &session,
+                    &worktree_path,
+                    &history[..history.len() - 1], // prior failures; latest is fed separately
+                    &latest,
+                    Some(impl_stream.handler()),
+                )
+                .context("implementer fix turn failed")
+            } else {
+                let log_content = store.read_log().unwrap_or_default();
+                let prior_commits =
+                    autotune_git::log_oneline(&worktree_path, &state.advancing_branch)
+                        .unwrap_or_default();
+                let impl_hypothesis = autotune_implement::Hypothesis {
+                    approach: approach_name.clone(),
+                    hypothesis: hypothesis.clone(),
+                    files_to_modify: files_to_modify.clone(),
+                };
+                autotune_implement::run_fix_respawn(
+                    agent,
+                    &impl_hypothesis,
+                    &worktree_path,
+                    &config.paths.tunable,
+                    &config.paths.denied,
+                    &log_content,
+                    &prior_commits,
+                    &history,
+                    impl_model,
+                    impl_max_turns,
+                    Some(impl_stream.handler()),
+                )
+                .context("implementer fix turn failed")
+            }
+        });
 
     impl_stream.finish();
 
-    let outcome = outcome.context("implementer fix turn failed")?;
+    let outcome = outcome?;
     {
         let approach_mut = state.current_approach.as_mut().expect("approach set above");
         approach_mut.fix_attempts += 1;
@@ -753,6 +784,126 @@ fn run_fixing(
         }
     }
     Ok(())
+}
+
+fn research_session_from_state(state: &TaskState) -> AgentSession {
+    AgentSession {
+        session_id: state.research_session_id.clone(),
+        backend: state.research_backend.clone(),
+    }
+}
+
+fn implementation_session_from_approach(approach: &ApproachState) -> Option<AgentSession> {
+    Some(AgentSession {
+        session_id: approach.impl_session_id.clone()?,
+        backend: approach
+            .impl_backend
+            .clone()
+            .unwrap_or_else(|| "claude".to_string()),
+    })
+}
+
+fn implementation_backend_from_config(config: &AutotuneConfig) -> String {
+    resolve_backend_name(&config.agent, AgentRole::Implementation).to_string()
+}
+
+fn implementation_cache_backend(
+    config: &AutotuneConfig,
+    approach: Option<&ApproachState>,
+) -> String {
+    approach
+        .and_then(|approach| approach.impl_backend.as_deref())
+        .unwrap_or_else(|| resolve_backend_name(&config.agent, AgentRole::Implementation))
+        .to_string()
+}
+
+fn prepare_implementation_agent(
+    config: &AutotuneConfig,
+    store: &TaskStore,
+    approach: Option<&ApproachState>,
+) -> Result<bool> {
+    let cache_key = store.root().to_path_buf();
+    let backend = implementation_cache_backend(config, approach);
+
+    IMPLEMENTATION_AGENT_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let reused_cached_instance = cache
+            .get(&cache_key)
+            .is_some_and(|slot| slot.backend == backend);
+
+        if !reused_cached_instance {
+            cache.insert(
+                cache_key,
+                CachedImplementationAgent {
+                    backend,
+                    agent: build_implementation_agent(config, approach)?,
+                },
+            );
+        }
+
+        Ok(reused_cached_instance)
+    })
+}
+
+fn with_cached_implementation_agent<T, E>(
+    store: &TaskStore,
+    f: impl FnOnce(&dyn Agent) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    let cache_key = store.root().to_path_buf();
+
+    IMPLEMENTATION_AGENT_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let slot = cache
+            .get_mut(&cache_key)
+            .expect("implementation agent not prepared for current task");
+        f(slot.agent.as_ref())
+    })
+}
+
+fn with_implementation_agent<T>(
+    config: &AutotuneConfig,
+    _research_agent: &dyn Agent,
+    store: &TaskStore,
+    approach: Option<&ApproachState>,
+    f: impl FnOnce(&dyn Agent) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if std::env::var("AUTOTUNE_MOCK").is_ok() || _research_agent.backend_name() == "mock" {
+        return f(_research_agent);
+    }
+
+    prepare_implementation_agent(config, store, approach)?;
+    with_cached_implementation_agent(store, f)
+}
+
+fn can_continue_implementation_session(
+    approach: &ApproachState,
+    reused_cached_instance: bool,
+) -> bool {
+    approach.impl_session_id.is_some() && reused_cached_instance
+}
+
+fn build_implementation_agent(
+    config: &AutotuneConfig,
+    approach: Option<&ApproachState>,
+) -> Result<Box<dyn Agent>> {
+    #[cfg(feature = "mock")]
+    if std::env::var("AUTOTUNE_MOCK").is_ok() {
+        let mut builder = autotune_mock::MockAgent::builder();
+
+        if let Ok(path) = std::env::var("AUTOTUNE_MOCK_IMPL_SCRIPT")
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            for entry in content.split("\n---\n") {
+                let entry = entry.strip_suffix('\n').unwrap_or(entry);
+                builder = builder.implementation_script_entry(entry);
+            }
+        }
+
+        return Ok(Box::new(builder.build()));
+    }
+
+    let backend = implementation_cache_backend(config, approach);
+    build_agent_for_backend(&backend)
 }
 
 fn run_measuring(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
@@ -1246,6 +1397,7 @@ mod tests {
             backend: None,
             model: None,
             max_turns: None,
+            reasoning_effort: None,
             max_fix_attempts: Some(5),
             max_fresh_spawns: Some(2),
         });
@@ -1396,10 +1548,117 @@ mod tests {
             canonical_branch: "main".to_string(),
             advancing_branch: "autotune/test-task-main".to_string(),
             research_session_id: "session-1".to_string(),
+            research_backend: "claude".to_string(),
             current_iteration: iteration,
             current_phase: phase,
             current_approach: None,
         }
+    }
+
+    #[test]
+    fn persisted_research_session_uses_task_state_backend() {
+        let state = autotune_state::TaskState {
+            task_name: "bench".to_string(),
+            canonical_branch: "main".to_string(),
+            advancing_branch: "autotune/bench-main".to_string(),
+            research_session_id: "research-1".to_string(),
+            research_backend: "codex".to_string(),
+            current_iteration: 1,
+            current_phase: Phase::Planning,
+            current_approach: None,
+        };
+
+        let session = research_session_from_state(&state);
+
+        assert_eq!(session.session_id, "research-1");
+        assert_eq!(session.backend, "codex");
+    }
+
+    #[test]
+    fn persisted_implementation_session_uses_approach_backend() {
+        let approach = ApproachState {
+            name: "fast-path".to_string(),
+            hypothesis: "trim allocations".to_string(),
+            worktree_path: PathBuf::from("/tmp/worktree"),
+            branch_name: "autotune/bench/fast-path".to_string(),
+            commit_sha: None,
+            test_results: vec![],
+            metrics: None,
+            rank: None,
+            files_to_modify: vec![],
+            impl_session_id: Some("impl-1".to_string()),
+            impl_backend: Some("claude".to_string()),
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            fix_history: vec![],
+        };
+
+        let session = implementation_session_from_approach(&approach).unwrap();
+
+        assert_eq!(session.session_id, "impl-1");
+        assert_eq!(session.backend, "claude");
+    }
+
+    #[test]
+    fn implementation_backend_from_config_prefers_role_override() {
+        let mut config = make_minimal_config(None, None);
+        config.agent.backend = "claude".to_string();
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: Some("codex".to_string()),
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: None,
+            max_fresh_spawns: None,
+        });
+
+        assert_eq!(implementation_backend_from_config(&config), "codex");
+    }
+
+    #[test]
+    fn prepare_implementation_agent_reuses_cached_instance_for_same_task() {
+        let config = make_minimal_config(None, None);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+
+        let reused = prepare_implementation_agent(&config, &store, None).unwrap();
+        assert!(!reused);
+        let first = with_cached_implementation_agent(&store, |agent| {
+            Ok::<usize, anyhow::Error>(std::ptr::from_ref(agent).cast::<()>() as usize)
+        })
+        .unwrap();
+
+        let reused = prepare_implementation_agent(&config, &store, None).unwrap();
+        assert!(reused);
+        let second = with_cached_implementation_agent(&store, |agent| {
+            Ok::<usize, anyhow::Error>(std::ptr::from_ref(agent).cast::<()>() as usize)
+        })
+        .unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn implementation_session_continuation_requires_cached_agent() {
+        let approach = ApproachState {
+            name: "fast-path".to_string(),
+            hypothesis: "trim allocations".to_string(),
+            worktree_path: PathBuf::from("/tmp/worktree"),
+            branch_name: "autotune/bench/fast-path".to_string(),
+            commit_sha: None,
+            test_results: vec![],
+            metrics: None,
+            rank: None,
+            files_to_modify: vec![],
+            impl_session_id: Some("impl-1".to_string()),
+            impl_backend: Some("claude".to_string()),
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            fix_history: vec![],
+        };
+
+        assert!(!can_continue_implementation_session(&approach, false));
+        assert!(can_continue_implementation_session(&approach, true));
     }
 
     #[test]

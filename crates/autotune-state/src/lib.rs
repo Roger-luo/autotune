@@ -11,6 +11,10 @@ use std::cell::RefCell;
 
 pub type Metrics = HashMap<String, f64>;
 
+fn default_backend() -> String {
+    "claude".to_string()
+}
+
 #[derive(Debug, Error)]
 pub enum StateError {
     #[error("task not found: {name}")]
@@ -79,6 +83,8 @@ pub struct TaskState {
     #[serde(default)]
     pub advancing_branch: String,
     pub research_session_id: String,
+    #[serde(default = "default_backend")]
+    pub research_backend: String,
     pub current_iteration: usize,
     pub current_phase: Phase,
     pub current_approach: Option<ApproachState>,
@@ -106,6 +112,10 @@ pub struct ApproachState {
     /// fall through to a fresh respawn.
     #[serde(default)]
     pub impl_session_id: Option<String>,
+    /// Backend used for the implementation agent session. `None` keeps
+    /// older state files loadable and falls back to the configured default.
+    #[serde(default)]
+    pub impl_backend: Option<String>,
     /// Total fix attempts consumed so far for this iteration (both
     /// session-continuation and fresh-respawn paths). Checked against
     /// `agent.implementation.max_fix_attempts`.

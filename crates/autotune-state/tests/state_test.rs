@@ -18,6 +18,7 @@ fn sample_state() -> TaskState {
         canonical_branch: "main".to_string(),
         advancing_branch: "autotune/demo-main".to_string(),
         research_session_id: "research-1".to_string(),
+        research_backend: "claude".to_string(),
         current_iteration: 3,
         current_phase: Phase::Testing,
         current_approach: None,
@@ -41,6 +42,7 @@ fn sample_approach() -> ApproachState {
         rank: Some(0.25),
         files_to_modify: vec!["src/cache.rs".to_string()],
         impl_session_id: None,
+        impl_backend: Some("claude".to_string()),
         fix_attempts: 0,
         fresh_spawns: 0,
         fix_history: Vec::new(),
@@ -75,6 +77,7 @@ fn roundtrip_state() {
     assert_eq!(loaded.task_name, state.task_name);
     assert_eq!(loaded.canonical_branch, state.canonical_branch);
     assert_eq!(loaded.research_session_id, state.research_session_id);
+    assert_eq!(loaded.research_backend, state.research_backend);
     assert_eq!(loaded.current_iteration, state.current_iteration);
     assert_eq!(loaded.current_phase, state.current_phase);
     assert_eq!(loaded.current_approach, state.current_approach);
@@ -91,6 +94,38 @@ fn roundtrip_state_with_approach() {
 
     let loaded = store.load_state().unwrap();
     assert_eq!(loaded.current_approach, state.current_approach);
+}
+
+#[test]
+fn legacy_state_deserializes_default_backends() {
+    let legacy_state = r#"{
+        "task_name": "demo",
+        "canonical_branch": "main",
+        "advancing_branch": "autotune/demo-main",
+        "research_session_id": "research-1",
+        "current_iteration": 1,
+        "current_phase": "planning",
+        "current_approach": {
+            "name": "optimize-cache",
+            "hypothesis": "reduce cache misses",
+            "worktree_path": "/tmp/autotune/demo",
+            "branch_name": "autotune/demo-cache",
+            "commit_sha": null,
+            "test_results": [],
+            "metrics": null,
+            "rank": null,
+            "files_to_modify": [],
+            "impl_session_id": null,
+            "fix_attempts": 0,
+            "fresh_spawns": 0,
+            "fix_history": []
+        }
+    }"#;
+
+    let state: TaskState = serde_json::from_str(legacy_state).unwrap();
+
+    assert_eq!(state.research_backend, "claude");
+    assert_eq!(state.current_approach.unwrap().impl_backend, None);
 }
 
 #[test]
