@@ -388,3 +388,112 @@ impl AutotuneConfig {
         root.join(".autotune").join("tasks").join(&self.task.name)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minimal_config_with_score(score_toml: &str) -> String {
+        format!(
+            r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "m"
+command = ["echo"]
+adaptor = {{ type = "regex", patterns = [{{ name = "val", pattern = "x([0-9]+)" }}] }}
+{score_toml}
+"#
+        )
+    }
+
+    #[test]
+    fn validate_threshold_unknown_metric_errors() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "threshold"
+conditions = [{ metric = "nonexistent", direction = "Minimize", threshold = 0.0 }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("nonexistent"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_script_score_empty_command_errors() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "script"
+command = []
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_command_score_empty_command_errors() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "command"
+command = []
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn adaptor_metric_names_criterion_returns_three() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "mean", direction = "Minimize" }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        let adaptor = AdaptorConfig::Criterion { measure_name: "bench".to_string() };
+        let names = config.adaptor_metric_names(&adaptor);
+        assert_eq!(names, vec!["mean", "median", "std_dev"]);
+    }
+
+    #[test]
+    fn adaptor_metric_names_script_returns_empty() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        let adaptor = AdaptorConfig::Script { command: vec!["sh".to_string()] };
+        let names = config.adaptor_metric_names(&adaptor);
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn task_dir_returns_expected_path() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        let root = std::path::Path::new("/tmp/myproject");
+        let dir = config.task_dir(root);
+        assert_eq!(dir, std::path::Path::new("/tmp/myproject/.autotune/tasks/t"));
+    }
+}

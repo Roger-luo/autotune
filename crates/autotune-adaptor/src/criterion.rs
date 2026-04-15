@@ -54,3 +54,29 @@ impl MetricAdaptor for CriterionAdaptor {
         Ok(metrics)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MeasureOutput;
+
+    #[test]
+    fn criterion_not_found_error() {
+        let adaptor = CriterionAdaptor::new(std::path::Path::new("/nonexistent"), "bench");
+        let output = MeasureOutput { stdout: String::new(), stderr: String::new() };
+        let err = adaptor.extract(&output).unwrap_err();
+        assert!(matches!(err, crate::AdaptorError::CriterionNotFound { .. }));
+    }
+
+    #[test]
+    fn criterion_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let bench_dir = dir.path().join("bench").join("new");
+        std::fs::create_dir_all(&bench_dir).unwrap();
+        std::fs::write(bench_dir.join("estimates.json"), b"not valid json").unwrap();
+        let adaptor = CriterionAdaptor::new(dir.path(), "bench");
+        let output = MeasureOutput { stdout: String::new(), stderr: String::new() };
+        let err = adaptor.extract(&output).unwrap_err();
+        assert!(matches!(err, crate::AdaptorError::CriterionParse { .. }));
+    }
+}

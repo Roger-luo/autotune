@@ -59,3 +59,31 @@ impl MetricAdaptor for RegexAdaptor {
         Ok(metrics)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MeasureOutput;
+
+    #[test]
+    fn regex_compile_error() {
+        let adaptor = RegexAdaptor::new(vec![RegexPatternConfig {
+            name: "m".to_string(),
+            pattern: "[invalid".to_string(),
+        }]);
+        let output = MeasureOutput { stdout: "anything".to_string(), stderr: String::new() };
+        let err = adaptor.extract(&output).unwrap_err();
+        assert!(matches!(err, crate::AdaptorError::RegexCompile { .. }));
+    }
+
+    #[test]
+    fn regex_parse_float_error() {
+        let adaptor = RegexAdaptor::new(vec![RegexPatternConfig {
+            name: "val".to_string(),
+            pattern: r"result=(not_a_number)".to_string(),
+        }]);
+        let output = MeasureOutput { stdout: "result=not_a_number".to_string(), stderr: String::new() };
+        let err = adaptor.extract(&output).unwrap_err();
+        assert!(matches!(err, crate::AdaptorError::ParseFloat { .. }));
+    }
+}

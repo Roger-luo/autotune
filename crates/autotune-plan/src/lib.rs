@@ -472,4 +472,56 @@ This should give us a 10% improvement."#;
         let err = parse_hypothesis(response).unwrap_err();
         assert!(matches!(err, PlanError::ParseHypothesis { .. }));
     }
+
+    #[test]
+    fn format_request_label_with_scope() {
+        let req = ToolRequest {
+            tool: "Bash".to_string(),
+            scope: Some("cargo tree:*".to_string()),
+            reason: "need deps".to_string(),
+        };
+        assert_eq!(format_request_label(&req), "Bash(cargo tree:*)");
+    }
+
+    #[test]
+    fn format_request_label_without_scope() {
+        let req = ToolRequest {
+            tool: "WebFetch".to_string(),
+            scope: None,
+            reason: "check docs".to_string(),
+        };
+        assert_eq!(format_request_label(&req), "WebFetch");
+    }
+
+    #[test]
+    fn format_request_label_empty_scope_treated_as_unscoped() {
+        let req = ToolRequest {
+            tool: "Bash".to_string(),
+            scope: Some(String::new()),
+            reason: "r".to_string(),
+        };
+        assert_eq!(format_request_label(&req), "Bash");
+    }
+
+    #[test]
+    fn is_retryable_parse_hypothesis_is_true() {
+        let err = PlanError::ParseHypothesis { message: "missing".to_string() };
+        assert!(is_retryable(&err));
+    }
+
+    #[test]
+    fn is_retryable_state_error_is_false() {
+        let err = PlanError::State {
+            source: autotune_state::StateError::NotFound { name: "t".to_string() },
+        };
+        assert!(!is_retryable(&err));
+    }
+
+    #[test]
+    fn build_plan_correction_prompt_contains_error() {
+        let err = PlanError::ParseHypothesis { message: "no <plan>".to_string() };
+        let prompt = build_plan_correction_prompt(&err);
+        assert!(prompt.contains("no <plan>"), "prompt: {prompt}");
+        assert!(prompt.contains("<plan>"), "prompt: {prompt}");
+    }
 }
