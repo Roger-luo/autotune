@@ -356,6 +356,63 @@ mod tests {
     }
 
     #[test]
+    fn run_measure_with_output_returns_report_with_stdout() {
+        let config = MeasureConfig {
+            name: "output-test".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'val: 7'".to_string(),
+            ],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "val".to_string(),
+                    pattern: r"val: ([0-9]+)".to_string(),
+                }],
+            },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let report = run_measure_with_output(&config, tmp.path()).unwrap();
+        assert_eq!(report.name, "output-test");
+        assert!(report.stdout.contains("val: 7"), "stdout: {:?}", report.stdout);
+        assert_eq!(*report.metrics.get("val").unwrap(), 7.0);
+    }
+
+    #[test]
+    fn run_all_measures_with_output_returns_per_measure_reports() {
+        let m1 = MeasureConfig {
+            name: "alpha".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "echo 'x: 10'".to_string()],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "x".to_string(),
+                    pattern: r"x: ([0-9]+)".to_string(),
+                }],
+            },
+        };
+        let m2 = MeasureConfig {
+            name: "beta".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "echo 'y: 20'".to_string()],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "y".to_string(),
+                    pattern: r"y: ([0-9]+)".to_string(),
+                }],
+            },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_metrics, reports) = run_all_measures_with_output(&[m1, m2], tmp.path()).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].name, "alpha");
+        assert!(reports[0].stdout.contains("x: 10"));
+        assert_eq!(reports[1].name, "beta");
+        assert!(reports[1].stdout.contains("y: 20"));
+    }
+
+    #[test]
     fn run_all_measures_merges_metrics() {
         let m1 = MeasureConfig {
             name: "first".to_string(),

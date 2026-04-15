@@ -133,3 +133,73 @@ pub trait Agent {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn dummy_config() -> AgentConfig {
+        AgentConfig {
+            prompt: "test".to_string(),
+            allowed_tools: vec![],
+            working_directory: PathBuf::from("."),
+            model: None,
+            max_turns: None,
+        }
+    }
+
+    #[test]
+    fn agent_config_with_events_new_has_no_handler() {
+        let config = AgentConfigWithEvents::new(dummy_config());
+        assert!(config.event_handler.is_none());
+    }
+
+    #[test]
+    fn agent_config_with_events_with_handler_sets_handler() {
+        let config = AgentConfigWithEvents::new(dummy_config())
+            .with_event_handler(Box::new(|_event| {}));
+        assert!(config.event_handler.is_some());
+    }
+
+    #[test]
+    fn default_grant_session_permission_returns_error() {
+        struct MinimalAgent;
+
+        impl Agent for MinimalAgent {
+            fn spawn(&self, _config: &AgentConfig) -> Result<AgentResponse, AgentError> {
+                unimplemented!()
+            }
+
+            fn send(
+                &self,
+                _session: &AgentSession,
+                _message: &str,
+            ) -> Result<AgentResponse, AgentError> {
+                unimplemented!()
+            }
+
+            fn backend_name(&self) -> &str {
+                "minimal"
+            }
+
+            fn handover_command(&self, _session: &AgentSession) -> String {
+                String::new()
+            }
+        }
+
+        let agent = MinimalAgent;
+        let session = AgentSession {
+            session_id: "s1".to_string(),
+            backend: "minimal".to_string(),
+        };
+        let err = agent
+            .grant_session_permission(&session, ToolPermission::Allow("Read".to_string()))
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not support runtime permission grants"),
+            "unexpected message: {msg}"
+        );
+    }
+}

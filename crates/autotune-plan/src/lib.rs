@@ -569,4 +569,60 @@ This should give us a 10% improvement."#;
         assert_eq!(files.len(), 2);
         assert!(files.windows(2).all(|w| w[0] <= w[1]));
     }
+
+    #[test]
+    fn research_agent_permissions_returns_allow_read_glob_grep() {
+        let perms = research_agent_permissions();
+        let allow_names: Vec<&str> = perms
+            .iter()
+            .filter_map(|p| {
+                if let ToolPermission::Allow(name) = p {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(allow_names.contains(&"Read"), "missing Read");
+        assert!(allow_names.contains(&"Glob"), "missing Glob");
+        assert!(allow_names.contains(&"Grep"), "missing Grep");
+    }
+
+    #[test]
+    fn is_denied_for_research_returns_true_for_edit_write_agent() {
+        assert!(is_denied_for_research("Edit"));
+        assert!(is_denied_for_research("Write"));
+        assert!(is_denied_for_research("Agent"));
+    }
+
+    #[test]
+    fn is_denied_for_research_returns_false_for_read_glob_grep() {
+        assert!(!is_denied_for_research("Read"));
+        assert!(!is_denied_for_research("Glob"));
+        assert!(!is_denied_for_research("Grep"));
+    }
+
+    #[test]
+    fn parse_hypothesis_missing_approach_errors() {
+        let xml = r#"<plan>
+  <hypothesis>Some hypothesis here</hypothesis>
+</plan>"#;
+        let err = parse_hypothesis(xml).unwrap_err();
+        assert!(
+            matches!(err, PlanError::ParseHypothesis { ref message } if message.contains("approach")),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_hypothesis_missing_hypothesis_errors() {
+        let xml = r#"<plan>
+  <approach>some-approach</approach>
+</plan>"#;
+        let err = parse_hypothesis(xml).unwrap_err();
+        assert!(
+            matches!(err, PlanError::ParseHypothesis { ref message } if message.contains("hypothesis")),
+            "unexpected error: {err}"
+        );
+    }
 }

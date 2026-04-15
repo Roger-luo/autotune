@@ -57,3 +57,53 @@ impl GlobalConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_layered_with_empty_paths_returns_default() {
+        let config = GlobalConfig::load_layered(&[]).unwrap();
+        assert!(config.agent.is_none());
+    }
+
+    #[test]
+    fn load_layered_skips_nonexistent_path() {
+        let missing = Path::new("/tmp/autotune_test_nonexistent_config_xyz.toml");
+        let config = GlobalConfig::load_layered(&[missing]).unwrap();
+        assert!(config.agent.is_none());
+    }
+
+    #[test]
+    fn load_layered_reads_existing_toml_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[agent]\nbackend = \"claude\"\n",
+        )
+        .unwrap();
+        let config = GlobalConfig::load_layered(&[config_path.as_path()]).unwrap();
+        assert!(config.agent.is_some());
+    }
+
+    #[test]
+    fn user_config_path_returns_some_with_toml_extension() {
+        if let Some(path) = GlobalConfig::user_config_path() {
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(name.ends_with(".toml"), "expected .toml extension, got: {name}");
+        }
+        // If home dir is not available, the test is vacuously satisfied.
+    }
+
+    #[test]
+    fn merge_other_agent_wins() {
+        let base = GlobalConfig { agent: None };
+        let other = GlobalConfig {
+            agent: Some(crate::AgentConfig::default()),
+        };
+        let merged = base.merge(other);
+        assert!(merged.agent.is_some());
+    }
+}
