@@ -10,7 +10,8 @@ Autotune is a Rust CLI that orchestrates autonomous, metric-driven tuning of cod
 
 ```bash
 cargo build                              # Dev build
-cargo nextest run                        # All tests (109 across 12 crates)
+cargo nextest run                        # All tests (166 across 13 crates)
+cargo nextest run --features mock        # Adds scenario tests (~184 total)
 cargo nextest run -p autotune            # Tests for binary crate only
 cargo nextest run -p autotune-config     # Tests for a specific crate
 cargo nextest run -E 'test(full_pipeline)' # Single test by name substring
@@ -30,7 +31,7 @@ cargo nextest run                                        # 3. Test
 
 ## Architecture
 
-Cargo workspace with 12 crates under `crates/`. The binary crate (`autotune`) composes all library crates via a state machine.
+Cargo workspace with 13 crates under `crates/`. The binary crate (`autotune`) composes all library crates via a state machine.
 
 ### State Machine (crates/autotune/src/machine.rs)
 
@@ -47,7 +48,7 @@ Planning → Implementing → Testing → Measuring → Scoring → Integrating 
 - **Testing**: CLI runs configured test commands; failure → discard
 - **Measuring**: CLI runs task commands, extracts metrics via adaptors
 - **Scoring**: Score calculator produces rank + keep/discard decision
-- **Integrating**: Cherry-pick kept commits onto canonical branch
+- **Integrating**: Rebase kept commits onto the task's advancing branch (linear history, canonical untouched — see [notes/git-integration.md](notes/git-integration.md))
 - **Recorded**: Check stop conditions; loop or finish
 
 `run_single_phase()` executes one transition (used by step commands). `run_task()` loops until Done or shutdown.
@@ -66,6 +67,7 @@ Planning → Implementing → Testing → Measuring → Scoring → Integrating 
 autotune (binary+lib)
 ├── autotune-plan       → autotune-agent, autotune-state
 ├── autotune-implement  → autotune-agent, autotune-git
+├── autotune-init       → autotune-agent, autotune-config
 ├── autotune-test       → autotune-config
 ├── autotune-benchmark  → autotune-config, autotune-adaptor
 ├── autotune-config     (leaf)
@@ -105,6 +107,19 @@ Leaf crates have no internal workspace dependencies. This means you can work on 
 ### ClaudeAgent Session Model
 
 `ClaudeAgent` stores session contexts in a `Mutex<HashMap>`. When `send()` is called, it looks up the original `AgentConfig` (tools, working dir, model) from the session created by `spawn()`. Do not reconstruct a new `ClaudeAgent` between `spawn` and `send` — the session context would be lost.
+
+`grant_session_permission(session, permission)` mutates the stored context to add a tool for subsequent `send` calls. Used when integration needs to temporarily grant the research agent `Edit` for conflict resolution.
+
+Agent-to-CLI communication uses an XML fragment protocol (`<plan>`, `<task>`, `<measure>`, etc.), not JSON — see [notes/agent-protocol.md](notes/agent-protocol.md). MockAgent responses must be XML.
+
+### Further reading
+
+Detailed notes on non-obvious mechanics live in [notes/](notes/):
+
+- [agent-subprocess.md](notes/agent-subprocess.md) — Claude CLI flags, why `--permission-mode dontAsk` and `--bare` don't work, how tool scoping is enforced.
+- [agent-protocol.md](notes/agent-protocol.md) — XML fragment protocol, MockAgent format requirements.
+- [git-integration.md](notes/git-integration.md) — Advancing branch, rebase integration, worktree branch namespacing.
+- [config-and-tasks.md](notes/config-and-tasks.md) — Global vs project config merge, task auto-forking, how the implementation agent receives AGENTS.md/CLAUDE.md.
 
 ## Key Conventions
 
