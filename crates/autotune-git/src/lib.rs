@@ -568,7 +568,10 @@ mod tests {
         let sha_before = latest_commit_sha(dir.path()).unwrap();
         cherry_pick(dir.path(), &cherry_sha).unwrap();
         let sha_after = latest_commit_sha(dir.path()).unwrap();
-        assert_ne!(sha_before, sha_after, "cherry-pick should advance HEAD on main");
+        assert_ne!(
+            sha_before, sha_after,
+            "cherry-pick should advance HEAD on main"
+        );
     }
 
     #[test]
@@ -612,9 +615,15 @@ mod tests {
         let sha_after = latest_commit_sha(dir.path()).unwrap();
         assert_ne!(sha_before, sha_after, "main should have a new commit");
         // The feature commit should not be HEAD — a merge commit sits on top
-        assert_ne!(sha_after, feature_sha, "HEAD should be the merge commit, not the feature commit");
+        assert_ne!(
+            sha_after, feature_sha,
+            "HEAD should be the merge commit, not the feature commit"
+        );
         // Verify it is a merge commit (has two parents)
-        assert!(head_is_merge_commit(dir.path()).unwrap(), "HEAD should be a merge commit");
+        assert!(
+            head_is_merge_commit(dir.path()).unwrap(),
+            "HEAD should be a merge commit"
+        );
     }
 
     #[test]
@@ -626,7 +635,10 @@ mod tests {
         let sha_before_revert = latest_commit_sha(dir.path()).unwrap();
         revert_last(dir.path()).unwrap();
         let sha_after = latest_commit_sha(dir.path()).unwrap();
-        assert_ne!(sha_before_revert, sha_after, "revert should create a new commit");
+        assert_ne!(
+            sha_before_revert, sha_after,
+            "revert should create a new commit"
+        );
     }
 
     #[test]
@@ -643,7 +655,10 @@ mod tests {
         let sha_before = latest_commit_sha(dir.path()).unwrap();
         revert_last(dir.path()).unwrap();
         let sha_after = latest_commit_sha(dir.path()).unwrap();
-        assert_ne!(sha_before, sha_after, "reverting a merge commit should create a new revert commit");
+        assert_ne!(
+            sha_before, sha_after,
+            "reverting a merge commit should create a new revert commit"
+        );
     }
 
     #[test]
@@ -704,7 +719,10 @@ mod tests {
         assert!(!result);
         // Abort should succeed and leave repo without conflicts
         merge_abort(dir.path()).unwrap();
-        assert!(!has_merge_conflicts(dir.path()).unwrap(), "no conflicts after abort");
+        assert!(
+            !has_merge_conflicts(dir.path()).unwrap(),
+            "no conflicts after abort"
+        );
     }
 
     #[test]
@@ -718,7 +736,10 @@ mod tests {
         fs::write(dir.path().join("conflict.txt"), b"resolved content\n").unwrap();
         conclude_merge(dir.path(), "resolve conflict").unwrap();
         let sha_after = latest_commit_sha(dir.path()).unwrap();
-        assert_ne!(sha_before, sha_after, "conclude_merge should create a new commit");
+        assert_ne!(
+            sha_before, sha_after,
+            "conclude_merge should create a new commit"
+        );
     }
 
     #[test]
@@ -737,6 +758,9 @@ mod tests {
         merge_ff_only(dir.path(), "ff-feature").unwrap();
         let sha_after = latest_commit_sha(dir.path()).unwrap();
         assert_ne!(sha_before, sha_after, "main should have advanced");
-        assert_eq!(sha_after, feature_sha, "main should point to the feature commit");
+        assert_eq!(
+            sha_after, feature_sha,
+            "main should point to the feature commit"
+        );
     }
 }

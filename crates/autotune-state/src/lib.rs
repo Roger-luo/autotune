@@ -489,7 +489,9 @@ mod tests {
 
     #[test]
     fn task_store_open_returns_not_found_error() {
-        let result = TaskStore::open(std::path::Path::new("/nonexistent/path/that/does/not/exist"));
+        let result = TaskStore::open(std::path::Path::new(
+            "/nonexistent/path/that/does/not/exist",
+        ));
         assert!(matches!(result, Err(StateError::NotFound { .. })));
     }
 

@@ -1131,7 +1131,10 @@ mod tests {
             );
             let frags = parse_agent_response(&xml).unwrap();
             match &frags[0] {
-                AgentFragment::Question { allow_free_response, .. } => {
+                AgentFragment::Question {
+                    allow_free_response,
+                    ..
+                } => {
                     assert!(*allow_free_response, "expected true for '{val}'");
                 }
                 _ => panic!("expected Question"),
@@ -1143,21 +1146,30 @@ mod tests {
     fn parse_bool_invalid_errors() {
         let xml = r#"<question><text>q</text><allow-free-response>maybe</allow-free-response></question>"#;
         let err = parse_agent_response(xml).unwrap_err();
-        assert!(err.to_string().contains("invalid boolean"), "error was: {err}");
+        assert!(
+            err.to_string().contains("invalid boolean"),
+            "error was: {err}"
+        );
     }
 
     #[test]
     fn parse_u64_invalid_errors() {
         let xml = r#"<test><name>t</name><command><segment>sh</segment></command><timeout>not_a_number</timeout></test>"#;
         let err = parse_agent_response(xml).unwrap_err();
-        assert!(err.to_string().contains("invalid integer"), "error was: {err}");
+        assert!(
+            err.to_string().contains("invalid integer"),
+            "error was: {err}"
+        );
     }
 
     #[test]
     fn parse_f64_invalid_errors() {
         let xml = r#"<score><type>weighted_sum</type><primary-metric><name>m</name><direction>Maximize</direction><weight>not_a_float</weight></primary-metric></score>"#;
         let err = parse_agent_response(xml).unwrap_err();
-        assert!(err.to_string().contains("invalid number"), "error was: {err}");
+        assert!(
+            err.to_string().contains("invalid number"),
+            "error was: {err}"
+        );
     }
 
     #[test]
@@ -1204,7 +1216,8 @@ mod tests {
 
     #[test]
     fn parse_agent_with_init_section() {
-        let xml = r#"<agent><backend>claude</backend><init><model>claude-haiku</model></init></agent>"#;
+        let xml =
+            r#"<agent><backend>claude</backend><init><model>claude-haiku</model></init></agent>"#;
         let frags = parse_agent_response(xml).unwrap();
         match &frags[0] {
             AgentFragment::Agent(agent) => {
@@ -1251,7 +1264,11 @@ mod tests {
         let frags = parse_agent_response(xml).unwrap();
         assert_eq!(frags.len(), 1);
         match &frags[0] {
-            AgentFragment::Question { text, options, allow_free_response } => {
+            AgentFragment::Question {
+                text,
+                options,
+                allow_free_response,
+            } => {
                 assert_eq!(text, "Which approach?");
                 assert_eq!(options.len(), 2);
                 assert_eq!(options[0].key, "a");
@@ -1302,7 +1319,10 @@ mod tests {
                 assert_eq!(task.target_metric.len(), 1);
                 assert_eq!(task.target_metric[0].name, "throughput");
                 assert_eq!(task.target_metric[0].value, 1000.0);
-                assert!(matches!(task.target_metric[0].direction, Direction::Maximize));
+                assert!(matches!(
+                    task.target_metric[0].direction,
+                    Direction::Maximize
+                ));
             }
             _ => panic!("expected Task"),
         }
@@ -1375,21 +1395,30 @@ mod tests {
     fn parse_tool_request_nested_in_plan_is_filtered() {
         let xml = r#"<plan><hypothesis>We could use <request-tool><tool>Bash</tool><reason>example</reason></request-tool> here.</hypothesis></plan>"#;
         let requests = parse_tool_requests(xml).unwrap();
-        assert!(requests.is_empty(), "nested request-tool should be filtered");
+        assert!(
+            requests.is_empty(),
+            "nested request-tool should be filtered"
+        );
     }
 
     #[test]
     fn parse_tool_request_missing_tool_errors() {
         let xml = r#"<request-tool><reason>Need something</reason></request-tool>"#;
         let err = parse_tool_requests(xml).unwrap_err();
-        assert!(err.to_string().contains("missing <tool>"), "error was: {err}");
+        assert!(
+            err.to_string().contains("missing <tool>"),
+            "error was: {err}"
+        );
     }
 
     #[test]
     fn parse_tool_request_missing_reason_errors() {
         let xml = r#"<request-tool><tool>Bash</tool></request-tool>"#;
         let err = parse_tool_requests(xml).unwrap_err();
-        assert!(err.to_string().contains("missing <reason>"), "error was: {err}");
+        assert!(
+            err.to_string().contains("missing <reason>"),
+            "error was: {err}"
+        );
     }
 
     #[test]
@@ -1405,7 +1434,13 @@ mod tests {
         let xml = r#"<test><name>unit</name><command><segment>cargo</segment><segment>test</segment></command></test> some prose <message>hello</message>"#;
         let frags = parse_agent_response(xml).unwrap();
         assert_eq!(frags.len(), 2);
-        assert!(matches!(frags[0], AgentFragment::Test(_)), "first fragment should be Test");
-        assert!(matches!(frags[1], AgentFragment::Message(_)), "second fragment should be Message");
+        assert!(
+            matches!(frags[0], AgentFragment::Test(_)),
+            "first fragment should be Test"
+        );
+        assert!(
+            matches!(frags[1], AgentFragment::Message(_)),
+            "second fragment should be Message"
+        );
     }
 }

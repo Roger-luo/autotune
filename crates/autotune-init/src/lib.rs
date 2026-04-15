@@ -896,7 +896,9 @@ mod tests {
 
     #[test]
     fn accumulator_clone_assemble_returns_some_when_complete() {
-        let config = complete_accumulator().clone_assemble().expect("should be Some");
+        let config = complete_accumulator()
+            .clone_assemble()
+            .expect("should be Some");
         assert_eq!(config.task.name, "my-task");
     }
 
@@ -944,7 +946,10 @@ mod tests {
 
     #[test]
     fn validate_task_accepts_with_max_iterations() {
-        assert!(matches!(validate_task(&minimal_task()), FragmentOutcome::Accepted(_)));
+        assert!(matches!(
+            validate_task(&minimal_task()),
+            FragmentOutcome::Accepted(_)
+        ));
     }
 
     #[test]
@@ -993,7 +998,10 @@ mod tests {
 
     #[test]
     fn validate_paths_rejects_empty_tunable() {
-        let paths = PathsConfig { tunable: vec![], denied: vec![] };
+        let paths = PathsConfig {
+            tunable: vec![],
+            denied: vec![],
+        };
         match validate_paths(&paths) {
             FragmentOutcome::Rejected(msg) => assert!(msg.contains("tunable"), "msg: {msg}"),
             _ => panic!("expected Rejected"),
@@ -1026,7 +1034,10 @@ mod tests {
 
     #[test]
     fn validate_paths_accepts_valid_paths() {
-        assert!(matches!(validate_paths(&minimal_paths()), FragmentOutcome::Accepted(_)));
+        assert!(matches!(
+            validate_paths(&minimal_paths()),
+            FragmentOutcome::Accepted(_)
+        ));
     }
 
     // --- validate_test tests ---
@@ -1046,7 +1057,10 @@ mod tests {
 
     #[test]
     fn validate_test_accepts_valid() {
-        assert!(matches!(validate_test(&minimal_test()), FragmentOutcome::Accepted(_)));
+        assert!(matches!(
+            validate_test(&minimal_test()),
+            FragmentOutcome::Accepted(_)
+        ));
     }
 
     // --- validate_measure tests ---
@@ -1099,7 +1113,10 @@ mod tests {
             }],
             guardrail_metrics: vec![],
         };
-        assert!(matches!(validate_score(&score, &acc), FragmentOutcome::Accepted(_)));
+        assert!(matches!(
+            validate_score(&score, &acc),
+            FragmentOutcome::Accepted(_)
+        ));
     }
 
     #[test]
@@ -1157,7 +1174,10 @@ mod tests {
                 threshold: 5.0,
             }],
         };
-        assert!(matches!(validate_score(&score, &acc), FragmentOutcome::Accepted(_)));
+        assert!(matches!(
+            validate_score(&score, &acc),
+            FragmentOutcome::Accepted(_)
+        ));
     }
 
     #[test]
@@ -1214,8 +1234,14 @@ mod tests {
     fn adaptor_metric_names_regex_returns_pattern_names() {
         let adaptor = AdaptorConfig::Regex {
             patterns: vec![
-                RegexPattern { name: "a".to_string(), pattern: "([0-9]+)".to_string() },
-                RegexPattern { name: "b".to_string(), pattern: "([0-9]+)".to_string() },
+                RegexPattern {
+                    name: "a".to_string(),
+                    pattern: "([0-9]+)".to_string(),
+                },
+                RegexPattern {
+                    name: "b".to_string(),
+                    pattern: "([0-9]+)".to_string(),
+                },
             ],
         };
         let names = adaptor_metric_names(&adaptor);
@@ -1226,7 +1252,9 @@ mod tests {
 
     #[test]
     fn adaptor_metric_names_criterion_returns_fixed_set() {
-        let adaptor = AdaptorConfig::Criterion { measure_name: "bench/sort".to_string() };
+        let adaptor = AdaptorConfig::Criterion {
+            measure_name: "bench/sort".to_string(),
+        };
         let names = adaptor_metric_names(&adaptor);
         assert_eq!(names.len(), 3);
         assert!(names.contains(&"mean".to_string()));
@@ -1236,7 +1264,9 @@ mod tests {
 
     #[test]
     fn adaptor_metric_names_script_returns_empty() {
-        let adaptor = AdaptorConfig::Script { command: vec!["sh".to_string()] };
+        let adaptor = AdaptorConfig::Script {
+            command: vec!["sh".to_string()],
+        };
         assert!(adaptor_metric_names(&adaptor).is_empty());
     }
 

@@ -502,7 +502,10 @@ mod tests {
         let session = research_session();
         let resp = agent.send(&session, "plan").unwrap();
         assert!(resp.text.contains("<approach>my-approach</approach>"));
-        assert!(resp.text.contains("<hypothesis>my hypothesis text</hypothesis>"));
+        assert!(
+            resp.text
+                .contains("<hypothesis>my hypothesis text</hypothesis>")
+        );
         assert!(resp.text.contains("<file>src/lib.rs</file>"));
         assert_eq!(resp.session_id, MOCK_RESEARCH_SESSION_ID);
     }
@@ -665,7 +668,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_ne!(sha_before.trim(), sha_after.trim(), "HEAD should have advanced after create_dummy_commit");
+        assert_ne!(
+            sha_before.trim(),
+            sha_after.trim(),
+            "HEAD should have advanced after create_dummy_commit"
+        );
     }
 
     #[test]

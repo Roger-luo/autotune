@@ -375,7 +375,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let report = run_measure_with_output(&config, tmp.path()).unwrap();
         assert_eq!(report.name, "output-test");
-        assert!(report.stdout.contains("val: 7"), "stdout: {:?}", report.stdout);
+        assert!(
+            report.stdout.contains("val: 7"),
+            "stdout: {:?}",
+            report.stdout
+        );
         assert_eq!(*report.metrics.get("val").unwrap(), 7.0);
     }
 
@@ -383,7 +387,11 @@ mod tests {
     fn run_all_measures_with_output_returns_per_measure_reports() {
         let m1 = MeasureConfig {
             name: "alpha".to_string(),
-            command: vec!["sh".to_string(), "-c".to_string(), "echo 'x: 10'".to_string()],
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'x: 10'".to_string(),
+            ],
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -394,7 +402,11 @@ mod tests {
         };
         let m2 = MeasureConfig {
             name: "beta".to_string(),
-            command: vec!["sh".to_string(), "-c".to_string(), "echo 'y: 20'".to_string()],
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'y: 20'".to_string(),
+            ],
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -416,7 +428,11 @@ mod tests {
     fn run_all_measures_merges_metrics() {
         let m1 = MeasureConfig {
             name: "first".to_string(),
-            command: vec!["sh".to_string(), "-c".to_string(), "echo 'a: 1'".to_string()],
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'a: 1'".to_string(),
+            ],
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -427,7 +443,11 @@ mod tests {
         };
         let m2 = MeasureConfig {
             name: "second".to_string(),
-            command: vec!["sh".to_string(), "-c".to_string(), "echo 'b: 2'".to_string()],
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'b: 2'".to_string(),
+            ],
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {

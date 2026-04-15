@@ -79,11 +79,7 @@ mod tests {
     fn load_layered_reads_existing_toml_file() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("config.toml");
-        std::fs::write(
-            &config_path,
-            "[agent]\nbackend = \"claude\"\n",
-        )
-        .unwrap();
+        std::fs::write(&config_path, "[agent]\nbackend = \"claude\"\n").unwrap();
         let config = GlobalConfig::load_layered(&[config_path.as_path()]).unwrap();
         assert!(config.agent.is_some());
     }
@@ -92,7 +88,10 @@ mod tests {
     fn user_config_path_returns_some_with_toml_extension() {
         if let Some(path) = GlobalConfig::user_config_path() {
             let name = path.file_name().unwrap().to_string_lossy();
-            assert!(name.ends_with(".toml"), "expected .toml extension, got: {name}");
+            assert!(
+                name.ends_with(".toml"),
+                "expected .toml extension, got: {name}"
+            );
         }
         // If home dir is not available, the test is vacuously satisfied.
     }

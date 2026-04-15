@@ -157,8 +157,8 @@ mod tests {
 
     #[test]
     fn agent_config_with_events_with_handler_sets_handler() {
-        let config = AgentConfigWithEvents::new(dummy_config())
-            .with_event_handler(Box::new(|_event| {}));
+        let config =
+            AgentConfigWithEvents::new(dummy_config()).with_event_handler(Box::new(|_event| {}));
         assert!(config.event_handler.is_some());
     }
 
