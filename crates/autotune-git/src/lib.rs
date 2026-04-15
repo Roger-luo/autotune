@@ -81,6 +81,20 @@ pub fn create_branch(dir: &Path, branch_name: &str) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Returns true if a branch with the given name exists (local ref).
+pub fn branch_exists(dir: &Path, branch_name: &str) -> Result<bool, GitError> {
+    let result = git(
+        dir,
+        &[
+            OsStr::new("show-ref"),
+            OsStr::new("--verify"),
+            OsStr::new("--quiet"),
+            OsStr::new(&format!("refs/heads/{branch_name}")),
+        ],
+    );
+    Ok(result.is_ok())
+}
+
 /// Create a new branch starting from a specific base branch.
 pub fn create_branch_from(
     dir: &Path,

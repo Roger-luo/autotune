@@ -133,9 +133,10 @@ fn setup_worktree_creates_branch_and_worktree() {
     std::fs::create_dir_all(&worktree_parent).unwrap();
 
     let (wt_path, branch) =
-        autotune_implement::setup_worktree(&repo, "fast-path", &worktree_parent, "main").unwrap();
+        autotune_implement::setup_worktree(&repo, "demo", "fast-path", &worktree_parent, "main")
+            .unwrap();
 
-    assert_eq!(branch, "autotune/fast-path");
+    assert_eq!(branch, "autotune/demo/fast-path");
     assert!(wt_path.exists(), "worktree directory should exist");
     assert!(
         wt_path.join("dummy.txt").exists(),
@@ -186,6 +187,7 @@ fn setup_worktree_slugifies_approach_name() {
 
     let (_wt_path, branch) = autotune_implement::setup_worktree(
         &repo,
+        "demo",
         "Add unit tests for X, Y & Z!",
         &worktree_parent,
         "main",
@@ -193,5 +195,5 @@ fn setup_worktree_slugifies_approach_name() {
     .unwrap();
 
     // Should be slugified: lowercase, hyphens, no spaces/commas/special chars
-    assert_eq!(branch, "autotune/add-unit-tests-for-x-y-z");
+    assert_eq!(branch, "autotune/demo/add-unit-tests-for-x-y-z");
 }

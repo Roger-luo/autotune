@@ -172,6 +172,7 @@ fn run_planning(
         autotune_git::repo_root(store.root()).unwrap_or_else(|_| store.root().to_path_buf());
     let (worktree_path, branch_name) = autotune_implement::setup_worktree(
         &repo_root,
+        &state.task_name,
         &hypothesis.approach,
         &worktree_parent,
         &state.advancing_branch,

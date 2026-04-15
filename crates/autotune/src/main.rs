@@ -62,6 +62,23 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
         .with_context(|| format!("failed to load config from {}", config_path.display()))
 }
 
+/// Find the next available task name by appending `-2`, `-3`, ... to the base
+/// name. A name is "available" when both its task directory and its advancing
+/// git branch (`autotune-<name>`) don't exist yet.
+fn next_available_task_name(repo_root: &Path, base: &str) -> Result<String> {
+    let tasks_dir = repo_root.join(".autotune").join("tasks");
+    for n in 2..10_000 {
+        let candidate = format!("{base}-{n}");
+        let dir_taken = tasks_dir.join(&candidate).exists();
+        let branch_taken = autotune_git::branch_exists(repo_root, &format!("autotune-{candidate}"))
+            .unwrap_or(false);
+        if !dir_taken && !branch_taken {
+            return Ok(candidate);
+        }
+    }
+    bail!("could not find an available fork name for task '{base}' after 10000 attempts");
+}
+
 /// Fill in missing agent role settings from the global user config.
 ///
 /// For each role (research, implementation), if the project config has no
@@ -225,7 +242,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         config.task.name = name;
     }
 
-    let task_dir = config.task_dir(&repo_root);
+    let mut task_dir = config.task_dir(&repo_root);
     if task_dir.exists() {
         // If state.json is missing, this is leftover from a failed previous
         // run (crashed before state was persisted). Clean it up and retry.
@@ -237,11 +254,17 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
             std::fs::remove_dir_all(&task_dir)
                 .context("failed to remove incomplete task directory")?;
         } else {
-            bail!(
-                "task '{}' already exists at {}. Use 'resume' to continue it.",
-                config.task.name,
-                task_dir.display()
+            // Task already exists — auto-fork by appending a numeric suffix so
+            // each `run` invocation starts fresh. Users who want to continue
+            // the existing task should use `resume` instead.
+            let original_name = config.task.name.clone();
+            let forked_name = next_available_task_name(&repo_root, &original_name)?;
+            println!(
+                "[autotune] task '{}' already exists — forking as '{}' (use 'resume' to continue the existing task)",
+                original_name, forked_name
             );
+            config.task.name = forked_name;
+            task_dir = config.task_dir(&repo_root);
         }
     }
 

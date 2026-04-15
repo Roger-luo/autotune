@@ -185,12 +185,16 @@ fn slugify(name: &str) -> String {
 /// Returns `(worktree_path, branch_name)`.
 pub fn setup_worktree(
     repo_root: &Path,
+    task_name: &str,
     approach_name: &str,
     worktree_parent: &Path,
     start_branch: &str,
 ) -> Result<(PathBuf, String), ImplementError> {
     let slug = slugify(approach_name);
-    let branch_name = format!("autotune/{}", slug);
+    // Namespace under the task so worktree branches don't collide across
+    // task forks (e.g. `autotune/test-coverage/inline-tests` vs
+    // `autotune/test-coverage-2/inline-tests`).
+    let branch_name = format!("autotune/{task_name}/{slug}");
     let worktree_path = worktree_parent.join(&slug);
 
     autotune_git::create_branch_from(repo_root, &branch_name, start_branch)?;

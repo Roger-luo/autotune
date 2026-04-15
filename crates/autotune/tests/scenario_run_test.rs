@@ -362,3 +362,82 @@ fn scenario_run_hard_denied_tool_is_auto_rejected() {
         "run should complete through auto-deny.\noutput:\n{combined}"
     );
 }
+
+/// Running `autotune run` when a task of the same name already exists
+/// auto-forks to `<name>-2` instead of bailing.
+#[test]
+fn scenario_run_auto_forks_on_existing_task() {
+    let project = scenario_project();
+
+    // Build a research script that produces a valid plan on each invocation.
+    // Since each `autotune run` is a fresh process, both runs read the same
+    // script and will replay it from the start.
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>first-pass</approach>\
+               <hypothesis>initial edit to verify fork behavior</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    // First run: creates task `scenario-task`.
+    let out1 = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+    assert!(
+        out1.status.success(),
+        "first run should succeed.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out1.stdout),
+        String::from_utf8_lossy(&out1.stderr)
+    );
+
+    // Second run: task `scenario-task` already exists, should fork to `-2`.
+    let out2 = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    let combined2 = format!("{stdout2}{stderr2}");
+
+    assert!(
+        out2.status.success(),
+        "second run should succeed via auto-fork.\noutput:\n{combined2}"
+    );
+    assert!(
+        combined2.contains("forking as 'scenario-task-2'"),
+        "second run should announce the fork.\noutput:\n{combined2}"
+    );
+
+    // Both task directories should exist.
+    assert!(
+        project
+            .path()
+            .join(".autotune/tasks/scenario-task")
+            .exists(),
+        "original task dir should persist"
+    );
+    assert!(
+        project
+            .path()
+            .join(".autotune/tasks/scenario-task-2")
+            .exists(),
+        "forked task dir should exist"
+    );
+}
