@@ -98,12 +98,20 @@ fn apply_global_agent_defaults(config: &mut AutotuneConfig, global: &GlobalConfi
             backend: None,
             model: None,
             max_turns: None,
+            max_fix_attempts: None,
+            max_fresh_spawns: None,
         });
         if p.model.is_none() {
             p.model.clone_from(&g.model);
         }
         if p.max_turns.is_none() {
             p.max_turns = g.max_turns;
+        }
+        if p.max_fix_attempts.is_none() {
+            p.max_fix_attempts = g.max_fix_attempts;
+        }
+        if p.max_fresh_spawns.is_none() {
+            p.max_fresh_spawns = g.max_fresh_spawns;
         }
     }
 
@@ -141,6 +149,22 @@ fn build_agent(_config: &AutotuneConfig) -> Box<dyn Agent> {
                 "mock hypothesis for testing",
                 &["src/lib.rs"],
             );
+        }
+
+        // Implementer-script support: each entry is a shell command run by
+        // the mock implementer on its next turn (spawn or fix-turn send).
+        // Empty entries simulate unproductive turns — they trigger the
+        // fresh-respawn path in the fixing state machine.
+        if let Ok(path) = std::env::var("AUTOTUNE_MOCK_IMPL_SCRIPT")
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            for entry in content.split("\n---\n") {
+                // Preserve empty entries — they're meaningful (unproductive
+                // turn). Only strip a single trailing newline so heredocs
+                // stay intact.
+                let entry = entry.strip_suffix('\n').unwrap_or(entry);
+                builder = builder.implementation_script_entry(entry);
+            }
         }
         return Box::new(builder.build());
     }
@@ -369,6 +393,8 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         rank: 0.0,
         score: None,
         reason: None,
+        fix_attempts: 0,
+        fresh_spawns: 0,
         timestamp: Utc::now(),
     };
     store

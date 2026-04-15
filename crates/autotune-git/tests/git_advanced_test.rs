@@ -1,7 +1,7 @@
 use autotune_git::{
     branch_exists, checkout, conclude_merge, create_branch, create_branch_from, create_worktree,
-    has_merge_conflicts, has_uncommitted_changes, list_conflicted_files, merge_abort, merge_ff_only,
-    merge_or_conflict, rebase, rebase_abort, rebase_continue, remove_worktree,
+    has_merge_conflicts, has_uncommitted_changes, list_conflicted_files, merge_abort,
+    merge_ff_only, merge_or_conflict, rebase, rebase_abort, rebase_continue, remove_worktree,
     stage_all_and_commit,
 };
 use std::io::Write;
@@ -103,7 +103,10 @@ fn merge_or_conflict_conflict_and_abort() {
 
     // Merge branch-a into main cleanly
     checkout(repo.path(), "main").unwrap();
-    git(repo.path(), &["merge", "--no-ff", "-m", "merge a", "branch-a"]);
+    git(
+        repo.path(),
+        &["merge", "--no-ff", "-m", "merge a", "branch-a"],
+    );
 
     // Clean repo has no conflicts
     assert!(!has_merge_conflicts(repo.path()).unwrap());
@@ -143,7 +146,10 @@ fn conclude_merge_resolves_conflict() {
     git(repo.path(), &["commit", "-m", "b"]);
 
     checkout(repo.path(), "main").unwrap();
-    git(repo.path(), &["merge", "--no-ff", "-m", "merge a", "branch-a"]);
+    git(
+        repo.path(),
+        &["merge", "--no-ff", "-m", "merge a", "branch-a"],
+    );
 
     let ok = merge_or_conflict(repo.path(), "branch-b", "merge b").unwrap();
     assert!(!ok);

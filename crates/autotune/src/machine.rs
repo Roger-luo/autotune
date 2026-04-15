@@ -6,7 +6,7 @@ use chrono::Utc;
 
 use autotune_agent::{Agent, AgentSession};
 use autotune_config::AutotuneConfig;
-use autotune_implement::ImplementError;
+use autotune_implement::{FixOutcome, ImplementError};
 use autotune_plan::ToolApprover;
 use autotune_score::{ScoreCalculator, ScoreInput};
 use autotune_state::{
@@ -49,6 +49,9 @@ pub fn run_single_phase(
         }
         Phase::Testing => {
             run_testing(config, store, state)?;
+        }
+        Phase::Fixing => {
+            run_fixing(config, agent, store, state)?;
         }
         Phase::Measuring => {
             run_measuring(config, store, state)?;
@@ -194,6 +197,10 @@ fn run_planning(
         metrics: None,
         rank: None,
         files_to_modify: hypothesis.files_to_modify.clone(),
+        impl_session_id: None,
+        fix_attempts: 0,
+        fresh_spawns: 0,
+        fix_history: Vec::new(),
     });
     state.current_phase = Phase::Implementing;
     store.save_state(state)?;
@@ -258,6 +265,9 @@ fn run_implementing(
         Ok(result) => {
             let approach_mut = state.current_approach.as_mut().unwrap();
             approach_mut.commit_sha = Some(result.commit_sha);
+            // Remember the implementer's session id so any Fixing turns can
+            // reuse the same context without a fresh prompt.
+            approach_mut.impl_session_id = Some(result.session_id);
             state.current_phase = Phase::Testing;
             store.save_state(state)?;
         }
@@ -329,12 +339,6 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
         state.current_phase = Phase::Measuring;
         store.save_state(state)?;
     } else {
-        println!(
-            "[autotune] iteration {} — tests failed, discarding",
-            state.current_iteration
-        );
-
-        // Save test output
         let test_output: String = test_results
             .iter()
             .map(|r| {
@@ -349,7 +353,240 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
             .collect();
         let _ = store.save_test_output(state.current_iteration, &approach_mut.name, &test_output);
 
-        record_discard(state, store, "tests failed")?;
+        // Decide whether to hand off to Fixing or discard outright. Budget
+        // lives on the implementation role; absent config defaults are
+        // supplied by `AgentRoleConfig::effective_max_fix_attempts`.
+        let (max_fix, _max_fresh) = fix_budget(config);
+        if max_fix == 0 || approach_mut.fix_attempts >= max_fix {
+            let reason = if max_fix == 0 {
+                "tests failed".to_string()
+            } else {
+                format!(
+                    "tests failed after {} fix attempt(s); budget exhausted",
+                    approach_mut.fix_attempts
+                )
+            };
+            println!(
+                "[autotune] iteration {} — tests failed ({}), discarding",
+                state.current_iteration, reason
+            );
+            record_discard(state, store, &reason)?;
+        } else {
+            // Stash the failure in the approach's history so a fresh respawn
+            // (tier-2) still sees all prior failures, not just the most
+            // recent one the session already knows about.
+            approach_mut.fix_history.push(test_output);
+            println!(
+                "[autotune] iteration {} — tests failed, entering Fixing (attempt {}/{})",
+                state.current_iteration,
+                approach_mut.fix_attempts + 1,
+                max_fix
+            );
+            state.current_phase = Phase::Fixing;
+            store.save_state(state)?;
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the implementer's fix-retry budget from config, returning
+/// `(max_fix_attempts, max_fresh_spawns)`. When the `implementation` role
+/// is absent, both defaults apply.
+fn fix_budget(config: &AutotuneConfig) -> (u32, u32) {
+    match &config.agent.implementation {
+        Some(role) => (
+            role.effective_max_fix_attempts(),
+            role.effective_max_fresh_spawns(),
+        ),
+        None => (
+            autotune_config::AgentRoleConfig::DEFAULT_MAX_FIX_ATTEMPTS,
+            autotune_config::AgentRoleConfig::DEFAULT_MAX_FRESH_SPAWNS,
+        ),
+    }
+}
+
+/// Run one fix-retry turn: tier-1 (session continuation) if we still have a
+/// live implementer session, otherwise tier-2 (fresh respawn). Each call
+/// consumes exactly one fix-attempt budget slot; the caller loops back
+/// through Testing afterwards.
+fn run_fixing(
+    config: &AutotuneConfig,
+    agent: &dyn Agent,
+    store: &TaskStore,
+    state: &mut TaskState,
+) -> Result<()> {
+    let (max_fix, max_fresh) = fix_budget(config);
+    let iteration = state.current_iteration;
+
+    let approach = state
+        .current_approach
+        .as_ref()
+        .context("no current approach in Fixing phase")?;
+
+    // Defence-in-depth: if we entered Fixing with no fix history we have
+    // nothing to feed the implementer, which should not happen because
+    // run_testing only transitions to Fixing after appending the failure.
+    // Discard with a descriptive reason rather than send an empty prompt.
+    if approach.fix_history.is_empty() {
+        return record_discard(state, store, "entered Fixing with no test output");
+    }
+    let latest = approach.fix_history.last().cloned().unwrap_or_default();
+    let worktree_path = approach.worktree_path.clone();
+    let approach_name = approach.name.clone();
+    let hypothesis = approach.hypothesis.clone();
+    let files_to_modify = approach.files_to_modify.clone();
+    let history = approach.fix_history.clone();
+    let active_session = approach.impl_session_id.clone();
+    let fresh_spawns = approach.fresh_spawns;
+
+    let impl_model = config
+        .agent
+        .implementation
+        .as_ref()
+        .and_then(|c| c.model.as_deref());
+    let impl_max_turns = config
+        .agent
+        .implementation
+        .as_ref()
+        .and_then(|c| c.max_turns);
+
+    // Decide tier-1 (continuation) vs tier-2 (fresh respawn). Both consume
+    // the same `fix_attempts` slot; fresh respawns additionally consume a
+    // `fresh_spawns` slot.
+    let tier_one = active_session.is_some();
+    if !tier_one && fresh_spawns >= max_fresh {
+        let reason = format!(
+            "implementer session unproductive and fresh-spawn budget ({max_fresh}) exhausted"
+        );
+        println!("[autotune] iteration {iteration} — {reason}");
+        return record_discard(state, store, &reason);
+    }
+
+    let stream_label = if tier_one {
+        format!("iteration {iteration} — fixing '{approach_name}' (session continuation)")
+    } else {
+        format!("iteration {iteration} — fixing '{approach_name}' (fresh respawn)")
+    };
+    let impl_stream = crate::stream_ui::Stream::implementation(&stream_label);
+
+    let outcome: Result<FixOutcome, ImplementError> = if tier_one {
+        let session = AgentSession {
+            session_id: active_session.clone().unwrap(),
+            backend: agent.backend_name().to_string(),
+        };
+        autotune_implement::run_fix_turn(
+            agent,
+            &session,
+            &worktree_path,
+            &history[..history.len() - 1], // prior failures; latest is fed separately
+            &latest,
+            Some(impl_stream.handler()),
+        )
+    } else {
+        let log_content = store.read_log().unwrap_or_default();
+        let prior_commits =
+            autotune_git::log_oneline(&worktree_path, &state.advancing_branch).unwrap_or_default();
+        let impl_hypothesis = autotune_implement::Hypothesis {
+            approach: approach_name.clone(),
+            hypothesis: hypothesis.clone(),
+            files_to_modify: files_to_modify.clone(),
+        };
+        autotune_implement::run_fix_respawn(
+            agent,
+            &impl_hypothesis,
+            &worktree_path,
+            &config.paths.tunable,
+            &config.paths.denied,
+            &log_content,
+            &prior_commits,
+            &history,
+            impl_model,
+            impl_max_turns,
+            Some(impl_stream.handler()),
+        )
+    };
+
+    impl_stream.finish();
+
+    let outcome = outcome.context("implementer fix turn failed")?;
+    {
+        let approach_mut = state.current_approach.as_mut().expect("approach set above");
+        approach_mut.fix_attempts += 1;
+        if !tier_one {
+            approach_mut.fresh_spawns += 1;
+        }
+    }
+
+    match outcome {
+        FixOutcome::Committed {
+            commit_sha,
+            session_id,
+        } => {
+            let (fix_attempts, fresh_spawns) = {
+                let approach_mut = state.current_approach.as_mut().unwrap();
+                approach_mut.commit_sha = Some(commit_sha);
+                approach_mut.impl_session_id = Some(session_id);
+                (approach_mut.fix_attempts, approach_mut.fresh_spawns)
+            };
+            state.current_phase = Phase::Testing;
+            store.save_state(state)?;
+            autotune_agent::trace::record(
+                "phase.decision",
+                serde_json::json!({
+                    "phase": "Fixing",
+                    "branch": if tier_one { "continued" } else { "respawned" },
+                    "fix_attempts": fix_attempts,
+                    "fresh_spawns": fresh_spawns,
+                }),
+            );
+        }
+        FixOutcome::NoEdits { .. } => {
+            if tier_one {
+                let (fix_attempts, fresh_spawns) = {
+                    let approach_mut = state.current_approach.as_mut().unwrap();
+                    approach_mut.impl_session_id = None;
+                    (approach_mut.fix_attempts, approach_mut.fresh_spawns)
+                };
+                println!(
+                    "[autotune] iteration {iteration} — implementer session went unproductive; will respawn"
+                );
+                autotune_agent::trace::record(
+                    "phase.decision",
+                    serde_json::json!({
+                        "phase": "Fixing",
+                        "branch": "no_edits",
+                        "tier_one": true,
+                        "fix_attempts": fix_attempts,
+                        "fresh_spawns": fresh_spawns,
+                    }),
+                );
+                if fix_attempts >= max_fix || max_fresh == 0 {
+                    let reason = if max_fresh == 0 {
+                        "implementer session unproductive and respawn disabled".to_string()
+                    } else {
+                        format!(
+                            "implementer session unproductive and fix-attempt budget ({max_fix}) exhausted"
+                        )
+                    };
+                    return record_discard(state, store, &reason);
+                }
+                state.current_phase = Phase::Fixing;
+                store.save_state(state)?;
+            } else {
+                // Fresh respawn also produced nothing — give up.
+                let reason = "implementer produced no edits after fresh respawn".to_string();
+                println!("[autotune] iteration {iteration} — {reason}");
+                autotune_agent::trace::record(
+                    "phase.decision",
+                    serde_json::json!({
+                        "phase": "Fixing",
+                        "branch": "no_edits",
+                        "tier_one": false,
+                    }),
+                );
+                return record_discard(state, store, &reason);
+            }
+        }
     }
     Ok(())
 }
@@ -517,6 +754,8 @@ fn run_integrating(
         rank,
         score: Some("keep".to_string()),
         reason: None,
+        fix_attempts: approach.fix_attempts,
+        fresh_spawns: approach.fresh_spawns,
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -636,6 +875,8 @@ fn record_crash(state: &mut TaskState, store: &TaskStore) -> Result<()> {
         rank: 0.0,
         score: None,
         reason: Some("implementation produced no commit".to_string()),
+        fix_attempts: approach.fix_attempts,
+        fresh_spawns: approach.fresh_spawns,
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -670,6 +911,8 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
         rank,
         score: Some("discard".to_string()),
         reason: Some(reason.to_string()),
+        fix_attempts: approach.fix_attempts,
+        fresh_spawns: approach.fresh_spawns,
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;

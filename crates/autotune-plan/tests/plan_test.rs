@@ -147,6 +147,8 @@ fn build_planning_prompt_includes_last_iteration() {
         rank: 1.0,
         score: None,
         reason: Some("first attempt".to_string()),
+        fix_attempts: 0,
+        fresh_spawns: 0,
         timestamp: Utc::now(),
     };
 

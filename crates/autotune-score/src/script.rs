@@ -67,7 +67,9 @@ mod tests {
     #[test]
     fn nonzero_exit_errors() {
         let scorer = ScriptScorer::new(vec![
-            "sh".to_string(), "-c".to_string(), "exit 42".to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            "exit 42".to_string(),
         ]);
         let err = scorer.calculate(&empty_input()).unwrap_err();
         assert!(matches!(err, ScoreError::ScriptFailed { code: 42, .. }));
@@ -76,7 +78,9 @@ mod tests {
     #[test]
     fn bad_json_output_errors() {
         let scorer = ScriptScorer::new(vec![
-            "sh".to_string(), "-c".to_string(), "echo 'not json at all'".to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo 'not json at all'".to_string(),
         ]);
         let err = scorer.calculate(&empty_input()).unwrap_err();
         assert!(matches!(err, ScoreError::ScriptOutputParse { .. }));

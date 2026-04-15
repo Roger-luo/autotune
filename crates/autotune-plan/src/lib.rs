@@ -505,21 +505,27 @@ This should give us a 10% improvement."#;
 
     #[test]
     fn is_retryable_parse_hypothesis_is_true() {
-        let err = PlanError::ParseHypothesis { message: "missing".to_string() };
+        let err = PlanError::ParseHypothesis {
+            message: "missing".to_string(),
+        };
         assert!(is_retryable(&err));
     }
 
     #[test]
     fn is_retryable_state_error_is_false() {
         let err = PlanError::State {
-            source: autotune_state::StateError::NotFound { name: "t".to_string() },
+            source: autotune_state::StateError::NotFound {
+                name: "t".to_string(),
+            },
         };
         assert!(!is_retryable(&err));
     }
 
     #[test]
     fn build_plan_correction_prompt_contains_error() {
-        let err = PlanError::ParseHypothesis { message: "no <plan>".to_string() };
+        let err = PlanError::ParseHypothesis {
+            message: "no <plan>".to_string(),
+        };
         let prompt = build_plan_correction_prompt(&err);
         assert!(prompt.contains("no <plan>"), "prompt: {prompt}");
         assert!(prompt.contains("<plan>"), "prompt: {prompt}");

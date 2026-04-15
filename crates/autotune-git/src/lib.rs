@@ -212,6 +212,29 @@ pub fn latest_commit_sha(dir: &Path) -> Result<String, GitError> {
     Ok(output.stdout.trim().to_string())
 }
 
+/// Return `git log --oneline` for commits between `base` and `HEAD` in
+/// `dir`, one commit per returned `String` (newest first). Used by the
+/// fix-respawn path to show a fresh implementer what's already been done
+/// on the worktree branch.
+pub fn log_oneline(dir: &Path, base: &str) -> Result<Vec<String>, GitError> {
+    let range = format!("{base}..HEAD");
+    let output = git(
+        dir,
+        &[
+            OsStr::new("log"),
+            OsStr::new("--oneline"),
+            OsStr::new("--no-decorate"),
+            OsStr::new(&range),
+        ],
+    )?;
+    Ok(output
+        .stdout
+        .lines()
+        .map(|l| l.to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
 /// Returns true if the working tree or index has any uncommitted changes
 /// (including untracked files).
 pub fn has_uncommitted_changes(dir: &Path) -> Result<bool, GitError> {

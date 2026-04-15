@@ -40,6 +40,10 @@ fn sample_approach() -> ApproachState {
         metrics: Some(metrics(&[("time_us", 123.0)])),
         rank: Some(0.25),
         files_to_modify: vec!["src/cache.rs".to_string()],
+        impl_session_id: None,
+        fix_attempts: 0,
+        fresh_spawns: 0,
+        fix_history: Vec::new(),
     }
 }
 
@@ -53,6 +57,8 @@ fn sample_record(iteration: usize, approach: &str) -> IterationRecord {
         rank: 0.33,
         score: Some("weighted_sum".to_string()),
         reason: Some("better runtime".to_string()),
+        fix_attempts: 0,
+        fresh_spawns: 0,
         timestamp: Utc.with_ymd_and_hms(2026, 4, 11, 12, 0, 0).unwrap(),
     }
 }

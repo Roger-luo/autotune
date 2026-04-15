@@ -97,6 +97,10 @@ fn write_config(dir: &Path) {
 }
 
 fn write_config_with_failing_test(dir: &Path) {
+    // `max_fix_attempts = 0` disables the Fixing-phase retry loop so this
+    // legacy test keeps asserting the direct "tests fail → discard" path.
+    // The fix-retry flow is covered by the `scenario_run_fix_retry_*`
+    // tests; this test pins the disabled-budget contract.
     let config = r#"
 [task]
 name = "test-task"
@@ -106,6 +110,9 @@ max_iterations = "1"
 
 [paths]
 tunable = ["src/**"]
+
+[agent.implementation]
+max_fix_attempts = 0
 
 [[test]]
 name = "always-fail"
@@ -156,6 +163,8 @@ fn setup_task(repo_root: &Path, config: &AutotuneConfig) -> TaskStore {
         rank: 0.0,
         score: None,
         reason: None,
+        fix_attempts: 0,
+        fresh_spawns: 0,
         timestamp: Utc::now(),
     };
     store.append_ledger(&baseline).unwrap();

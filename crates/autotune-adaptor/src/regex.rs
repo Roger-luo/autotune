@@ -71,7 +71,10 @@ mod tests {
             name: "m".to_string(),
             pattern: "[invalid".to_string(),
         }]);
-        let output = MeasureOutput { stdout: "anything".to_string(), stderr: String::new() };
+        let output = MeasureOutput {
+            stdout: "anything".to_string(),
+            stderr: String::new(),
+        };
         let err = adaptor.extract(&output).unwrap_err();
         assert!(matches!(err, crate::AdaptorError::RegexCompile { .. }));
     }
@@ -82,7 +85,10 @@ mod tests {
             name: "val".to_string(),
             pattern: r"result=(not_a_number)".to_string(),
         }]);
-        let output = MeasureOutput { stdout: "result=not_a_number".to_string(), stderr: String::new() };
+        let output = MeasureOutput {
+            stdout: "result=not_a_number".to_string(),
+            stderr: String::new(),
+        };
         let err = adaptor.extract(&output).unwrap_err();
         assert!(matches!(err, crate::AdaptorError::ParseFloat { .. }));
     }

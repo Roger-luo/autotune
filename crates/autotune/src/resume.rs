@@ -45,6 +45,16 @@ pub fn prepare_resume(store: &TaskStore, repo_root: &Path) -> Result<TaskState> 
             println!("[resume] resuming from Testing phase — will re-run tests");
         }
 
+        Phase::Fixing => {
+            // A crashed fix turn is safe to retry: state holds the session id
+            // (if session-continuation) and the fix history, so the next run
+            // replays the same prompt. Re-running tests first is cheaper
+            // than re-invoking the implementer, and the tests may now pass
+            // if a previous fix did commit before the crash.
+            println!("[resume] resuming from Fixing phase — will re-run tests before next fix");
+            state.current_phase = Phase::Testing;
+        }
+
         Phase::Measuring => {
             // Re-run measurement tasks from the beginning
             println!("[resume] resuming from Measuring phase — will re-run tasks");

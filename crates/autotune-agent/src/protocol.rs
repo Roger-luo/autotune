@@ -681,12 +681,20 @@ fn parse_agent_role(reader: &mut Reader<&[u8]>, tag: &str) -> Result<AgentRoleCo
     let mut backend: Option<String> = None;
     let mut model: Option<String> = None;
     let mut max_turns: Option<u64> = None;
+    let mut max_fix_attempts: Option<u32> = None;
+    let mut max_fresh_spawns: Option<u32> = None;
 
     walk_children(reader, tag, |child, reader| {
         match child {
             "backend" => backend = Some(read_text(reader, "backend")?),
             "model" => model = Some(read_text(reader, "model")?),
             "max-turns" => max_turns = Some(parse_u64(&read_text(reader, "max-turns")?)?),
+            "max-fix-attempts" => {
+                max_fix_attempts = Some(parse_u64(&read_text(reader, "max-fix-attempts")?)? as u32);
+            }
+            "max-fresh-spawns" => {
+                max_fresh_spawns = Some(parse_u64(&read_text(reader, "max-fresh-spawns")?)? as u32);
+            }
             other => skip_element(reader, other)?,
         }
         Ok(())
@@ -696,6 +704,8 @@ fn parse_agent_role(reader: &mut Reader<&[u8]>, tag: &str) -> Result<AgentRoleCo
         backend,
         model,
         max_turns,
+        max_fix_attempts,
+        max_fresh_spawns,
     })
 }
 
@@ -923,7 +933,7 @@ fn parse_stop_value(s: &str) -> Result<StopValue, AgentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autotune_config::{AdaptorConfig, Direction, ScoreConfig, StopValue};
+    use autotune_config::{AdaptorConfig, Direction, ScoreConfig};
 
     #[test]
     fn parse_measure_with_criterion_adaptor() {
@@ -932,7 +942,9 @@ mod tests {
         match &frags[0] {
             AgentFragment::Measure(m) => {
                 assert_eq!(m.name, "bench");
-                assert!(matches!(&m.adaptor, AdaptorConfig::Criterion { measure_name } if measure_name == "bench/sort"));
+                assert!(
+                    matches!(&m.adaptor, AdaptorConfig::Criterion { measure_name } if measure_name == "bench/sort")
+                );
             }
             _ => panic!("expected Measure"),
         }
@@ -944,7 +956,9 @@ mod tests {
         let frags = parse_agent_response(xml).unwrap();
         match &frags[0] {
             AgentFragment::Measure(m) => {
-                assert!(matches!(&m.adaptor, AdaptorConfig::Script { command } if command == &["sh", "-c", "cat"]));
+                assert!(
+                    matches!(&m.adaptor, AdaptorConfig::Script { command } if command == &["sh", "-c", "cat"])
+                );
             }
             _ => panic!("expected Measure"),
         }
@@ -1022,7 +1036,10 @@ mod tests {
         let xml = r#"<score><type>weighted_sum</type><primary-metric><name>latency_ms</name><direction>Minimize</direction><weight>2.0</weight></primary-metric><guardrail-metric><name>accuracy</name><direction>Maximize</direction><max-regression>0.05</max-regression></guardrail-metric></score>"#;
         let frags = parse_agent_response(xml).unwrap();
         match &frags[0] {
-            AgentFragment::Score(ScoreConfig::WeightedSum { primary_metrics, guardrail_metrics }) => {
+            AgentFragment::Score(ScoreConfig::WeightedSum {
+                primary_metrics,
+                guardrail_metrics,
+            }) => {
                 assert_eq!(primary_metrics[0].direction, Direction::Minimize);
                 assert_eq!(primary_metrics[0].weight, 2.0);
                 assert_eq!(guardrail_metrics[0].name, "accuracy");
@@ -1042,7 +1059,10 @@ mod tests {
                 let research = agent.research.as_ref().unwrap();
                 assert_eq!(research.model.as_deref(), Some("claude-opus"));
                 assert_eq!(research.max_turns, Some(20));
-                assert_eq!(agent.implementation.as_ref().unwrap().backend.as_deref(), Some("claude"));
+                assert_eq!(
+                    agent.implementation.as_ref().unwrap().backend.as_deref(),
+                    Some("claude")
+                );
             }
             _ => panic!("expected Agent"),
         }
@@ -1065,10 +1085,15 @@ mod tests {
     #[test]
     fn parse_bool_false_values() {
         for val in &["false", "no", "0"] {
-            let xml = format!(r#"<question><text>q</text><allow-free-response>{val}</allow-free-response></question>"#);
+            let xml = format!(
+                r#"<question><text>q</text><allow-free-response>{val}</allow-free-response></question>"#
+            );
             let frags = parse_agent_response(&xml).unwrap();
             match &frags[0] {
-                AgentFragment::Question { allow_free_response, .. } => {
+                AgentFragment::Question {
+                    allow_free_response,
+                    ..
+                } => {
                     assert!(!allow_free_response, "expected false for '{val}'");
                 }
                 _ => panic!("expected Question"),

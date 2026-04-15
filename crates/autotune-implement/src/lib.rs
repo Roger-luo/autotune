@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use autotune_agent::{
-    Agent, AgentConfig, AgentConfigWithEvents, AgentError, AgentResponse, EventHandler,
-    ToolPermission,
+    Agent, AgentConfig, AgentConfigWithEvents, AgentError, AgentResponse, AgentSession,
+    EventHandler, ToolPermission,
 };
 use autotune_git::GitError;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,27 @@ pub struct ImplementResult {
     pub branch_name: String,
     pub commit_sha: String,
     pub agent_response: AgentResponse,
+    /// Session id of the implementer spawn, so callers can `send_streaming`
+    /// follow-up fix turns into the same context without re-paying for the
+    /// prompt prefix or re-loading AGENTS.md.
+    pub session_id: String,
+}
+
+/// Outcome of a single fix-retry turn (session continuation or fresh
+/// respawn). Distinguishes "implementer edited files and we committed"
+/// from "implementer made no edits" — the latter is the trigger for a
+/// tier-2 fresh respawn or (budget permitting) a final discard.
+#[derive(Debug, Clone)]
+pub enum FixOutcome {
+    /// New commit written on the worktree branch with the given SHA.
+    Committed {
+        commit_sha: String,
+        session_id: String,
+    },
+    /// Implementer produced no edits. Session id is returned for callers
+    /// that want to keep the session alive for another turn, though in
+    /// practice this is the signal to clear the session and respawn.
+    NoEdits { session_id: String },
 }
 
 /// Errors that can occur during implementation.
@@ -313,8 +334,235 @@ pub fn run_implementation(
         worktree_path: worktree_path.to_path_buf(),
         branch_name: branch_name.to_string(),
         commit_sha,
+        session_id: response.session_id.clone(),
         agent_response: response,
     })
+}
+
+/// Build the fix-turn prompt sent into an existing implementer session.
+///
+/// The implementer already has full context from its prior spawn — this
+/// prompt only layers on the new information (latest failure plus any
+/// prior failures already tried). Kept deliberately terse because the
+/// implementer's context is finite.
+pub fn build_fix_prompt(fix_history: &[String], latest_test_output: &str) -> String {
+    let mut prompt = String::new();
+    prompt.push_str("# Fix required — tests failed after your last edit\n\n");
+    prompt.push_str(
+        "The tests configured for this task did not pass against your latest \
+         changes. Diagnose the failure and edit the same files (or add edits \
+         within the tunable paths) to make them pass. The project's scope \
+         rules, tunable paths, and tool permissions are unchanged — keep using \
+         Edit/Write as before, do NOT run Bash.\n\n",
+    );
+    if !fix_history.is_empty() {
+        prompt.push_str("## Prior failure history (oldest → newest)\n\n");
+        for (i, entry) in fix_history.iter().enumerate() {
+            prompt.push_str(&format!("### Attempt {} failure\n\n", i + 1));
+            prompt.push_str("```\n");
+            prompt.push_str(entry);
+            if !entry.ends_with('\n') {
+                prompt.push('\n');
+            }
+            prompt.push_str("```\n\n");
+        }
+    }
+    prompt.push_str("## Latest test output\n\n```\n");
+    prompt.push_str(latest_test_output);
+    if !latest_test_output.ends_with('\n') {
+        prompt.push('\n');
+    }
+    prompt.push_str("```\n\n");
+    prompt.push_str(
+        "After editing, end your response with a line starting `SUMMARY:` \
+         describing the fix in one sentence. If you genuinely cannot make \
+         progress, reply with no edits and an explanation — the system will \
+         respawn a fresh session.\n",
+    );
+    prompt
+}
+
+/// Build the prompt for a fresh respawn (tier-2). The respawned implementer
+/// has no session memory, so we re-send the original hypothesis, the list of
+/// commits already on the branch, and the full failure history so it can
+/// decide whether to continue atop the prior work or rewrite from scratch.
+pub fn build_respawn_prompt(
+    hypothesis: &Hypothesis,
+    log_content: &str,
+    denied_paths: &[String],
+    prior_commits: &[String],
+    fix_history: &[String],
+) -> String {
+    // Reuse the normal implementation prompt as the base so AGENTS.md /
+    // approach / hypothesis / rules / SUMMARY expectations are all present.
+    let mut prompt = build_implementation_prompt(hypothesis, log_content, denied_paths);
+
+    prompt.push_str("## Prior attempts on this iteration\n\n");
+    if prior_commits.is_empty() {
+        prompt.push_str("- (no commits yet)\n");
+    } else {
+        prompt.push_str(
+            "An earlier implementer session already made the following commits \
+             on this worktree branch — you can see the code they produced with \
+             Read/Grep. The previous session went unproductive (no edits on \
+             the last fix turn) so the system is respawning you with a clean \
+             context. Decide whether to amend on top of the existing work or \
+             rewrite it.\n\n",
+        );
+        for c in prior_commits {
+            prompt.push_str(&format!("- {c}\n"));
+        }
+        prompt.push('\n');
+    }
+
+    if !fix_history.is_empty() {
+        prompt.push_str("## Test-failure history (oldest → newest)\n\n");
+        for (i, entry) in fix_history.iter().enumerate() {
+            prompt.push_str(&format!("### Attempt {} failure\n\n", i + 1));
+            prompt.push_str("```\n");
+            prompt.push_str(entry);
+            if !entry.ends_with('\n') {
+                prompt.push('\n');
+            }
+            prompt.push_str("```\n\n");
+        }
+    }
+
+    prompt
+}
+
+/// Continue an existing implementer session with a fix-turn prompt. If the
+/// agent edits files the CLI commits them and returns
+/// [`FixOutcome::Committed`]; if it produces no edits, returns
+/// [`FixOutcome::NoEdits`] so the caller can fall through to a fresh
+/// respawn.
+pub fn run_fix_turn(
+    agent: &dyn Agent,
+    session: &AgentSession,
+    worktree_path: &Path,
+    fix_history: &[String],
+    latest_test_output: &str,
+    event_handler: Option<EventHandler>,
+) -> Result<FixOutcome, ImplementError> {
+    let prompt = build_fix_prompt(fix_history, latest_test_output);
+
+    autotune_agent::trace::record(
+        "implement.fix_turn.prompt",
+        serde_json::json!({
+            "session_id": session.session_id,
+            "worktree": worktree_path.display().to_string(),
+            "prompt": prompt,
+            "history_len": fix_history.len(),
+        }),
+    );
+
+    let sha_before = autotune_git::latest_commit_sha(worktree_path)?;
+    let response = agent.send_streaming(session, &prompt, event_handler.as_ref())?;
+
+    commit_if_edited(
+        worktree_path,
+        sha_before,
+        &response,
+        session.session_id.clone(),
+    )
+}
+
+/// Respawn a fresh implementer on the same worktree with the hypothesis +
+/// failure history re-injected. Used when a session-continuation fix turn
+/// produced no edits, which we treat as "context exhausted / session stuck".
+#[allow(clippy::too_many_arguments)]
+pub fn run_fix_respawn(
+    agent: &dyn Agent,
+    hypothesis: &Hypothesis,
+    worktree_path: &Path,
+    tunable_paths: &[String],
+    denied_paths: &[String],
+    log_content: &str,
+    prior_commits: &[String],
+    fix_history: &[String],
+    model: Option<&str>,
+    max_turns: Option<u64>,
+    event_handler: Option<EventHandler>,
+) -> Result<FixOutcome, ImplementError> {
+    let mut prompt = String::new();
+    if let Some(instructions) = load_project_instructions(worktree_path) {
+        prompt.push_str(&instructions);
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str(&build_respawn_prompt(
+        hypothesis,
+        log_content,
+        denied_paths,
+        prior_commits,
+        fix_history,
+    ));
+
+    let abs_tunable: Vec<String> = tunable_paths
+        .iter()
+        .map(|p| worktree_path.join(p).to_string_lossy().into_owned())
+        .collect();
+    let permissions = implementation_agent_permissions(&abs_tunable);
+
+    autotune_agent::trace::record(
+        "implement.fix_respawn.prompt",
+        serde_json::json!({
+            "approach": hypothesis.approach,
+            "worktree": worktree_path.display().to_string(),
+            "prompt": prompt,
+            "prior_commits": prior_commits,
+            "history_len": fix_history.len(),
+        }),
+    );
+
+    let config = AgentConfig {
+        prompt,
+        allowed_tools: permissions,
+        working_directory: worktree_path.to_path_buf(),
+        model: model.map(String::from),
+        max_turns,
+    };
+
+    let sha_before = autotune_git::latest_commit_sha(worktree_path)?;
+    let mut config_with_events = AgentConfigWithEvents::new(config);
+    if let Some(handler) = event_handler {
+        config_with_events = config_with_events.with_event_handler(handler);
+    }
+    let response = agent.spawn_streaming(config_with_events)?;
+
+    commit_if_edited(
+        worktree_path,
+        sha_before,
+        &response,
+        response.session_id.clone(),
+    )
+}
+
+/// Shared tail for `run_fix_turn` and `run_fix_respawn`: stage+commit any
+/// uncommitted edits the implementer made, else report no edits.
+fn commit_if_edited(
+    worktree_path: &Path,
+    sha_before: String,
+    response: &AgentResponse,
+    session_id: String,
+) -> Result<FixOutcome, ImplementError> {
+    let sha_after = autotune_git::latest_commit_sha(worktree_path)?;
+    if sha_before != sha_after {
+        return Ok(FixOutcome::Committed {
+            commit_sha: sha_after,
+            session_id,
+        });
+    }
+    if autotune_git::has_uncommitted_changes(worktree_path)? {
+        let summary = extract_summary(&response.text).unwrap_or_else(|| "fix".to_string());
+        let message = format!("autotune(fix): {}\n\n{}", summary, response.text.trim());
+        autotune_git::stage_all_and_commit(worktree_path, &message)?;
+        let commit_sha = autotune_git::latest_commit_sha(worktree_path)?;
+        return Ok(FixOutcome::Committed {
+            commit_sha,
+            session_id,
+        });
+    }
+    Ok(FixOutcome::NoEdits { session_id })
 }
 
 /// Extract a one-line commit subject from the agent response.
@@ -330,4 +578,87 @@ fn extract_summary(response: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fix_prompt_includes_latest_output_and_is_terse_without_history() {
+        // With no prior history, the fix prompt must still embed the latest
+        // test output verbatim — the implementer's existing session already
+        // knows the hypothesis and file list.
+        let prompt = build_fix_prompt(&[], "TEST FAIL: expected 42, got 41\n");
+        assert!(prompt.contains("tests failed"));
+        assert!(prompt.contains("TEST FAIL: expected 42, got 41"));
+        assert!(prompt.contains("Latest test output"));
+        assert!(!prompt.contains("Prior failure history"));
+    }
+
+    #[test]
+    fn fix_prompt_lists_prior_attempts_in_order() {
+        let history = vec![
+            "attempt 1 failure stdout".to_string(),
+            "attempt 2 failure stdout".to_string(),
+        ];
+        let prompt = build_fix_prompt(&history, "latest failure");
+        assert!(prompt.contains("Attempt 1 failure"));
+        assert!(prompt.contains("Attempt 2 failure"));
+        assert!(prompt.contains("attempt 1 failure stdout"));
+        assert!(prompt.contains("attempt 2 failure stdout"));
+        assert!(prompt.contains("latest failure"));
+        // Ordering: attempt 1 block must appear before attempt 2 block.
+        assert!(prompt.find("Attempt 1").unwrap() < prompt.find("Attempt 2").unwrap());
+    }
+
+    #[test]
+    fn respawn_prompt_layers_prior_commits_onto_implementation_base() {
+        // A fresh spawn re-injects the full implementation prompt (so
+        // AGENTS.md / approach / rules are present) then adds the
+        // prior-commits section and failure history. Without prior
+        // commits, we emit an explicit "(no commits yet)" marker so the
+        // agent knows the slate is clean.
+        let hyp = Hypothesis {
+            approach: "inline-cache".to_string(),
+            hypothesis: "inline the cache to cut branching".to_string(),
+            files_to_modify: vec!["src/cache.rs".to_string()],
+        };
+        let prompt_without_commits =
+            build_respawn_prompt(&hyp, "", &[], &[], &["failure A".to_string()]);
+        assert!(prompt_without_commits.contains("inline-cache"));
+        assert!(prompt_without_commits.contains("Prior attempts on this iteration"));
+        assert!(prompt_without_commits.contains("(no commits yet)"));
+        assert!(prompt_without_commits.contains("failure A"));
+
+        let prompt_with_commits = build_respawn_prompt(
+            &hyp,
+            "",
+            &[],
+            &[
+                "abc123 initial attempt".to_string(),
+                "def456 fix turn 1".to_string(),
+            ],
+            &["failure A".to_string(), "failure B".to_string()],
+        );
+        assert!(prompt_with_commits.contains("abc123 initial attempt"));
+        assert!(prompt_with_commits.contains("def456 fix turn 1"));
+        assert!(!prompt_with_commits.contains("(no commits yet)"));
+        assert!(prompt_with_commits.contains("Attempt 1 failure"));
+        assert!(prompt_with_commits.contains("Attempt 2 failure"));
+    }
+
+    #[test]
+    fn extract_summary_reads_first_summary_line() {
+        let response = "blah\nSUMMARY: fixed the off-by-one\nmore blah";
+        assert_eq!(
+            extract_summary(response),
+            Some("fixed the off-by-one".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_summary_returns_none_when_absent() {
+        assert_eq!(extract_summary("no summary here"), None);
+    }
 }

@@ -63,7 +63,10 @@ mod tests {
     #[test]
     fn criterion_not_found_error() {
         let adaptor = CriterionAdaptor::new(std::path::Path::new("/nonexistent"), "bench");
-        let output = MeasureOutput { stdout: String::new(), stderr: String::new() };
+        let output = MeasureOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+        };
         let err = adaptor.extract(&output).unwrap_err();
         assert!(matches!(err, crate::AdaptorError::CriterionNotFound { .. }));
     }
@@ -75,7 +78,10 @@ mod tests {
         std::fs::create_dir_all(&bench_dir).unwrap();
         std::fs::write(bench_dir.join("estimates.json"), b"not valid json").unwrap();
         let adaptor = CriterionAdaptor::new(dir.path(), "bench");
-        let output = MeasureOutput { stdout: String::new(), stderr: String::new() };
+        let output = MeasureOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+        };
         let err = adaptor.extract(&output).unwrap_err();
         assert!(matches!(err, crate::AdaptorError::CriterionParse { .. }));
     }

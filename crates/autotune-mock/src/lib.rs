@@ -12,6 +12,14 @@ pub enum ImplBehavior {
     NoCommit,
     /// Run a user-provided closure with the working directory.
     Custom(Box<dyn Fn(&Path) + Send + Sync>),
+    /// Run a shell script per implementer turn. Turns are consumed in order
+    /// across `spawn()` + `send()` calls on implementer sessions, so tests
+    /// can stage sequences like "first impl fails tests, fix turn repairs
+    /// it" or "fresh respawn recovers after session goes unproductive".
+    /// Each entry is passed to `sh -c` with cwd at the worktree; an empty
+    /// entry is a no-op (useful to simulate an unproductive fix turn).
+    /// Once the queue is drained, further turns are no-ops.
+    Script(Vec<String>),
 }
 
 struct HypothesisEntry {
@@ -37,6 +45,12 @@ pub struct MockAgent {
     send_count: Mutex<usize>,
     /// Next index into `research_responses` to return.
     research_turn: Mutex<usize>,
+    /// Next index into `ImplBehavior::Script`. Incremented once per
+    /// implementer spawn *or* implementer send (sends are identified by
+    /// session id prefix — see [`MOCK_IMPL_SESSION_PREFIX`]).
+    impl_turn: Mutex<usize>,
+    /// Monotonic id used to build unique implementer session ids.
+    impl_session_seq: Mutex<usize>,
     last_spawn_config: Mutex<Option<AgentConfig>>,
     last_send_message: Mutex<Option<String>>,
     /// History of all spawn configs (prompt + permissions + model).
@@ -46,6 +60,15 @@ pub struct MockAgent {
     /// Permissions granted via `grant_session_permission`.
     granted_permissions: Mutex<Vec<ToolPermission>>,
 }
+
+/// Prefix applied to implementer session ids produced by the mock. The mock
+/// relies on this string to distinguish implementer sends (fix turns) from
+/// research sends (planning turns) since both flow through `send()`.
+pub const MOCK_IMPL_SESSION_PREFIX: &str = "mock-impl-";
+
+/// Session id returned for the research agent. Kept stable so existing
+/// scenario tests that only drive the research agent continue to work.
+pub const MOCK_RESEARCH_SESSION_ID: &str = "mock-session-001";
 
 /// Builder for [`MockAgent`].
 pub struct MockAgentBuilder {
@@ -77,6 +100,22 @@ impl MockAgentBuilder {
         self
     }
 
+    /// Queue a shell-script entry to run on the next implementer turn.
+    /// Equivalent to setting `ImplBehavior::Script` with the given entries
+    /// — provided as a builder method so tests can chain several turns.
+    /// Each entry is executed with `sh -c <entry>` in the worktree. An
+    /// empty entry is a no-op, useful to simulate an unproductive fix
+    /// turn that triggers a fresh respawn.
+    pub fn implementation_script_entry(mut self, script: &str) -> Self {
+        match &mut self.impl_behavior {
+            ImplBehavior::Script(entries) => entries.push(script.to_string()),
+            _ => {
+                self.impl_behavior = ImplBehavior::Script(vec![script.to_string()]);
+            }
+        }
+        self
+    }
+
     /// Queue a JSON response string for the init conversation.
     /// The first call to `spawn()` (non-worktree) returns `init_responses[0]`;
     /// subsequent `send()` calls cycle through the remaining responses.
@@ -104,6 +143,8 @@ impl MockAgentBuilder {
             spawn_count: Mutex::new(0),
             send_count: Mutex::new(0),
             research_turn: Mutex::new(0),
+            impl_turn: Mutex::new(0),
+            impl_session_seq: Mutex::new(0),
             last_spawn_config: Mutex::new(None),
             last_send_message: Mutex::new(None),
             spawn_configs: Mutex::new(Vec::new()),
@@ -196,11 +237,19 @@ impl Agent for MockAgent {
             };
             return Ok(AgentResponse {
                 text,
-                session_id: "mock-session-001".to_string(),
+                session_id: MOCK_RESEARCH_SESSION_ID.to_string(),
             });
         }
 
-        // This is an implementation spawn.
+        // This is an implementation spawn. Mint a unique session id so the
+        // CLI can later `send_streaming` into it and we can tell an
+        // implementer fix turn apart from a research planning turn.
+        let session_id = {
+            let mut seq = self.impl_session_seq.lock().unwrap();
+            *seq += 1;
+            format!("{MOCK_IMPL_SESSION_PREFIX}{}", *seq)
+        };
+
         match &self.impl_behavior {
             ImplBehavior::CommitDummy => {
                 create_dummy_commit(wd, idx);
@@ -211,15 +260,18 @@ impl Agent for MockAgent {
             ImplBehavior::Custom(f) => {
                 f(wd);
             }
+            ImplBehavior::Script(entries) => {
+                run_script_turn(&self.impl_turn, entries, wd);
+            }
         }
 
         Ok(AgentResponse {
-            text: "implementation done".to_string(),
-            session_id: "mock-session-001".to_string(),
+            text: "implementation done\nSUMMARY: mock implementer edits".to_string(),
+            session_id,
         })
     }
 
-    fn send(&self, _session: &AgentSession, message: &str) -> Result<AgentResponse, AgentError> {
+    fn send(&self, session: &AgentSession, message: &str) -> Result<AgentResponse, AgentError> {
         *self.last_send_message.lock().unwrap() = Some(message.to_string());
         self.send_messages.lock().unwrap().push(message.to_string());
 
@@ -227,6 +279,30 @@ impl Agent for MockAgent {
         let idx = *count;
         *count += 1;
         drop(count);
+
+        // Implementer fix turn: routed into an existing impl session. Apply
+        // the next script entry (which edits files in the worktree); the CLI
+        // will detect uncommitted changes and commit them itself.
+        if session.session_id.starts_with(MOCK_IMPL_SESSION_PREFIX) {
+            if let ImplBehavior::Script(entries) = &self.impl_behavior {
+                // Re-use the last spawn's working directory: implementer
+                // sessions always operate on the worktree they were spawned
+                // in. Falling back to "." keeps older tests that don't set
+                // `working_directory` from blowing up.
+                let cwd = self
+                    .last_spawn_config
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|c| c.working_directory.clone())
+                    .unwrap_or_else(|| Path::new(".").to_path_buf());
+                run_script_turn(&self.impl_turn, entries, &cwd);
+            }
+            return Ok(AgentResponse {
+                text: "fix turn done\nSUMMARY: mock fix-turn edits".to_string(),
+                session_id: session.session_id.clone(),
+            });
+        }
 
         // Programmable research script takes priority — consume the next
         // entry in the research_responses queue (repeating the last one if
@@ -238,7 +314,7 @@ impl Agent for MockAgent {
             let pick = t.min(self.research_responses.len() - 1);
             return Ok(AgentResponse {
                 text: self.research_responses[pick].clone(),
-                session_id: "mock-session-001".to_string(),
+                session_id: MOCK_RESEARCH_SESSION_ID.to_string(),
             });
         }
 
@@ -248,7 +324,7 @@ impl Agent for MockAgent {
             let response_idx = (idx + 1) % self.init_responses.len();
             return Ok(AgentResponse {
                 text: self.init_responses[response_idx].clone(),
-                session_id: "mock-session-001".to_string(),
+                session_id: MOCK_RESEARCH_SESSION_ID.to_string(),
             });
         }
 
@@ -261,7 +337,7 @@ impl Agent for MockAgent {
                        <hypothesis>no hypothesis configured</hypothesis>\
                        <files-to-modify></files-to-modify></plan>"
                     .to_string(),
-                session_id: "mock-session-001".to_string(),
+                session_id: MOCK_RESEARCH_SESSION_ID.to_string(),
             });
         }
 
@@ -285,7 +361,7 @@ impl Agent for MockAgent {
 
         Ok(AgentResponse {
             text: xml,
-            session_id: "mock-session-001".to_string(),
+            session_id: MOCK_RESEARCH_SESSION_ID.to_string(),
         })
     }
 
@@ -311,6 +387,29 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Advance the impl-script cursor by one and run the corresponding shell
+/// entry against `wd`. Entries past the end of the queue are no-ops, which
+/// the state machine will interpret as "implementer produced no edits"
+/// (the trigger for the fresh-respawn path).
+fn run_script_turn(turn: &Mutex<usize>, entries: &[String], wd: &Path) {
+    let mut t = turn.lock().unwrap();
+    let current = *t;
+    *t += 1;
+    drop(t);
+
+    let Some(entry) = entries.get(current) else {
+        return;
+    };
+    if entry.trim().is_empty() {
+        return;
+    }
+
+    let _ = Command::new("sh")
+        .args(["-c", entry])
+        .current_dir(wd)
+        .output();
 }
 
 fn create_dummy_commit(dir: &Path, idx: usize) {

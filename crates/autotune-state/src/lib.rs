@@ -38,6 +38,12 @@ pub enum Phase {
     Planning,
     Implementing,
     Testing,
+    /// The implementer is being re-invoked with the failing test output to
+    /// attempt a repair. Entered from `Testing` when tests fail and the
+    /// iteration's fix budget is not exhausted. Transitions back to
+    /// `Testing` after a successful edit, or to discard if the budget runs
+    /// out or the implementer produces no edits on a fresh respawn.
+    Fixing,
     Measuring,
     Scoring,
     Integrating,
@@ -51,6 +57,7 @@ impl std::fmt::Display for Phase {
             Phase::Planning => write!(f, "Planning"),
             Phase::Implementing => write!(f, "Implementing"),
             Phase::Testing => write!(f, "Testing"),
+            Phase::Fixing => write!(f, "Fixing"),
             Phase::Measuring => write!(f, "Measuring"),
             Phase::Scoring => write!(f, "Scoring"),
             Phase::Integrating => write!(f, "Integrating"),
@@ -90,6 +97,26 @@ pub struct ApproachState {
     /// older state files loadable.
     #[serde(default)]
     pub files_to_modify: Vec<String>,
+    /// Session id of the implementer the CLI is currently conversing with
+    /// for fix-retry. `None` either because we haven't spawned yet or
+    /// because the previous session went unproductive and we're about to
+    /// fall through to a fresh respawn.
+    #[serde(default)]
+    pub impl_session_id: Option<String>,
+    /// Total fix attempts consumed so far for this iteration (both
+    /// session-continuation and fresh-respawn paths). Checked against
+    /// `agent.implementation.max_fix_attempts`.
+    #[serde(default)]
+    pub fix_attempts: u32,
+    /// Number of fresh implementer respawns used for this iteration.
+    /// Checked against `agent.implementation.max_fresh_spawns`.
+    #[serde(default)]
+    pub fresh_spawns: u32,
+    /// Concatenated test failure history fed back to the implementer on
+    /// the next fix turn. Appended each time tests fail so a fresh respawn
+    /// sees the full trail, not just the latest.
+    #[serde(default)]
+    pub fix_history: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,6 +140,13 @@ pub struct IterationRecord {
     pub score: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
+    /// Fix-retry bookkeeping copied off `ApproachState` when the iteration
+    /// is recorded, so the ledger carries enough history for the planner
+    /// (and humans reading reports) to see when an approach needed repair.
+    #[serde(default)]
+    pub fix_attempts: u32,
+    #[serde(default)]
+    pub fresh_spawns: u32,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -405,5 +439,48 @@ mod tests {
                 temp.path().join("tasks").join("demo"),
             ]
         );
+    }
+
+    #[test]
+    fn phase_fixing_display_matches_variant() {
+        assert_eq!(Phase::Fixing.to_string(), "Fixing");
+    }
+
+    /// Old state.json files written before the Fixing phase existed must
+    /// still load — the new fields on `ApproachState` and `IterationRecord`
+    /// rely on `#[serde(default)]`. This pins that guarantee.
+    #[test]
+    fn legacy_approach_state_deserializes_with_defaults() {
+        let legacy_json = r#"{
+            "name": "old",
+            "hypothesis": "h",
+            "worktree_path": "/tmp/wt",
+            "branch_name": "b",
+            "commit_sha": null,
+            "test_results": [],
+            "metrics": null,
+            "rank": null
+        }"#;
+        let approach: ApproachState = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(approach.files_to_modify, Vec::<String>::new());
+        assert_eq!(approach.impl_session_id, None);
+        assert_eq!(approach.fix_attempts, 0);
+        assert_eq!(approach.fresh_spawns, 0);
+        assert_eq!(approach.fix_history, Vec::<String>::new());
+    }
+
+    #[test]
+    fn legacy_iteration_record_deserializes_with_defaults() {
+        let legacy_json = r#"{
+            "iteration": 1,
+            "approach": "a",
+            "status": "kept",
+            "metrics": {},
+            "rank": 0.0,
+            "timestamp": "2026-04-15T00:00:00Z"
+        }"#;
+        let record: IterationRecord = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(record.fix_attempts, 0);
+        assert_eq!(record.fresh_spawns, 0);
     }
 }

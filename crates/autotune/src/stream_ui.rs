@@ -380,7 +380,10 @@ mod tests {
 
     #[test]
     fn describe_tool_use_short_input() {
-        assert_eq!(describe_tool_use("Glob", "src/**/*.rs"), "Glob(src/**/*.rs)");
+        assert_eq!(
+            describe_tool_use("Glob", "src/**/*.rs"),
+            "Glob(src/**/*.rs)"
+        );
     }
 
     #[test]
@@ -389,8 +392,14 @@ mod tests {
         let result = describe_tool_use("Grep", &long_input);
         // The result is "{tool}({summary})" where summary ends with "..."
         // so result ends with "...)" not "..."
-        assert!(result.contains("..."), "expected truncation marker in: {result}");
-        assert!(result.starts_with("Grep("), "expected Grep( prefix: {result}");
+        assert!(
+            result.contains("..."),
+            "expected truncation marker in: {result}"
+        );
+        assert!(
+            result.starts_with("Grep("),
+            "expected Grep( prefix: {result}"
+        );
     }
 
     #[test]

@@ -441,3 +441,290 @@ fn scenario_run_auto_forks_on_existing_task() {
         "forked task dir should exist"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fix-retry loop
+// ---------------------------------------------------------------------------
+
+/// Config for the fix-retry scenario: a single test that checks the marker
+/// token `"fixed"` appears in `src/lib.rs`. The mock implementer writes a
+/// broken version on turn 0 (missing marker → test fails), then a correct
+/// version on turn 1 (marker present → test passes). The CLI must surface
+/// the test failure to the implementer via the Fixing phase rather than
+/// discarding the iteration immediately.
+const FIX_RETRY_CONFIG_TOML: &str = r#"
+[task]
+name = "fix-retry-task"
+description = "fix-retry scenario"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[agent]
+
+[agent.implementation]
+max_fix_attempts = 10
+max_fresh_spawns = 1
+
+[[test]]
+name = "marker-present"
+command = ["sh", "-c", "grep -q 'fixed' src/lib.rs"]
+timeout = 10
+
+[[measure]]
+name = "echo-bench"
+command = ["sh", "-c", "echo 'metric_value: 1.0'"]
+timeout = 10
+adaptor = { type = "regex", patterns = [{ name = "metric_value", pattern = "metric_value: ([0-9.]+)" }] }
+
+[score]
+type = "threshold"
+conditions = [{ metric = "metric_value", direction = "Minimize", threshold = -1000.0 }]
+"#;
+
+fn fix_retry_project() -> Project {
+    // Baseline contains the marker so sanity tests pass; the mock
+    // implementer's first turn removes it to simulate a broken edit.
+    let project = Project::empty()
+        .file(".autotune.toml", FIX_RETRY_CONFIG_TOML)
+        .file(
+            "src/lib.rs",
+            "pub fn hello() -> &'static str { \"fixed\" }\n",
+        )
+        .build()
+        .unwrap();
+    git_init(project.path());
+    project
+}
+
+fn write_impl_script(project: &Project, entries: &[&str]) -> PathBuf {
+    let path = project.path().join(".mock-impl-script");
+    std::fs::write(&path, entries.join("\n---\n")).unwrap();
+    path
+}
+
+/// Implementer first writes code lacking the expected marker (tests fail),
+/// then, given the failure context via a session-continuation turn, writes
+/// code containing the marker (tests pass). Iteration must end Kept with
+/// `fix_attempts == 1` recorded on the ledger.
+#[test]
+fn scenario_run_fix_retry_recovers_in_same_session() {
+    let project = fix_retry_project();
+
+    let research_script = write_script(
+        &project,
+        &[
+            "Ready.",
+            "<plan>\
+               <approach>add-marker</approach>\
+               <hypothesis>add the required marker token to src/lib.rs</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    // Turn 0: write code missing the "fixed" marker — grep test fails.
+    // Turn 1: rewrite with the marker — grep test passes.
+    let impl_script = write_impl_script(
+        &project,
+        &[
+            "cat > src/lib.rs <<'EOF'\n\
+             pub fn hello() -> &'static str { \"broken\" }\n\
+             EOF",
+            "cat > src/lib.rs <<'EOF'\n\
+             pub fn hello() -> &'static str { \"fixed\" }\n\
+             EOF",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &research_script)
+        .env("AUTOTUNE_MOCK_IMPL_SCRIPT", &impl_script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        output.status.success(),
+        "expected clean exit after fix-retry recovery.\noutput:\n{combined}"
+    );
+
+    let ledger_path = project
+        .path()
+        .join(".autotune/tasks/fix-retry-task/ledger.json");
+    let ledger = std::fs::read_to_string(&ledger_path).unwrap();
+    assert!(
+        ledger.contains("add-marker") && ledger.contains("\"kept\""),
+        "iteration must end Kept after fix-retry recovery.\nledger:\n{ledger}"
+    );
+    assert!(
+        ledger.contains("\"fix_attempts\": 1"),
+        "ledger must record fix_attempts=1.\nledger:\n{ledger}"
+    );
+}
+
+/// When the implementer session stops producing edits (empty turn), the CLI
+/// must respawn a fresh implementer session (tier-2) and retry. The fresh
+/// spawn writes the marker; iteration ends Kept.
+#[test]
+fn scenario_run_fix_retry_respawns_on_unproductive_session() {
+    let project = fix_retry_project();
+
+    let research_script = write_script(
+        &project,
+        &[
+            "Ready.",
+            "<plan>\
+               <approach>add-marker-respawn</approach>\
+               <hypothesis>add the marker via fresh-spawn fallback</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    // Turn 0: initial spawn writes broken code (tests fail).
+    // Turn 1: fix turn in same session — empty script, no edits → triggers respawn.
+    // Turn 2: fresh spawn writes fixed code.
+    let impl_script = write_impl_script(
+        &project,
+        &[
+            "cat > src/lib.rs <<'EOF'\n\
+             pub fn hello() -> &'static str { \"broken\" }\n\
+             EOF",
+            "",
+            "cat > src/lib.rs <<'EOF'\n\
+             pub fn hello() -> &'static str { \"fixed\" }\n\
+             EOF",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &research_script)
+        .env("AUTOTUNE_MOCK_IMPL_SCRIPT", &impl_script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "expected clean exit after respawn recovery.\noutput:\n{combined}"
+    );
+
+    let ledger = std::fs::read_to_string(
+        project
+            .path()
+            .join(".autotune/tasks/fix-retry-task/ledger.json"),
+    )
+    .unwrap();
+    assert!(
+        ledger.contains("add-marker-respawn") && ledger.contains("\"kept\""),
+        "iteration must end Kept after respawn.\nledger:\n{ledger}"
+    );
+    assert!(
+        ledger.contains("\"fresh_spawns\": 1"),
+        "ledger must record fresh_spawns=1.\nledger:\n{ledger}"
+    );
+}
+
+/// When `max_fix_attempts` is exhausted and tests still fail, the iteration
+/// is discarded with a reason identifying the exhausted budget.
+#[test]
+fn scenario_run_fix_retry_discards_when_budget_exhausted() {
+    let project = Project::empty()
+        .file(
+            ".autotune.toml",
+            FIX_RETRY_CONFIG_TOML
+                .replace("max_fix_attempts = 10", "max_fix_attempts = 1")
+                .replace("max_fresh_spawns = 1", "max_fresh_spawns = 0"),
+        )
+        .file(
+            "src/lib.rs",
+            "pub fn hello() -> &'static str { \"fixed\" }\n",
+        )
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let research_script = write_script(
+        &project,
+        &[
+            "Ready.",
+            "<plan>\
+               <approach>stubborn</approach>\
+               <hypothesis>implementer cannot fix this</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    // Every turn writes broken code — tests keep failing, budget exhausts.
+    let impl_script = write_impl_script(
+        &project,
+        &[
+            "cat > src/lib.rs <<'EOF'\n\
+             pub fn hello() -> &'static str { \"broken-0\" }\n\
+             EOF",
+            "cat > src/lib.rs <<'EOF'\n\
+             pub fn hello() -> &'static str { \"broken-1\" }\n\
+             EOF",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &research_script)
+        .env("AUTOTUNE_MOCK_IMPL_SCRIPT", &impl_script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // `max_iterations = 1` means the loop stops after the first (discarded)
+    // iteration — CLI should exit cleanly even though the approach was
+    // discarded.
+    assert!(
+        output.status.success(),
+        "expected clean exit after budget exhaustion.\noutput:\n{combined}"
+    );
+
+    let ledger = std::fs::read_to_string(
+        project
+            .path()
+            .join(".autotune/tasks/fix-retry-task/ledger.json"),
+    )
+    .unwrap();
+    assert!(
+        ledger.contains("stubborn") && ledger.contains("\"discarded\""),
+        "iteration must end Discarded after budget exhaustion.\nledger:\n{ledger}"
+    );
+    assert!(
+        ledger.contains("fix attempt"),
+        "discard reason should mention fix attempt(s).\nledger:\n{ledger}"
+    );
+}

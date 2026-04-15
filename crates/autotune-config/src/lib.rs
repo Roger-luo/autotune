@@ -220,6 +220,40 @@ pub struct AgentRoleConfig {
     pub model: Option<String>,
     #[serde(default)]
     pub max_turns: Option<u64>,
+    /// Total implementer fix-retry turns allowed per iteration when tests
+    /// fail. Counts both session-continuation turns and fresh respawns.
+    /// `0` disables retry (tests fail → discard immediately, legacy
+    /// behavior). `None` (field absent) is treated as the default by
+    /// [`AgentRoleConfig::effective_max_fix_attempts`].
+    ///
+    /// Only read off the `implementation` role; ignored elsewhere.
+    #[serde(default)]
+    pub max_fix_attempts: Option<u32>,
+    /// Of the `max_fix_attempts` budget, how many may be fresh respawns
+    /// (context reset, new CLI invocation on the same worktree). `0`
+    /// disables fresh spawns (session-continuation only). `None` is
+    /// treated as the default by
+    /// [`AgentRoleConfig::effective_max_fresh_spawns`].
+    #[serde(default)]
+    pub max_fresh_spawns: Option<u32>,
+}
+
+impl AgentRoleConfig {
+    /// Default fix-attempt budget when the config omits the field.
+    pub const DEFAULT_MAX_FIX_ATTEMPTS: u32 = 10;
+
+    /// Default fresh-respawn budget when the config omits the field.
+    pub const DEFAULT_MAX_FRESH_SPAWNS: u32 = 1;
+
+    pub fn effective_max_fix_attempts(&self) -> u32 {
+        self.max_fix_attempts
+            .unwrap_or(Self::DEFAULT_MAX_FIX_ATTEMPTS)
+    }
+
+    pub fn effective_max_fresh_spawns(&self) -> u32 {
+        self.max_fresh_spawns
+            .unwrap_or(Self::DEFAULT_MAX_FRESH_SPAWNS)
+    }
 }
 
 impl AutotuneConfig {
@@ -462,7 +496,9 @@ primary_metrics = [{ name = "mean", direction = "Minimize" }]
 "#,
         );
         let config: AutotuneConfig = toml::from_str(&toml).unwrap();
-        let adaptor = AdaptorConfig::Criterion { measure_name: "bench".to_string() };
+        let adaptor = AdaptorConfig::Criterion {
+            measure_name: "bench".to_string(),
+        };
         let names = config.adaptor_metric_names(&adaptor);
         assert_eq!(names, vec!["mean", "median", "std_dev"]);
     }
@@ -477,7 +513,9 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
 "#,
         );
         let config: AutotuneConfig = toml::from_str(&toml).unwrap();
-        let adaptor = AdaptorConfig::Script { command: vec!["sh".to_string()] };
+        let adaptor = AdaptorConfig::Script {
+            command: vec!["sh".to_string()],
+        };
         let names = config.adaptor_metric_names(&adaptor);
         assert!(names.is_empty());
     }
@@ -494,6 +532,59 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
         let config: AutotuneConfig = toml::from_str(&toml).unwrap();
         let root = std::path::Path::new("/tmp/myproject");
         let dir = config.task_dir(root);
-        assert_eq!(dir, std::path::Path::new("/tmp/myproject/.autotune/tasks/t"));
+        assert_eq!(
+            dir,
+            std::path::Path::new("/tmp/myproject/.autotune/tasks/t")
+        );
+    }
+
+    #[test]
+    fn effective_fix_budget_uses_defaults_when_absent() {
+        // Absent fields → `Option::None` resolves to the DEFAULT_ constants.
+        let role = AgentRoleConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+            max_fix_attempts: None,
+            max_fresh_spawns: None,
+        };
+        assert_eq!(role.effective_max_fix_attempts(), 10);
+        assert_eq!(role.effective_max_fresh_spawns(), 1);
+    }
+
+    #[test]
+    fn effective_fix_budget_honors_zero_as_disabled() {
+        // `Some(0)` means "disabled" in the machine's budget logic; the
+        // effective_* helpers must surface the user's `0`, not the default.
+        let role = AgentRoleConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+            max_fix_attempts: Some(0),
+            max_fresh_spawns: Some(0),
+        };
+        assert_eq!(role.effective_max_fix_attempts(), 0);
+        assert_eq!(role.effective_max_fresh_spawns(), 0);
+    }
+
+    #[test]
+    fn fix_budget_deserializes_from_toml() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+
+[agent.implementation]
+max_fix_attempts = 5
+max_fresh_spawns = 2
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        let role = config.agent.implementation.expect("implementation role");
+        assert_eq!(role.max_fix_attempts, Some(5));
+        assert_eq!(role.max_fresh_spawns, Some(2));
+        assert_eq!(role.effective_max_fix_attempts(), 5);
+        assert_eq!(role.effective_max_fresh_spawns(), 2);
     }
 }

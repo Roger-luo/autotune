@@ -116,7 +116,11 @@ fn test_spawn_commit_dummy() {
     // Second spawn: implementation, creates a commit
     let sha_before = latest_sha(dir);
     let r2 = agent.spawn(&config).unwrap();
-    assert_eq!(r2.text, "implementation done");
+    assert!(
+        r2.text.starts_with("implementation done"),
+        "response text: {}",
+        r2.text
+    );
     let sha_after = latest_sha(dir);
     assert_ne!(sha_before, sha_after, "commit should have been created");
     // First spawn didn't create a commit (research init)
@@ -146,7 +150,11 @@ fn test_spawn_no_commit() {
     // Second spawn: should NOT create a commit
     let sha_before = latest_sha(dir);
     let r = agent.spawn(&config).unwrap();
-    assert_eq!(r.text, "implementation done");
+    assert!(
+        r.text.starts_with("implementation done"),
+        "response text: {}",
+        r.text
+    );
     let sha_after = latest_sha(dir);
     assert_eq!(sha_before, sha_after, "no commit should have been created");
 }
