@@ -170,7 +170,7 @@ fn setup_task(repo_root: &Path, config: &AutotuneConfig) -> TaskStore {
     store.append_ledger(&baseline).unwrap();
 
     // Create the advancing branch (mirrors what cmd_run does).
-    let advancing_branch = format!("autotune-{}", config.task.name);
+    let advancing_branch = format!("autotune/{}-main", config.task.name);
     Command::new("git")
         .args(["branch", &advancing_branch, "main"])
         .current_dir(repo_root)

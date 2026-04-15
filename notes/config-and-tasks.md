@@ -19,7 +19,7 @@ state.json already exists, the run forks the task name by appending
 `-2`, `-3`, etc. — see `next_available_task_name()` in `main.rs`. A fork is
 "available" when both:
 - the task dir `.autotune/tasks/<name>/` does not exist, AND
-- the advancing branch `autotune-<name>` does not exist.
+- the advancing branch `autotune/<name>-main` does not exist.
 
 If the task dir exists but state.json is missing (crash before first save),
 the directory is cleaned up and reused — no fork.
@@ -51,7 +51,7 @@ canonical *and* currently has canonical checked out. The footgun matrix:
 | --------------------------------------- | ------------------------------------------------------- |
 | canonical, prior advancing merged in    | yes — baseline and iterations agree                     |
 | canonical, prior advancing NOT merged   | no — prior wins are orphaned on the old advancing branch|
-| still on the prior `autotune-<task>`    | baseline sees the wins, but iterations start from canonical — baseline and iteration 1 disagree (looks like a regression) |
+| still on the prior `autotune/<task>-main` | baseline sees the wins, but iterations start from canonical — baseline and iteration 1 disagree (looks like a regression) |
 
 If reliable carryover matters, the workflow is: merge the advancing PR →
 `git checkout <canonical>` → `autotune run`. The CLI does not yet enforce

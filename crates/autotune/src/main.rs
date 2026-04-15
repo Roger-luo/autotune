@@ -64,14 +64,18 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
 
 /// Find the next available task name by appending `-2`, `-3`, ... to the base
 /// name. A name is "available" when both its task directory and its advancing
-/// git branch (`autotune-<name>`) don't exist yet.
+/// git branch (`autotune/<name>-main`) don't exist yet. The `-main` suffix
+/// keeps the advancing branch out of the `autotune/<task>/<slug>` worktree
+/// namespace — git refuses to create a branch when another branch occupies
+/// a prefix path.
 fn next_available_task_name(repo_root: &Path, base: &str) -> Result<String> {
     let tasks_dir = repo_root.join(".autotune").join("tasks");
     for n in 2..10_000 {
         let candidate = format!("{base}-{n}");
         let dir_taken = tasks_dir.join(&candidate).exists();
-        let branch_taken = autotune_git::branch_exists(repo_root, &format!("autotune-{candidate}"))
-            .unwrap_or(false);
+        let branch_taken =
+            autotune_git::branch_exists(repo_root, &format!("autotune/{candidate}-main"))
+                .unwrap_or(false);
         if !dir_taken && !branch_taken {
             return Ok(candidate);
         }
@@ -454,8 +458,12 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     );
 
     // Create the advancing branch where kept iterations accumulate.
-    // The user can later PR this branch into the canonical branch.
-    let advancing_branch = format!("autotune-{}", config.task.name);
+    // The user can later PR this branch into the canonical branch. The
+    // `-main` suffix is deliberate: worktree branches live at
+    // `autotune/<task>/<slug>`, and git refuses to create a branch whose
+    // name is a prefix of another existing branch — so the advancing
+    // branch must sit alongside, not above, the worktree namespace.
+    let advancing_branch = format!("autotune/{}-main", config.task.name);
     autotune_git::create_branch_from(&repo_root, &advancing_branch, &config.task.canonical_branch)
         .context("failed to create advancing branch")?;
     println!(

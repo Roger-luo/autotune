@@ -16,9 +16,13 @@ main (canonical, untouched)
 
 - **Canonical branch** (`state.canonical_branch`, from config): the user's
   trunk. Autotune only reads from it.
-- **Advancing branch** (`state.advancing_branch`, `autotune-<task>`): created
-  from canonical at task start. Each kept iteration advances this branch
-  linearly.
+- **Advancing branch** (`state.advancing_branch`, `autotune/<task>-main`):
+  created from canonical at task start. Each kept iteration advances this
+  branch linearly. The `-main` suffix is load-bearing: worktree branches
+  live at `autotune/<task>/<slug>`, and git refuses to create a branch whose
+  parent path is already occupied by another branch's ref file. Naming the
+  advancing branch `autotune/<task>-main` keeps it a sibling of the
+  worktree namespace, not a prefix of it.
 - **Worktree branch** (`autotune/<task>/<approach-slug>`): one per iteration,
   created from the advancing branch. Namespaced under the task so worktree
   branches from different task forks don't collide on matching approach names.

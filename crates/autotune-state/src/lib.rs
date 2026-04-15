@@ -71,8 +71,11 @@ impl std::fmt::Display for Phase {
 pub struct TaskState {
     pub task_name: String,
     pub canonical_branch: String,
-    /// The branch where kept iterations accumulate (e.g. `autotune-<task>`).
-    /// Created from `canonical_branch` at task start so the user can PR it.
+    /// The branch where kept iterations accumulate (e.g.
+    /// `autotune/<task>-main`). Created from `canonical_branch` at task
+    /// start so the user can PR it. The `-main` suffix keeps this branch
+    /// off the `autotune/<task>/<slug>` worktree prefix git would otherwise
+    /// refuse to occupy.
     #[serde(default)]
     pub advancing_branch: String,
     pub research_session_id: String,
