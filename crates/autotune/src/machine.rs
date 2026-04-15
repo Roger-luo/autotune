@@ -1102,6 +1102,129 @@ mod tests {
         assert!(!prompt.is_empty(), "prompt should be non-empty even with no files");
         assert!(prompt.contains("RESOLVED"), "prompt should always contain RESOLVED marker");
     }
+
+    fn make_task_state(iteration: usize, phase: Phase) -> autotune_state::TaskState {
+        autotune_state::TaskState {
+            task_name: "test-task".to_string(),
+            canonical_branch: "main".to_string(),
+            advancing_branch: "autotune/test-task-main".to_string(),
+            research_session_id: "session-1".to_string(),
+            current_iteration: iteration,
+            current_phase: phase,
+            current_approach: None,
+        }
+    }
+
+    #[test]
+    fn run_recorded_transitions_to_done_when_should_stop() {
+        // max_iterations = 1 and one ledger entry means should_stop returns true
+        let config = make_minimal_config(Some(autotune_config::StopValue::Finite(1)), None);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        store.append_ledger(&make_kept_record(0.0)).unwrap();
+        let mut state = make_task_state(1, Phase::Recorded);
+        run_recorded(&config, &store, &mut state).unwrap();
+        assert_eq!(state.current_phase, Phase::Done);
+    }
+
+    #[test]
+    fn run_recorded_increments_iteration_and_goes_to_planning() {
+        // no stop conditions set → should_stop returns false
+        let config = make_minimal_config(None, None);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        let mut state = make_task_state(1, Phase::Recorded);
+        run_recorded(&config, &store, &mut state).unwrap();
+        assert_eq!(state.current_phase, Phase::Planning);
+        assert_eq!(state.current_iteration, 2);
+        assert!(state.current_approach.is_none());
+    }
+
+    fn make_config_with_target_metric(
+        name: &str,
+        value: f64,
+        direction: autotune_config::Direction,
+    ) -> autotune_config::AutotuneConfig {
+        let mut config = make_minimal_config(None, None);
+        config.task.target_metric = vec![autotune_config::TargetMetric {
+            name: name.to_string(),
+            value,
+            direction,
+        }];
+        config
+    }
+
+    fn make_record_with_metrics(
+        metrics: std::collections::HashMap<String, f64>,
+    ) -> autotune_state::IterationRecord {
+        autotune_state::IterationRecord {
+            iteration: 1,
+            approach: "test-approach".to_string(),
+            status: autotune_state::IterationStatus::Kept,
+            hypothesis: None,
+            metrics,
+            rank: 0.0,
+            score: None,
+            reason: None,
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn should_stop_true_when_maximize_target_metric_reached() {
+        let config = make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert("cov".to_string(), 85.0);
+        store.append_ledger(&make_record_with_metrics(m)).unwrap();
+        assert!(should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_false_when_maximize_target_metric_not_reached() {
+        let config = make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert("cov".to_string(), 70.0);
+        store.append_ledger(&make_record_with_metrics(m)).unwrap();
+        assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_true_when_minimize_target_metric_reached() {
+        let config = make_config_with_target_metric("latency", 10.0, autotune_config::Direction::Minimize);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert("latency".to_string(), 8.0);
+        store.append_ledger(&make_record_with_metrics(m)).unwrap();
+        assert!(should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_false_when_minimize_target_metric_not_reached() {
+        let config = make_config_with_target_metric("latency", 10.0, autotune_config::Direction::Minimize);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert("latency".to_string(), 15.0);
+        store.append_ledger(&make_record_with_metrics(m)).unwrap();
+        assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_false_when_target_metric_has_no_ledger_entries_with_metrics() {
+        let config = make_config_with_target_metric("cov", 80.0, autotune_config::Direction::Maximize);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
+        // Append a record with empty metrics — the target_metric check should not fire
+        store.append_ledger(&make_kept_record(0.5)).unwrap();
+        assert!(!should_stop(&config, &store).unwrap());
+    }
 }
 
 fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {

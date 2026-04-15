@@ -596,6 +596,132 @@ mod tests {
     }
 
     #[test]
+    fn merge_creates_merge_commit() {
+        let dir = make_repo();
+        // Create a feature branch with one commit
+        create_branch(dir.path(), "merge-feature").unwrap();
+        checkout(dir.path(), "merge-feature").unwrap();
+        fs::write(dir.path().join("merge_file.txt"), b"merged content").unwrap();
+        stage_all_and_commit(dir.path(), "feature commit for merge").unwrap();
+        let feature_sha = latest_commit_sha(dir.path()).unwrap();
+
+        // Merge with --no-ff into main
+        checkout(dir.path(), "main").unwrap();
+        let sha_before = latest_commit_sha(dir.path()).unwrap();
+        merge(dir.path(), "merge-feature", "merge feature into main").unwrap();
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_ne!(sha_before, sha_after, "main should have a new commit");
+        // The feature commit should not be HEAD — a merge commit sits on top
+        assert_ne!(sha_after, feature_sha, "HEAD should be the merge commit, not the feature commit");
+        // Verify it is a merge commit (has two parents)
+        assert!(head_is_merge_commit(dir.path()).unwrap(), "HEAD should be a merge commit");
+    }
+
+    #[test]
+    fn revert_last_regular_commit() {
+        let dir = make_repo();
+        // Add a second commit to revert
+        fs::write(dir.path().join("to_revert.txt"), b"content").unwrap();
+        stage_all_and_commit(dir.path(), "commit to revert").unwrap();
+        let sha_before_revert = latest_commit_sha(dir.path()).unwrap();
+        revert_last(dir.path()).unwrap();
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_ne!(sha_before_revert, sha_after, "revert should create a new commit");
+    }
+
+    #[test]
+    fn revert_last_merge_commit() {
+        let dir = make_repo();
+        // Create a merge commit
+        create_branch(dir.path(), "revert-feature").unwrap();
+        checkout(dir.path(), "revert-feature").unwrap();
+        fs::write(dir.path().join("revert_merge.txt"), b"content").unwrap();
+        stage_all_and_commit(dir.path(), "feature commit").unwrap();
+        checkout(dir.path(), "main").unwrap();
+        merge(dir.path(), "revert-feature", "merge revert-feature").unwrap();
+        assert!(head_is_merge_commit(dir.path()).unwrap());
+        let sha_before = latest_commit_sha(dir.path()).unwrap();
+        revert_last(dir.path()).unwrap();
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_ne!(sha_before, sha_after, "reverting a merge commit should create a new revert commit");
+    }
+
+    #[test]
+    fn merge_or_conflict_returns_true_on_clean_merge() {
+        let dir = make_repo();
+        create_branch(dir.path(), "clean-feature").unwrap();
+        checkout(dir.path(), "clean-feature").unwrap();
+        fs::write(dir.path().join("clean_feature.txt"), b"no conflict here").unwrap();
+        stage_all_and_commit(dir.path(), "clean feature commit").unwrap();
+        checkout(dir.path(), "main").unwrap();
+        let result = merge_or_conflict(dir.path(), "clean-feature", "merge clean feature").unwrap();
+        assert!(result, "clean merge should return true");
+    }
+
+    #[test]
+    fn list_conflicted_files_empty_in_clean_repo() {
+        let dir = make_repo();
+        let files = list_conflicted_files(dir.path()).unwrap();
+        assert!(files.is_empty(), "no conflicted files in a clean repo");
+    }
+
+    /// Helper: create a repo where `main` and `conflict-branch` have diverging
+    /// edits to the same line, ready to trigger a conflict on merge.
+    fn make_conflicted_repo() -> (TempDir, String) {
+        let dir = make_repo();
+        let path = dir.path();
+
+        // Add a file on main
+        fs::write(path.join("conflict.txt"), b"line from main\n").unwrap();
+        stage_all_and_commit(path, "add conflict.txt on main").unwrap();
+
+        // Branch off and change the same file
+        create_branch(path, "conflict-branch").unwrap();
+        checkout(path, "conflict-branch").unwrap();
+        fs::write(path.join("conflict.txt"), b"line from branch\n").unwrap();
+        stage_all_and_commit(path, "change conflict.txt on branch").unwrap();
+
+        // Go back to main and also change the same file (different content → conflict)
+        checkout(path, "main").unwrap();
+        fs::write(path.join("conflict.txt"), b"line from main edit\n").unwrap();
+        stage_all_and_commit(path, "change conflict.txt on main too").unwrap();
+
+        (dir, "conflict-branch".to_string())
+    }
+
+    #[test]
+    fn merge_or_conflict_returns_false_on_conflict() {
+        let (dir, branch) = make_conflicted_repo();
+        let result = merge_or_conflict(dir.path(), &branch, "merge conflicting branch").unwrap();
+        assert!(!result, "conflicting merge should return false");
+    }
+
+    #[test]
+    fn merge_abort_restores_clean_state() {
+        let (dir, branch) = make_conflicted_repo();
+        // Trigger conflict
+        let result = merge_or_conflict(dir.path(), &branch, "trigger conflict").unwrap();
+        assert!(!result);
+        // Abort should succeed and leave repo without conflicts
+        merge_abort(dir.path()).unwrap();
+        assert!(!has_merge_conflicts(dir.path()).unwrap(), "no conflicts after abort");
+    }
+
+    #[test]
+    fn conclude_merge_creates_commit_after_resolution() {
+        let (dir, branch) = make_conflicted_repo();
+        // Trigger conflict
+        let result = merge_or_conflict(dir.path(), &branch, "merge with conflict").unwrap();
+        assert!(!result);
+        let sha_before = latest_commit_sha(dir.path()).unwrap();
+        // Resolve by overwriting the conflicted file
+        fs::write(dir.path().join("conflict.txt"), b"resolved content\n").unwrap();
+        conclude_merge(dir.path(), "resolve conflict").unwrap();
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_ne!(sha_before, sha_after, "conclude_merge should create a new commit");
+    }
+
+    #[test]
     fn merge_ff_only_advances_main() {
         let dir = make_repo();
         // Create feature branch with one commit
