@@ -24,10 +24,16 @@ pub fn render_assessment_prompt(
 
     let context_block = subject.render_context();
 
+    let guidance_block = match &rubric.guidance {
+        Some(g) if !g.trim().is_empty() => format!("Guidance: {g}\n"),
+        _ => String::new(),
+    };
+
     format!(
         "You are judging from this persona: {persona}\n\
          Rubric: {title}\n\
          Instruction: {instruction}\n\
+         {guidance}\
          Score range: {min} to {max}\n\
          Subject title: {subject_title}\n\
          Subject summary: {subject_summary}\n\
@@ -39,6 +45,7 @@ pub fn render_assessment_prompt(
         persona = rubric.persona,
         title = rubric.title,
         instruction = rubric.instruction,
+        guidance = guidance_block,
         min = rubric.score_range.min,
         max = rubric.score_range.max,
         subject_title = subject.title,

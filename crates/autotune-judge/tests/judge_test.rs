@@ -470,3 +470,36 @@ fn approved_review_can_be_persisted_as_example() {
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].review.approved_score, 7);
 }
+
+#[test]
+fn prompt_includes_guidance_when_set() {
+    let rubric = sample_rubric();
+    assert!(
+        rubric.guidance.is_some(),
+        "precondition: sample_rubric has guidance"
+    );
+    let prompt = autotune_judge::prompt::render_assessment_prompt(
+        &Subject::new("API", "summary"),
+        &rubric,
+        &[],
+    );
+    assert!(
+        prompt.contains("Guidance: Prefer extension without modifying core traits."),
+        "rendered prompt should include guidance line"
+    );
+}
+
+#[test]
+fn prompt_omits_guidance_line_when_none() {
+    let mut rubric = sample_rubric();
+    rubric.guidance = None;
+    let prompt = autotune_judge::prompt::render_assessment_prompt(
+        &Subject::new("API", "summary"),
+        &rubric,
+        &[],
+    );
+    assert!(
+        !prompt.contains("Guidance:"),
+        "no Guidance: line expected when guidance is None"
+    );
+}
