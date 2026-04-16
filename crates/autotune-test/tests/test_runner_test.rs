@@ -8,6 +8,7 @@ fn make_test_config(name: &str, command: &[&str]) -> TestConfig {
         name: name.to_string(),
         command: command.iter().map(|s| s.to_string()).collect(),
         timeout: 30,
+        allow_test_edits: false,
     }
 }
 
@@ -68,6 +69,7 @@ fn times_out_long_running_test() {
             .map(|s| s.to_string())
             .collect(),
         timeout: 1,
+        allow_test_edits: false,
     };
 
     let error = run_test(&config, std::path::Path::new(".")).unwrap_err();
@@ -89,6 +91,7 @@ fn timeout_returns_even_if_descendant_keeps_pipes_open() {
             .map(|s| s.to_string())
             .collect(),
         timeout: 1,
+        allow_test_edits: false,
     };
 
     let (tx, rx) = mpsc::channel();
@@ -120,6 +123,7 @@ fn verbose_test_does_not_false_timeout() {
             .map(|s| s.to_string())
             .collect(),
         timeout: 1,
+        allow_test_edits: false,
     };
 
     let result = run_test(&config, std::path::Path::new(".")).unwrap();

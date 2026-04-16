@@ -435,6 +435,43 @@ model = "opus"
 }
 
 #[test]
+fn parse_test_config_with_allow_test_edits() {
+    let f = write_config(
+        r#"
+[task]
+name = "coverage-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**", "tests/**"]
+
+[[test]]
+name = "rust"
+command = ["cargo", "nextest", "run"]
+allow_test_edits = true
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+"#,
+    );
+    let config = AutotuneConfig::load(f.path()).unwrap();
+    assert_eq!(config.test.len(), 1);
+    assert!(config.test[0].allow_test_edits);
+
+    let toml = toml::to_string_pretty(&config).unwrap();
+    assert!(
+        toml.contains("allow_test_edits = true"),
+        "serialized config should preserve allow_test_edits.\n{toml}"
+    );
+}
+
+#[test]
 fn parse_codex_reasoning_effort_config() {
     let content = r#"
 [task]

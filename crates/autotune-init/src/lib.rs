@@ -851,6 +851,7 @@ mod tests {
             name: "run-tests".to_string(),
             command: vec!["cargo".to_string(), "test".to_string()],
             timeout: 300,
+            allow_test_edits: false,
         }
     }
 
@@ -1085,6 +1086,7 @@ mod tests {
             name: "t".to_string(),
             command: vec![],
             timeout: 300,
+            allow_test_edits: false,
         };
         match validate_test(&test) {
             FragmentOutcome::Rejected(msg) => assert!(msg.contains("empty"), "msg: {msg}"),

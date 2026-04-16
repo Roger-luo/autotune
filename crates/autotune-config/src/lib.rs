@@ -100,6 +100,8 @@ pub struct TestConfig {
     pub command: Vec<String>,
     #[serde(default = "default_test_timeout")]
     pub timeout: u64,
+    #[serde(default)]
+    pub allow_test_edits: bool,
 }
 
 fn default_test_timeout() -> u64 {
@@ -814,6 +816,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             name: "t".to_string(),
             command: vec![],
             timeout: 30,
+            allow_test_edits: false,
         };
         let config = make_config_direct(
             default_task_with_stop(),

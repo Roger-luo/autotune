@@ -921,7 +921,22 @@ fn build_research_agent_prompt(
 
     if !config.test.is_empty() {
         p.push_str("\n# Test suites run by the CLI after each approach\n\n");
-        p.push_str("(The implementation agent must not modify test files. Tests must still pass after changes.)\n\n");
+        let editable_suites: Vec<&str> = config
+            .test
+            .iter()
+            .filter(|t| t.allow_test_edits)
+            .map(|t| t.name.as_str())
+            .collect();
+        if editable_suites.is_empty() {
+            p.push_str("(The implementation agent must not modify test files. Tests must still pass after changes.)\n\n");
+        } else {
+            writeln!(
+                p,
+                "(The implementation agent may modify test files when needed. Suites that allow test edits: {}. Tests must still pass after changes.)\n",
+                editable_suites.join(", ")
+            )
+            .ok();
+        }
         for t in &config.test {
             writeln!(p, "- {}: `{}`", t.name, t.command.join(" ")).ok();
         }
@@ -1625,6 +1640,7 @@ mod tests {
                     "autotune".to_string(),
                 ],
                 timeout: 300,
+                allow_test_edits: false,
             }],
             measure: vec![
                 autotune_config::MeasureConfig {
@@ -2076,6 +2092,25 @@ reasoning_effort = "low"
         assert!(prompt.contains("Score uses thresholds:"));
         assert!(prompt.contains("- line_coverage Maximize 85"));
         assert!(!prompt.contains("Baseline raw measure output"));
+    }
+
+    #[test]
+    fn build_research_agent_prompt_forbids_test_edits_by_default() {
+        let prompt = build_research_agent_prompt(&sample_config(), &HashMap::new(), &[]);
+
+        assert!(prompt.contains("must not modify test files"));
+        assert!(!prompt.contains("may modify test files"));
+    }
+
+    #[test]
+    fn build_research_agent_prompt_allows_test_edits_when_enabled() {
+        let mut config = sample_config();
+        config.test[0].allow_test_edits = true;
+
+        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[]);
+
+        assert!(prompt.contains("may modify test files"));
+        assert!(!prompt.contains("must not modify test files"));
     }
 
     #[test]

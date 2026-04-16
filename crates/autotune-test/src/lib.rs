@@ -206,6 +206,7 @@ mod tests {
             name: name.to_string(),
             command: cmd.iter().map(|s| s.to_string()).collect(),
             timeout: 30,
+            allow_test_edits: false,
         }
     }
 
@@ -283,6 +284,7 @@ mod tests {
             name: "timeout".to_string(),
             command: vec!["sh".to_string(), "-c".to_string(), "sleep 1".to_string()],
             timeout: 0,
+            allow_test_edits: false,
         };
 
         let err = run_test(&config, &tmp).unwrap_err();

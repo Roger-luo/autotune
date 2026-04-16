@@ -98,9 +98,11 @@ Use sparingly. The user replies naturally to whatever you write.
     <segment>test</segment>
   </command>
   <timeout>300</timeout>
+  <allow-test-edits>true</allow-test-edits>
 </test>
 ```
 - `<command>` contains one `<segment>` per argv element. Do not quote; each segment is a literal string.
+- `<allow-test-edits>` (optional, default false): when true, the implementation agent may modify test files for this suite. Use this for coverage-oriented tasks; leave it false for benchmark/perf tasks where tests are a fixed gate.
 
 #### `<measure>` — required, at least one
 ```xml

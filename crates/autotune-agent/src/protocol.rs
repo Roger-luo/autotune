@@ -445,12 +445,16 @@ fn parse_test(reader: &mut Reader<&[u8]>) -> Result<TestConfig, AgentError> {
     let mut name = String::new();
     let mut command: Vec<String> = Vec::new();
     let mut timeout: Option<u64> = None;
+    let mut allow_test_edits = false;
 
     walk_children(reader, "test", |tag, reader| {
         match tag {
             "name" => name = read_text(reader, "name")?,
             "command" => command = parse_command(reader, "command")?,
             "timeout" => timeout = Some(parse_u64(&read_text(reader, "timeout")?)?),
+            "allow-test-edits" => {
+                allow_test_edits = parse_bool(&read_text(reader, "allow-test-edits")?)?
+            }
             other => skip_element(reader, other)?,
         }
         Ok(())
@@ -460,6 +464,7 @@ fn parse_test(reader: &mut Reader<&[u8]>) -> Result<TestConfig, AgentError> {
         name,
         command,
         timeout: timeout.unwrap_or(300),
+        allow_test_edits,
     })
 }
 
@@ -1083,6 +1088,7 @@ mod tests {
                 assert_eq!(t.name, "unit");
                 assert_eq!(t.command, vec!["cargo", "nextest", "run"]);
                 assert_eq!(t.timeout, 120);
+                assert!(!t.allow_test_edits);
             }
             _ => panic!("expected Test"),
         }
