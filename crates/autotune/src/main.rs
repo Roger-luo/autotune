@@ -712,34 +712,11 @@ fn cmd_report(task_name: Option<String>, format: ReportFormat) -> Result<()> {
 
     match format {
         ReportFormat::Json => {
-            let report = serde_json::json!({
-                "task": name,
-                "phase": format!("{}", state.current_phase),
-                "iteration": state.current_iteration,
-                "ledger": ledger,
-            });
+            let report = build_report_json(&name, &state, &ledger);
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         ReportFormat::Table => {
-            println!("Task: {}", name);
-            println!("Phase: {}", state.current_phase);
-            println!("Iteration: {}", state.current_iteration);
-            println!();
-            println!(
-                "{:<6} {:<20} {:<10} {:<10} Reason",
-                "Iter", "Approach", "Status", "Rank"
-            );
-            println!("{}", "-".repeat(70));
-            for record in &ledger {
-                println!(
-                    "{:<6} {:<20} {:<10} {:<10.4} {}",
-                    record.iteration,
-                    truncate(&record.approach, 18),
-                    format!("{:?}", record.status),
-                    record.rank,
-                    record.reason.as_deref().unwrap_or("")
-                );
-            }
+            print!("{}", render_report_table(&name, &state, &ledger));
         }
     }
 
@@ -757,23 +734,16 @@ fn cmd_list() -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<30} {:<15} {:<6}", "Name", "Phase", "Iter");
-    println!("{}", "-".repeat(55));
+    let mut rows = Vec::with_capacity(tasks.len());
     for name in &tasks {
         let dir = autotune_dir.join("tasks").join(name);
         let store = TaskStore::open(&dir);
         match store.and_then(|s| s.load_state().map(|st| (s, st))) {
-            Ok((_store, state)) => {
-                println!(
-                    "{:<30} {:<15} {:<6}",
-                    name, state.current_phase, state.current_iteration
-                );
-            }
-            Err(_) => {
-                println!("{:<30} {:<15} {:<6}", name, "unknown", "-");
-            }
+            Ok((_store, state)) => rows.push((name.clone(), Some(state))),
+            Err(_) => rows.push((name.clone(), None)),
         }
     }
+    print!("{}", render_task_list_table(&rows));
 
     Ok(())
 }
@@ -1443,13 +1413,7 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     // Load raw config snapshot as a string
     let config_toml = store.load_config_snapshot().unwrap_or_default();
 
-    let export = serde_json::json!({
-        "task_name": task_name,
-        "config": config_toml,
-        "ledger": ledger,
-        "log": log,
-        "state": state,
-    });
+    let export = build_export_json(&task_name, &config_toml, &ledger, &log, &state);
 
     let json = serde_json::to_string_pretty(&export).context("failed to serialize export")?;
     std::fs::write(&output_path, &json)
@@ -1461,6 +1425,85 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn build_report_json(
+    task_name: &str,
+    state: &TaskState,
+    ledger: &[IterationRecord],
+) -> serde_json::Value {
+    serde_json::json!({
+        "task": task_name,
+        "phase": format!("{}", state.current_phase),
+        "iteration": state.current_iteration,
+        "ledger": ledger,
+    })
+}
+
+fn render_report_table(task_name: &str, state: &TaskState, ledger: &[IterationRecord]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    writeln!(output, "Task: {task_name}").ok();
+    writeln!(output, "Phase: {}", state.current_phase).ok();
+    writeln!(output, "Iteration: {}", state.current_iteration).ok();
+    output.push('\n');
+    writeln!(
+        output,
+        "{:<6} {:<20} {:<10} {:<10} Reason",
+        "Iter", "Approach", "Status", "Rank"
+    )
+    .ok();
+    writeln!(output, "{}", "-".repeat(70)).ok();
+    for record in ledger {
+        writeln!(
+            output,
+            "{:<6} {:<20} {:<10} {:<10.4} {}",
+            record.iteration,
+            truncate(&record.approach, 18),
+            format!("{:?}", record.status),
+            record.rank,
+            record.reason.as_deref().unwrap_or("")
+        )
+        .ok();
+    }
+    output
+}
+
+fn render_task_list_table(rows: &[(String, Option<TaskState>)]) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    writeln!(output, "{:<30} {:<15} {:<6}", "Name", "Phase", "Iter").ok();
+    writeln!(output, "{}", "-".repeat(55)).ok();
+    for (name, state) in rows {
+        match state {
+            Some(state) => writeln!(
+                output,
+                "{:<30} {:<15} {:<6}",
+                name, state.current_phase, state.current_iteration
+            )
+            .ok(),
+            None => writeln!(output, "{:<30} {:<15} {:<6}", name, "unknown", "-").ok(),
+        };
+    }
+    output
+}
+
+fn build_export_json(
+    task_name: &str,
+    config_toml: &str,
+    ledger: &[IterationRecord],
+    log: &str,
+    state: &TaskState,
+) -> serde_json::Value {
+    serde_json::json!({
+        "task_name": task_name,
+        "config": config_toml,
+        "ledger": ledger,
+        "log": log,
+        "state": state,
+    })
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1476,6 +1519,7 @@ mod tests {
     use super::*;
     use autotune::agent_factory::AgentRole;
     use std::collections::HashMap;
+    use serde_json::json;
     use tempfile::tempdir;
 
     fn sample_config() -> AutotuneConfig {
@@ -1545,6 +1589,50 @@ mod tests {
             },
             agent: autotune_config::AgentConfig::default(),
         }
+    }
+
+    fn sample_state() -> TaskState {
+        TaskState {
+            task_name: "coverage-task".to_string(),
+            canonical_branch: "main".to_string(),
+            advancing_branch: "autotune/coverage-task-main".to_string(),
+            research_session_id: "session-123".to_string(),
+            research_backend: "codex".to_string(),
+            current_iteration: 3,
+            current_phase: Phase::Scoring,
+            current_approach: Some("raise-line-coverage".to_string()),
+        }
+    }
+
+    fn sample_ledger() -> Vec<IterationRecord> {
+        vec![
+            IterationRecord {
+                iteration: 0,
+                approach: "baseline".to_string(),
+                status: IterationStatus::Baseline,
+                hypothesis: None,
+                metrics: HashMap::from([("line_coverage".to_string(), 72.4)]),
+                rank: 0.0,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                timestamp: Utc::now(),
+            },
+            IterationRecord {
+                iteration: 2,
+                approach: "very-long-coverage-approach-name".to_string(),
+                status: IterationStatus::Kept,
+                hypothesis: Some("Add missing formatter tests".to_string()),
+                metrics: HashMap::from([("line_coverage".to_string(), 78.9)]),
+                rank: 0.064,
+                score: Some(0.064),
+                reason: Some("coverage improved".to_string()),
+                fix_attempts: 1,
+                fresh_spawns: 0,
+                timestamp: Utc::now(),
+            },
+        ]
     }
 
     #[test]
@@ -1849,6 +1937,73 @@ reasoning_effort = "low"
         assert!(prompt.contains("Score uses thresholds:"));
         assert!(prompt.contains("- line_coverage Maximize 85"));
         assert!(!prompt.contains("Baseline raw measure output"));
+    }
+
+    #[test]
+    fn build_report_json_serializes_task_state_and_ledger() {
+        let state = sample_state();
+        let ledger = sample_ledger();
+
+        let report = build_report_json("coverage-task", &state, &ledger);
+
+        assert_eq!(report["task"], json!("coverage-task"));
+        assert_eq!(report["phase"], json!("Scoring"));
+        assert_eq!(report["iteration"], json!(3));
+        assert_eq!(report["ledger"][0]["approach"], json!("baseline"));
+        assert_eq!(report["ledger"][1]["reason"], json!("coverage improved"));
+    }
+
+    #[test]
+    fn render_report_table_formats_header_and_truncates_approach_names() {
+        let state = sample_state();
+        let ledger = sample_ledger();
+
+        let table = render_report_table("coverage-task", &state, &ledger);
+
+        assert!(table.contains("Task: coverage-task"));
+        assert!(table.contains("Phase: Scoring"));
+        assert!(table.contains("Iteration: 3"));
+        assert!(table.contains("Iter   Approach             Status     Rank"));
+        assert!(table.contains("baseline"));
+        assert!(table.contains("very-long-coverage…"));
+        assert!(table.contains("0.0640"));
+        assert!(table.contains("coverage improved"));
+    }
+
+    #[test]
+    fn render_task_list_table_handles_known_and_unknown_state_rows() {
+        let state = sample_state();
+        let table = render_task_list_table(&[
+            ("coverage-task".to_string(), Some(state)),
+            ("broken-task".to_string(), None),
+        ]);
+
+        assert!(table.contains("Name"));
+        assert!(table.contains("coverage-task"));
+        assert!(table.contains("Scoring"));
+        assert!(table.contains("3"));
+        assert!(table.contains("broken-task"));
+        assert!(table.contains("unknown"));
+    }
+
+    #[test]
+    fn build_export_json_includes_snapshot_log_and_state() {
+        let state = sample_state();
+        let ledger = sample_ledger();
+
+        let export = build_export_json(
+            "coverage-task",
+            "[task]\nname = \"coverage-task\"\n",
+            &ledger,
+            "investigation notes",
+            &state,
+        );
+
+        assert_eq!(export["task_name"], json!("coverage-task"));
+        assert_eq!(export["config"], json!("[task]\nname = \"coverage-task\"\n"));
+        assert_eq!(export["log"], json!("investigation notes"));
+        assert_eq!(export["state"]["current_phase"], json!("Scoring"));
+        assert_eq!(export["ledger"][1]["status"], json!("Kept"));
     }
 
     #[test]
