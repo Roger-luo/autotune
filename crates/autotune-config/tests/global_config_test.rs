@@ -17,7 +17,7 @@ model = "opus"
 
     let config = GlobalConfig::load_from(f.path()).unwrap();
     let agent = config.agent.unwrap();
-    assert_eq!(agent.backend, "claude");
+    assert_eq!(agent.backend.as_deref(), Some("claude"));
     let init = agent.init.unwrap();
     assert_eq!(init.model.as_deref(), Some("opus"));
 }
@@ -84,7 +84,7 @@ reasoning_effort = "low"
 
     let config = GlobalConfig::load_from(f.path()).unwrap();
     let agent = config.agent.unwrap();
-    assert_eq!(agent.backend, "codex");
+    assert_eq!(agent.backend.as_deref(), Some("codex"));
     assert_eq!(
         agent.reasoning_effort,
         Some(autotune_config::ReasoningEffort::Medium)

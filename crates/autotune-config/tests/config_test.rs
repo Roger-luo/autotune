@@ -335,7 +335,7 @@ max_turns = 50
 "#,
     );
     let config = AutotuneConfig::load(f.path()).unwrap();
-    assert_eq!(config.agent.backend, "claude");
+    assert_eq!(config.agent.backend.as_deref(), Some("claude"));
     let research = config.agent.research.unwrap();
     assert_eq!(research.model.unwrap(), "opus");
     let implementation = config.agent.implementation.unwrap();
@@ -380,7 +380,7 @@ model = "gpt-5-mini"
 "#,
     );
     let config = AutotuneConfig::load(f.path()).unwrap();
-    assert_eq!(config.agent.backend, "codex");
+    assert_eq!(config.agent.backend.as_deref(), Some("codex"));
     let research = config.agent.research.unwrap();
     assert_eq!(research.backend.as_deref(), Some("codex"));
     assert_eq!(research.model.as_deref(), Some("gpt-5"));
@@ -390,6 +390,48 @@ model = "gpt-5-mini"
     let init = config.agent.init.unwrap();
     assert_eq!(init.backend.as_deref(), Some("codex"));
     assert_eq!(init.model.as_deref(), Some("gpt-5-mini"));
+}
+
+#[test]
+fn parse_agent_config_without_backend_stays_backend_agnostic() {
+    let f = write_config(
+        r#"
+[task]
+name = "test-exp"
+max_iterations = "5"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "b"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [{ name = "m", pattern = "x" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "m", direction = "Maximize" }]
+
+[agent.research]
+model = "opus"
+"#,
+    );
+    let config = AutotuneConfig::load(f.path()).unwrap();
+    assert_eq!(config.agent.backend, None);
+    assert_eq!(
+        config
+            .agent
+            .research
+            .as_ref()
+            .and_then(|r| r.model.as_deref()),
+        Some("opus")
+    );
+
+    let toml = toml::to_string_pretty(&config).unwrap();
+    assert!(
+        !toml.contains("backend ="),
+        "backend should stay omitted when not explicitly set.\n{toml}"
+    );
 }
 
 #[test]
@@ -421,7 +463,7 @@ reasoning_effort = "high"
 "#;
     let f = write_config(content);
     let config = AutotuneConfig::load(f.path()).unwrap();
-    assert_eq!(config.agent.backend, "codex");
+    assert_eq!(config.agent.backend.as_deref(), Some("codex"));
     assert_eq!(config.agent.model.as_deref(), Some("gpt-5.4"));
     assert_eq!(
         config.agent.reasoning_effort,

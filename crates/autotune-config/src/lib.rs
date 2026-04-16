@@ -195,8 +195,8 @@ pub struct ThresholdCondition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    #[serde(default = "default_backend")]
-    pub backend: String,
+    #[serde(default)]
+    pub backend: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -218,7 +218,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            backend: default_backend(),
+            backend: None,
             model: None,
             max_turns: None,
             reasoning_effort: None,
@@ -229,10 +229,6 @@ impl Default for AgentConfig {
             init: None,
         }
     }
-}
-
-fn default_backend() -> String {
-    "claude".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,7 +448,7 @@ impl AutotuneConfig {
 
     fn effective_agent_defaults(&self) -> AgentRoleConfig {
         AgentRoleConfig {
-            backend: Some(self.agent.backend.clone()),
+            backend: self.agent.backend.clone(),
             model: self.agent.model.clone(),
             max_turns: self.agent.max_turns,
             reasoning_effort: self.agent.reasoning_effort,

@@ -670,7 +670,7 @@ fn parse_agent(reader: &mut Reader<&[u8]>) -> Result<AgentSectionConfig, AgentEr
     })?;
 
     Ok(AgentSectionConfig {
-        backend: backend.unwrap_or_else(|| "claude".to_string()),
+        backend,
         model: None,
         max_turns: None,
         reasoning_effort: None,
@@ -1061,7 +1061,7 @@ mod tests {
         let frags = parse_agent_response(xml).unwrap();
         match &frags[0] {
             AgentFragment::Agent(agent) => {
-                assert_eq!(agent.backend, "claude");
+                assert_eq!(agent.backend, Some("claude".to_string()));
                 let research = agent.research.as_ref().unwrap();
                 assert_eq!(research.model.as_deref(), Some("claude-opus"));
                 assert_eq!(research.max_turns, Some(20));

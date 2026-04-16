@@ -32,7 +32,7 @@ max_turns = 100
     // Load and verify
     let config = GlobalConfig::load_from(&path).unwrap();
     let agent = config.agent.unwrap();
-    assert_eq!(agent.backend, "claude");
+    assert_eq!(agent.backend.as_deref(), Some("claude"));
     let init = agent.init.unwrap();
     assert_eq!(init.model.as_deref(), Some("opus"));
     assert_eq!(init.max_turns, Some(100));

@@ -832,7 +832,9 @@ fn implementation_session_from_approach(approach: &ApproachState) -> Option<Agen
 }
 
 fn implementation_backend_from_config(config: &AutotuneConfig) -> String {
-    resolve_backend_name(&config.agent, AgentRole::Implementation).to_string()
+    resolve_backend_name(&config.agent, AgentRole::Implementation)
+        .unwrap_or("claude")
+        .to_string()
 }
 
 fn implementation_cache_backend(
@@ -841,7 +843,9 @@ fn implementation_cache_backend(
 ) -> String {
     approach
         .and_then(|approach| approach.impl_backend.as_deref())
-        .unwrap_or_else(|| resolve_backend_name(&config.agent, AgentRole::Implementation))
+        .unwrap_or_else(|| {
+            resolve_backend_name(&config.agent, AgentRole::Implementation).unwrap_or("claude")
+        })
         .to_string()
 }
 
@@ -1701,7 +1705,7 @@ mod tests {
     #[test]
     fn implementation_backend_from_config_prefers_role_override() {
         let mut config = make_minimal_config(None, None);
-        config.agent.backend = "claude".to_string();
+        config.agent.backend = Some("claude".to_string());
         config.agent.implementation = Some(autotune_config::AgentRoleConfig {
             backend: Some("codex".to_string()),
             model: None,

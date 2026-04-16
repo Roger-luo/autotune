@@ -103,19 +103,9 @@ fn apply_global_agent_defaults(config: &mut AutotuneConfig, global: &GlobalConfi
         return;
     };
 
-    fn agent_defaults(
-        agent: &autotune_config::AgentConfig,
-        treat_default_backend_as_unset: bool,
-    ) -> autotune_config::AgentRoleConfig {
-        let backend = if treat_default_backend_as_unset
-            && agent.backend == autotune_config::AgentConfig::default().backend
-        {
-            None
-        } else {
-            Some(agent.backend.clone())
-        };
+    fn agent_defaults(agent: &autotune_config::AgentConfig) -> autotune_config::AgentRoleConfig {
         autotune_config::AgentRoleConfig {
-            backend,
+            backend: agent.backend.clone(),
             model: agent.model.clone(),
             max_turns: agent.max_turns,
             reasoning_effort: agent.reasoning_effort,
@@ -135,13 +125,10 @@ fn apply_global_agent_defaults(config: &mut AutotuneConfig, global: &GlobalConfi
         }
     }
 
-    let global_defaults = agent_defaults(global_agent, false);
-    let project_defaults = agent_defaults(&config.agent, true).overlay(&global_defaults);
+    let global_defaults = agent_defaults(global_agent);
+    let project_defaults = agent_defaults(&config.agent).overlay(&global_defaults);
 
-    config.agent.backend = project_defaults
-        .backend
-        .clone()
-        .unwrap_or_else(|| autotune_config::AgentConfig::default().backend);
+    config.agent.backend = project_defaults.backend.clone();
     config.agent.model = project_defaults.model.clone();
     config.agent.max_turns = project_defaults.max_turns;
     config.agent.reasoning_effort = project_defaults.reasoning_effort;
@@ -241,7 +228,7 @@ fn build_agent(config: &AutotuneConfig, role: AgentRole) -> Result<Box<dyn Agent
     }
 
     let backend = resolve_backend_name(&config.agent, role);
-    build_agent_for_backend(backend)
+    build_agent_for_backend(backend.unwrap_or("claude"))
 }
 
 fn research_agent_session_config(
@@ -1208,7 +1195,7 @@ const CONFIG_KEYS: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         key: "agent.backend",
         kind: ConfigValueKind::String,
-        get: |config| Some(config.agent.as_ref()?.backend.clone()),
+        get: |config| config.agent.as_ref()?.backend.clone(),
     },
     ConfigKeyDef {
         key: "agent.research.model",
@@ -1839,6 +1826,35 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                 .and_then(|r| r.backend.as_deref()),
             Some("codex")
         );
+    }
+
+    #[test]
+    fn apply_global_agent_defaults_leaves_project_backend_unset_without_global_backend() {
+        let mut config: AutotuneConfig = toml::from_str(
+            r#"
+[task]
+name = "demo"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "bench"
+command = ["echo", "metric: 1"]
+adaptor = { type = "regex", patterns = [{ name = "metric", pattern = "metric: ([0-9]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric", direction = "Minimize" }]
+"#,
+        )
+        .unwrap();
+        let global = GlobalConfig::default();
+
+        apply_global_agent_defaults(&mut config, &global);
+
+        assert_eq!(config.agent.backend, None);
     }
 
     #[test]

@@ -9,7 +9,7 @@ pub enum AgentRole {
     Init,
 }
 
-pub fn resolve_backend_name(config: &AgentConfig, role: AgentRole) -> &str {
+pub fn resolve_backend_name(config: &AgentConfig, role: AgentRole) -> Option<&str> {
     let role_config: Option<&AgentRoleConfig> = match role {
         AgentRole::Research => config.research.as_ref(),
         AgentRole::Implementation => config.implementation.as_ref(),
@@ -18,7 +18,7 @@ pub fn resolve_backend_name(config: &AgentConfig, role: AgentRole) -> &str {
 
     role_config
         .and_then(|role_config| role_config.backend.as_deref())
-        .unwrap_or(config.backend.as_str())
+        .or(config.backend.as_deref())
 }
 
 pub fn build_agent_for_backend(backend: &str) -> Result<Box<dyn Agent>> {
@@ -35,7 +35,7 @@ mod tests {
 
     fn base_config() -> AgentConfig {
         AgentConfig {
-            backend: "claude".to_string(),
+            backend: Some("claude".to_string()),
             model: None,
             max_turns: None,
             reasoning_effort: None,
@@ -59,12 +59,35 @@ mod tests {
             max_fresh_spawns: None,
         });
 
-        assert_eq!(resolve_backend_name(&config, AgentRole::Research), "codex");
+        assert_eq!(
+            resolve_backend_name(&config, AgentRole::Research),
+            Some("codex")
+        );
         assert_eq!(
             resolve_backend_name(&config, AgentRole::Implementation),
-            "claude"
+            Some("claude")
         );
-        assert_eq!(resolve_backend_name(&config, AgentRole::Init), "claude");
+        assert_eq!(
+            resolve_backend_name(&config, AgentRole::Init),
+            Some("claude")
+        );
+    }
+
+    #[test]
+    fn resolve_backend_name_returns_none_when_backend_omitted() {
+        let config = AgentConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: None,
+            max_fresh_spawns: None,
+            research: None,
+            implementation: None,
+            init: None,
+        };
+
+        assert_eq!(resolve_backend_name(&config, AgentRole::Research), None);
     }
 
     #[test]
