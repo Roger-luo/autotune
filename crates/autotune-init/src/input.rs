@@ -1,8 +1,6 @@
 use autotune_agent::protocol::QuestionOption;
 use std::io::{self, IsTerminal, Write};
 
-use crate::select::{self, SelectResult};
-
 /// Format a question option for display: "label — description" or just "label".
 fn format_option(opt: &QuestionOption) -> String {
     match &opt.description {
@@ -78,12 +76,27 @@ impl UserInput for TerminalInput {
         println!("\n{}", question);
 
         if io::stdin().is_terminal() {
-            // Interactive: arrow-key selection with an optional free-text fallback.
-            let items: Vec<String> = options.iter().map(format_option).collect();
+            let _terminal_guard = autotune_agent::terminal::Guard::new();
+            let mut items: Vec<String> = options.iter().map(format_option).collect();
 
-            match select::interactive_select(&items, allow_free_response)? {
-                SelectResult::Option(idx) => Ok(options[idx].key.clone()),
-                SelectResult::FreeText => self.prompt_text("Type your own answer:"),
+            if allow_free_response {
+                items.push("Type your own answer...".to_string());
+            }
+
+            let selection = dialoguer::Select::new()
+                .items(&items)
+                .default(0)
+                .interact()
+                .map_err(io::Error::other)?;
+
+            if allow_free_response && selection == options.len() {
+                let text = dialoguer::Input::<String>::new()
+                    .with_prompt("Type your answer")
+                    .interact_text()
+                    .map_err(io::Error::other)?;
+                Ok(text)
+            } else {
+                Ok(options[selection].key.clone())
             }
         } else {
             // Piped: numbered list, accept number or free text

@@ -1,7 +1,6 @@
 mod error;
 pub mod input;
 mod prompt;
-mod select;
 
 pub use error::InitError;
 pub use input::{MockInput, TerminalInput, UserInput};
