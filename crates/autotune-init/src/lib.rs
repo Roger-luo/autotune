@@ -27,7 +27,8 @@ const MAX_TURNS: usize = 50;
 /// Called after the user approves the assembled config. Typically runs the
 /// measure commands and tries metric extraction. Returns extracted metrics
 /// on success, or a detailed error string (including measure output) on failure.
-pub type ConfigValidator = dyn Fn(&AutotuneConfig) -> Result<HashMap<String, f64>, String>;
+pub type ConfigValidator<'a> =
+    dyn Fn(&AutotuneConfig) -> Result<HashMap<String, f64>, String> + 'a;
 
 /// Accumulated config sections during the init conversation.
 #[derive(Clone, Default)]
@@ -368,7 +369,7 @@ pub fn run_init(
     global_config: &GlobalConfig,
     repo_root: &Path,
     user_input: &dyn UserInput,
-    config_validator: Option<&ConfigValidator>,
+    config_validator: Option<&ConfigValidator<'_>>,
 ) -> Result<InitResult, InitError> {
     // Install a Ctrl+C handler that restores terminal state before exiting.
     // This ensures raw mode is disabled and the cursor is visible even if
@@ -422,7 +423,7 @@ fn run_init_inner(
     global_config: &GlobalConfig,
     repo_root: &Path,
     user_input: &dyn UserInput,
-    config_validator: Option<&ConfigValidator>,
+    config_validator: Option<&ConfigValidator<'_>>,
 ) -> Result<InitResult, InitError> {
     let prompt = build_init_prompt(repo_root);
 
