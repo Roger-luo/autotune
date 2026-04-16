@@ -345,6 +345,9 @@ mod tests {
     use super::*;
     use autotune_adaptor::AdaptorError;
     use autotune_config::{AdaptorConfig, MeasureConfig, RegexPattern};
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     fn script_adaptor(command: Vec<String>, working_dir: &Path) -> ScriptAdaptorWithWorkingDir {
@@ -394,15 +397,25 @@ mod tests {
     #[test]
     fn script_adaptor_extract_passes_combined_output_and_working_dir() {
         let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("marker.txt"), "present").unwrap();
+        let script = tmp.path().join("extract.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+test -f marker.txt || exit 1
+bytes=$(cat | wc -c | tr -d ' ')
+echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
+"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
         let adaptor = script_adaptor(
-            vec![
-                "sh".to_string(),
-                "-c".to_string(),
-                "combined=$(cat)\nif printf '%s' \"$combined\" | grep -q 'alpha' && printf '%s' \"$combined\" | grep -q 'beta' && [ \"$PWD\" = \"$1\" ]; then\n  printf '{\"combined\": 2, \"pwd_ok\": 1}\\n'\nelse\n  printf '{\"combined\": 0, \"pwd_ok\": 0}\\n'\nfi"
-                    .to_string(),
-                "sh".to_string(),
-                tmp.path().display().to_string(),
-            ],
+            vec![script.display().to_string()],
             tmp.path(),
         );
         let output = MeasureOutput {
@@ -412,7 +425,7 @@ mod tests {
 
         let metrics = adaptor.extract(&output).unwrap();
 
-        assert_eq!(metrics.get("combined"), Some(&2.0));
+        assert_eq!(metrics.get("stdin_bytes"), Some(&10.0));
         assert_eq!(metrics.get("pwd_ok"), Some(&1.0));
     }
 
