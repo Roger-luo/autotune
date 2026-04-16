@@ -343,8 +343,13 @@ impl MetricAdaptor for ScriptAdaptorWithWorkingDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use autotune_adaptor::AdaptorError;
     use autotune_config::{AdaptorConfig, MeasureConfig, RegexPattern};
     use std::path::Path;
+
+    fn script_adaptor(command: Vec<String>, working_dir: &Path) -> ScriptAdaptorWithWorkingDir {
+        ScriptAdaptorWithWorkingDir::new(command, working_dir.to_path_buf())
+    }
 
     #[test]
     fn build_adaptor_regex_produces_regex_adaptor() {
@@ -370,6 +375,68 @@ mod tests {
         };
         let _adaptor = build_adaptor(&config, Path::new("."));
         // Just verify no panic on construction.
+    }
+
+    #[test]
+    fn script_adaptor_extract_rejects_empty_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let adaptor = script_adaptor(Vec::new(), tmp.path());
+        let output = MeasureOutput {
+            stdout: "ignored".to_string(),
+            stderr: "ignored".to_string(),
+        };
+
+        let err = adaptor.extract(&output).unwrap_err();
+
+        assert!(matches!(err, AdaptorError::ScriptEmptyCommand));
+    }
+
+    #[test]
+    fn script_adaptor_extract_passes_combined_output_and_working_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let adaptor = script_adaptor(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "read stdout_line\nread stderr_line\nif [ \"$stdout_line\" = \"alpha\" ] && [ \"$stderr_line\" = \"beta\" ] && [ \"$PWD\" = \"$1\" ]; then\n  printf '{\"combined\": 2, \"pwd_ok\": 1}\\n'\nelse\n  printf '{\"combined\": 0, \"pwd_ok\": 0}\\n'\nfi"
+                    .to_string(),
+                "sh".to_string(),
+                tmp.path().display().to_string(),
+            ],
+            tmp.path(),
+        );
+        let output = MeasureOutput {
+            stdout: "alpha".to_string(),
+            stderr: "beta".to_string(),
+        };
+
+        let metrics = adaptor.extract(&output).unwrap();
+
+        assert_eq!(metrics.get("combined"), Some(&2.0));
+        assert_eq!(metrics.get("pwd_ok"), Some(&1.0));
+    }
+
+    #[test]
+    fn script_adaptor_extract_surfaces_nonzero_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let adaptor = script_adaptor(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'script blew up' >&2\nexit 7".to_string(),
+            ],
+            tmp.path(),
+        );
+        let output = MeasureOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+
+        let err = adaptor.extract(&output).unwrap_err();
+
+        assert!(
+            matches!(err, AdaptorError::ScriptFailed { code, ref stderr } if code == 7 && stderr.contains("script blew up"))
+        );
     }
 
     #[test]
@@ -408,6 +475,51 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let metrics = run_measure(&config, tmp.path()).unwrap();
         assert_eq!(*metrics.get("metric-name").unwrap(), 99.5);
+    }
+
+    #[test]
+    fn run_measure_with_output_returns_timeout_error() {
+        let config = MeasureConfig {
+            name: "timeout-test".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "sleep 1".to_string()],
+            timeout: 0,
+            adaptor: AdaptorConfig::Regex { patterns: vec![] },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+
+        let result = run_measure_with_output(&config, tmp.path());
+
+        assert!(
+            matches!(result, Err(MeasureError::TimedOut { ref name, timeout }) if name == "timeout-test" && timeout == 0),
+            "expected TimedOut, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn run_measure_with_output_maps_extraction_failures() {
+        let config = MeasureConfig {
+            name: "extract-fail-test".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo 'not a matching metric'".to_string(),
+            ],
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "score".to_string(),
+                    pattern: r"score: ([0-9.]+)".to_string(),
+                }],
+            },
+        };
+        let tmp = tempfile::tempdir().unwrap();
+
+        let result = run_measure_with_output(&config, tmp.path());
+
+        assert!(
+            matches!(result, Err(MeasureError::Extraction { ref name, .. }) if name == "extract-fail-test"),
+            "expected Extraction, got: {result:?}"
+        );
     }
 
     #[test]
