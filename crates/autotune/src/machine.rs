@@ -1399,7 +1399,11 @@ fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use autotune_mock::MockAgent;
+    use autotune_score::ScoreError;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     fn make_minimal_config(
         max_iterations: Option<autotune_config::StopValue>,
@@ -1451,6 +1455,104 @@ mod tests {
             fix_attempts: 0,
             fresh_spawns: 0,
             timestamp: Utc::now(),
+        }
+    }
+
+    fn init_temp_repo(dir: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .expect("git init failed");
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .expect("git config email failed");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .expect("git config name failed");
+
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "pub fn marker() {}\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .expect("git add failed");
+        Command::new("git")
+            .args(["commit", "-m", "initial commit"])
+            .current_dir(dir)
+            .output()
+            .expect("git commit failed");
+        Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(dir)
+            .output()
+            .expect("git branch rename failed");
+    }
+
+    fn add_worktree(repo_root: &Path, branch: &str, worktree_path: &Path) {
+        Command::new("git")
+            .args(["branch", branch, "main"])
+            .current_dir(repo_root)
+            .output()
+            .expect("git branch create failed");
+        Command::new("git")
+            .args(["worktree", "add"])
+            .arg(worktree_path)
+            .arg(branch)
+            .current_dir(repo_root)
+            .output()
+            .expect("git worktree add failed");
+    }
+
+    fn make_store() -> (tempfile::TempDir, TaskStore) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        (tmp, store)
+    }
+
+    fn make_approach(worktree_path: PathBuf) -> ApproachState {
+        ApproachState {
+            name: "test-approach".to_string(),
+            hypothesis: "trim allocations".to_string(),
+            worktree_path,
+            branch_name: "autotune/test-task/test-approach".to_string(),
+            commit_sha: Some("abc123".to_string()),
+            test_results: vec![],
+            metrics: None,
+            rank: None,
+            files_to_modify: vec!["src/lib.rs".to_string()],
+            impl_session_id: Some("mock-impl-1".to_string()),
+            impl_backend: Some("mock".to_string()),
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            fix_history: vec![],
+            score_reason: None,
+        }
+    }
+
+    fn make_state_with_approach(
+        phase: Phase,
+        iteration: usize,
+        worktree_path: PathBuf,
+    ) -> TaskState {
+        let mut state = make_task_state(iteration, phase);
+        state.current_approach = Some(make_approach(worktree_path));
+        state
+    }
+
+    struct FixedScorer {
+        output: ScoreOutput,
+    }
+
+    impl ScoreCalculator for FixedScorer {
+        fn calculate(&self, _input: &ScoreInput) -> std::result::Result<ScoreOutput, ScoreError> {
+            Ok(self.output.clone())
         }
     }
 
@@ -1562,6 +1664,406 @@ mod tests {
         let store = autotune_state::TaskStore::new(tmp.path()).unwrap();
         store.append_ledger(&make_kept_record(0.1)).unwrap();
         assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn run_testing_passes_and_moves_to_measuring() {
+        let (_tmp, store) = make_store();
+        let mut config = make_minimal_config(None, None);
+        config.test = vec![autotune_config::TestConfig {
+            name: "unit".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf 'ok\\n'".to_string(),
+            ],
+            timeout: 10,
+            allow_test_edits: false,
+        }];
+
+        let worktree = tempfile::tempdir().unwrap();
+        let mut state = make_state_with_approach(Phase::Testing, 1, worktree.path().to_path_buf());
+
+        run_testing(&config, &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Measuring);
+        let approach = state.current_approach.as_ref().unwrap();
+        assert_eq!(approach.test_results.len(), 1);
+        assert!(approach.test_results[0].passed);
+        assert!(
+            approach.test_results[0]
+                .output
+                .as_deref()
+                .unwrap()
+                .contains("ok")
+        );
+        assert_eq!(store.load_state().unwrap().current_phase, Phase::Measuring);
+    }
+
+    #[test]
+    fn run_testing_failure_enters_fixing_and_saves_failure_history() {
+        let (_tmp, store) = make_store();
+        let mut config = make_minimal_config(None, None);
+        config.test = vec![autotune_config::TestConfig {
+            name: "unit".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf 'stdout\\n'; printf 'stderr\\n' 1>&2; exit 1".to_string(),
+            ],
+            timeout: 10,
+            allow_test_edits: false,
+        }];
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: Some("mock".to_string()),
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: Some(2),
+            max_fresh_spawns: Some(1),
+        });
+
+        let worktree = tempfile::tempdir().unwrap();
+        let mut state = make_state_with_approach(Phase::Testing, 3, worktree.path().to_path_buf());
+
+        run_testing(&config, &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Fixing);
+        let approach = state.current_approach.as_ref().unwrap();
+        assert_eq!(approach.fix_history.len(), 1);
+        assert!(approach.fix_history[0].contains("=== unit (FAIL) ==="));
+        assert!(approach.fix_history[0].contains("stdout:\nstdout"));
+        assert!(approach.fix_history[0].contains("stderr:\nstderr"));
+        let saved_output = std::fs::read_to_string(
+            store
+                .iteration_dir(3, "test-approach")
+                .join("test_output.txt"),
+        )
+        .unwrap();
+        assert!(saved_output.contains("=== unit (FAIL) ==="));
+        assert_eq!(store.load_state().unwrap().current_phase, Phase::Fixing);
+    }
+
+    #[test]
+    fn run_testing_failure_discards_when_fix_budget_is_exhausted() {
+        let (_tmp, store) = make_store();
+        let mut config = make_minimal_config(None, None);
+        config.test = vec![autotune_config::TestConfig {
+            name: "unit".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            timeout: 10,
+            allow_test_edits: false,
+        }];
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: Some("mock".to_string()),
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: Some(1),
+            max_fresh_spawns: Some(1),
+        });
+
+        let worktree = tempfile::tempdir().unwrap();
+        let mut state = make_state_with_approach(Phase::Testing, 4, worktree.path().to_path_buf());
+        state.current_approach.as_mut().unwrap().fix_attempts = 1;
+
+        run_testing(&config, &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Recorded);
+        assert!(state.current_approach.is_none());
+        assert_eq!(state.current_iteration, 5);
+        let ledger = store.load_ledger().unwrap();
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].status, IterationStatus::Discarded);
+        assert_eq!(
+            ledger[0].reason.as_deref(),
+            Some("tests failed after 1 fix attempt(s); budget exhausted")
+        );
+    }
+
+    #[test]
+    fn run_measuring_saves_metrics_and_raw_output() {
+        let (_tmp, store) = make_store();
+        let mut config = make_minimal_config(None, None);
+        config.measure = vec![autotune_config::MeasureConfig {
+            name: "coverage".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf 'metric: 41.5\\n'; printf 'trace\\n' 1>&2".to_string(),
+            ],
+            timeout: 10,
+            adaptor: autotune_config::AdaptorConfig::Regex {
+                patterns: vec![autotune_config::RegexPattern {
+                    name: "metric".to_string(),
+                    pattern: "metric: ([0-9.]+)".to_string(),
+                }],
+            },
+        }];
+
+        let worktree = tempfile::tempdir().unwrap();
+        let mut state =
+            make_state_with_approach(Phase::Measuring, 2, worktree.path().to_path_buf());
+
+        run_measuring(&config, &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Scoring);
+        let metrics = state
+            .current_approach
+            .as_ref()
+            .unwrap()
+            .metrics
+            .as_ref()
+            .unwrap();
+        assert_eq!(metrics.get("metric"), Some(&41.5));
+        let output_dir = store.measure_output_dir(2, "test-approach");
+        assert_eq!(
+            std::fs::read_to_string(output_dir.join("coverage.stdout.txt")).unwrap(),
+            "metric: 41.5\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(output_dir.join("coverage.stderr.txt")).unwrap(),
+            "trace\n"
+        );
+        assert_eq!(store.load_state().unwrap().current_phase, Phase::Scoring);
+    }
+
+    #[test]
+    fn run_scoring_keep_sets_rank_and_moves_to_integrating() {
+        let (_tmp, store) = make_store();
+        store
+            .append_ledger(&IterationRecord {
+                iteration: 0,
+                approach: "baseline".to_string(),
+                status: IterationStatus::Baseline,
+                hypothesis: None,
+                metrics: HashMap::from([("metric".to_string(), 10.0)]),
+                rank: 0.0,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        let scorer = FixedScorer {
+            output: ScoreOutput {
+                rank: 0.25,
+                decision: "keep".to_string(),
+                reason: "improved".to_string(),
+            },
+        };
+        let worktree = tempfile::tempdir().unwrap();
+        let mut state = make_state_with_approach(Phase::Scoring, 2, worktree.path().to_path_buf());
+        state.current_approach.as_mut().unwrap().metrics =
+            Some(HashMap::from([("metric".to_string(), 8.0)]));
+
+        run_scoring(&scorer, &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Integrating);
+        let approach = state.current_approach.as_ref().unwrap();
+        assert_eq!(approach.rank, Some(0.25));
+        assert_eq!(approach.score_reason.as_deref(), Some("improved"));
+        assert_eq!(
+            store.load_state().unwrap().current_phase,
+            Phase::Integrating
+        );
+    }
+
+    #[test]
+    fn run_scoring_discard_saves_metrics_and_records_ledger() {
+        let (_tmp, store) = make_store();
+        store
+            .append_ledger(&IterationRecord {
+                iteration: 0,
+                approach: "baseline".to_string(),
+                status: IterationStatus::Baseline,
+                hypothesis: None,
+                metrics: HashMap::from([("metric".to_string(), 10.0)]),
+                rank: 0.0,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        let scorer = FixedScorer {
+            output: ScoreOutput {
+                rank: -0.1,
+                decision: "discard".to_string(),
+                reason: "regressed".to_string(),
+            },
+        };
+        let worktree = tempfile::tempdir().unwrap();
+        let mut state = make_state_with_approach(Phase::Scoring, 6, worktree.path().to_path_buf());
+        state.current_approach.as_mut().unwrap().metrics =
+            Some(HashMap::from([("metric".to_string(), 12.0)]));
+
+        run_scoring(&scorer, &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Recorded);
+        assert!(state.current_approach.is_none());
+        assert_eq!(state.current_iteration, 7);
+        let saved_metrics: HashMap<String, f64> = serde_json::from_str(
+            &std::fs::read_to_string(store.iteration_dir(6, "test-approach").join("metrics.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved_metrics.get("metric"), Some(&12.0));
+        let ledger = store.load_ledger().unwrap();
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[1].status, IterationStatus::Discarded);
+        assert_eq!(ledger[1].rank, -0.1);
+        assert_eq!(ledger[1].reason.as_deref(), Some("regressed"));
+    }
+
+    #[test]
+    fn run_fixing_discards_immediately_without_fix_history() {
+        let repo = tempfile::tempdir().unwrap();
+        init_temp_repo(repo.path());
+        let (_tmp, store) = make_store();
+        let mut config = make_minimal_config(None, None);
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: Some("mock".to_string()),
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: Some(2),
+            max_fresh_spawns: Some(1),
+        });
+        let mut state = make_state_with_approach(Phase::Fixing, 1, repo.path().to_path_buf());
+        state.current_approach.as_mut().unwrap().fix_history.clear();
+
+        run_fixing(&config, &MockAgent::builder().build(), &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Recorded);
+        let ledger = store.load_ledger().unwrap();
+        assert_eq!(
+            ledger[0].reason.as_deref(),
+            Some("entered Fixing with no test output")
+        );
+    }
+
+    #[test]
+    fn run_fixing_session_no_edits_clears_session_and_retries() {
+        let repo = tempfile::tempdir().unwrap();
+        init_temp_repo(repo.path());
+        let (_tmp, store) = make_store();
+        let mut config = make_minimal_config(None, None);
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: Some("mock".to_string()),
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: Some(3),
+            max_fresh_spawns: Some(1),
+        });
+        let mut state = make_state_with_approach(Phase::Fixing, 2, repo.path().to_path_buf());
+        state.current_approach.as_mut().unwrap().fix_history =
+            vec!["failing test output".to_string()];
+
+        run_fixing(&config, &MockAgent::builder().build(), &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Fixing);
+        let approach = state.current_approach.as_ref().unwrap();
+        assert_eq!(approach.fix_attempts, 1);
+        assert_eq!(approach.fresh_spawns, 0);
+        assert_eq!(approach.impl_session_id, None);
+        assert_eq!(store.load_state().unwrap().current_phase, Phase::Fixing);
+    }
+
+    #[test]
+    fn run_fixing_fresh_respawn_no_edits_discards_iteration() {
+        let repo = tempfile::tempdir().unwrap();
+        init_temp_repo(repo.path());
+        let worktree_root = tempfile::tempdir().unwrap();
+        let worktree_path = worktree_root.path().join("respawned");
+        add_worktree(
+            repo.path(),
+            "autotune/test-task/test-approach",
+            &worktree_path,
+        );
+
+        let (_tmp, store) = make_store();
+        let mut config = make_minimal_config(None, None);
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: Some("mock".to_string()),
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: Some(3),
+            max_fresh_spawns: Some(1),
+        });
+        let mut state = make_state_with_approach(Phase::Fixing, 5, worktree_path.clone());
+        let approach = state.current_approach.as_mut().unwrap();
+        approach.impl_session_id = None;
+        approach.fix_history = vec!["failing test output".to_string()];
+
+        let agent = MockAgent::builder().implementation_script_entry("").build();
+        run_fixing(&config, &agent, &store, &mut state).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Recorded);
+        assert!(state.current_approach.is_none());
+        assert_eq!(state.current_iteration, 6);
+        let ledger = store.load_ledger().unwrap();
+        assert_eq!(ledger[0].status, IterationStatus::Discarded);
+        assert_eq!(
+            ledger[0].reason.as_deref(),
+            Some("implementer produced no edits after fresh respawn")
+        );
+        assert_eq!(ledger[0].fix_attempts, 1);
+        assert_eq!(ledger[0].fresh_spawns, 1);
+    }
+
+    #[test]
+    fn record_crash_appends_crash_ledger_and_resets_state() {
+        let repo = tempfile::tempdir().unwrap();
+        init_temp_repo(repo.path());
+        let (_tmp, store) = make_store();
+        let mut state = make_state_with_approach(Phase::Implementing, 7, repo.path().to_path_buf());
+        state.current_approach.as_mut().unwrap().fix_attempts = 2;
+        state.current_approach.as_mut().unwrap().fresh_spawns = 1;
+
+        record_crash(&mut state, &store).unwrap();
+
+        assert_eq!(state.current_phase, Phase::Planning);
+        assert_eq!(state.current_iteration, 8);
+        assert!(state.current_approach.is_none());
+        let ledger = store.load_ledger().unwrap();
+        assert_eq!(ledger[0].status, IterationStatus::Crash);
+        assert_eq!(
+            ledger[0].reason.as_deref(),
+            Some("implementation produced no commit")
+        );
+        assert_eq!(ledger[0].fix_attempts, 2);
+        assert_eq!(ledger[0].fresh_spawns, 1);
+    }
+
+    #[test]
+    fn record_discard_preserves_metrics_rank_and_reason() {
+        let repo = tempfile::tempdir().unwrap();
+        init_temp_repo(repo.path());
+        let (_tmp, store) = make_store();
+        let mut state = make_state_with_approach(Phase::Scoring, 9, repo.path().to_path_buf());
+        let approach = state.current_approach.as_mut().unwrap();
+        approach.metrics = Some(HashMap::from([("metric".to_string(), 13.0)]));
+        approach.rank = Some(-0.3);
+        approach.fix_attempts = 1;
+        approach.fresh_spawns = 1;
+
+        record_discard(&mut state, &store, "regressed badly").unwrap();
+
+        assert_eq!(state.current_phase, Phase::Recorded);
+        assert_eq!(state.current_iteration, 10);
+        assert!(state.current_approach.is_none());
+        let ledger = store.load_ledger().unwrap();
+        assert_eq!(ledger[0].status, IterationStatus::Discarded);
+        assert_eq!(ledger[0].metrics.get("metric"), Some(&13.0));
+        assert_eq!(ledger[0].rank, -0.3);
+        assert_eq!(ledger[0].reason.as_deref(), Some("regressed badly"));
+        assert_eq!(ledger[0].fix_attempts, 1);
+        assert_eq!(ledger[0].fresh_spawns, 1);
     }
 
     #[test]

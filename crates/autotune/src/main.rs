@@ -2019,6 +2019,91 @@ reasoning_effort = "low"
     }
 
     #[test]
+    fn validate_key_rejects_unknown_keys() {
+        let err = validate_key("agent.unknown").unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("unknown config key 'agent.unknown'"));
+        assert!(message.contains("agent.backend"));
+        assert!(message.contains("agent.research.model"));
+    }
+
+    #[test]
+    fn set_toml_value_rejects_non_integer_values_for_integer_keys() {
+        let mut doc = toml_edit::DocumentMut::new();
+
+        let err = set_toml_value(&mut doc, "agent.research.max_turns", "abc").unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "'agent.research.max_turns' must be an integer"
+        );
+    }
+
+    #[test]
+    fn unset_toml_value_errors_when_parent_path_is_missing() {
+        let mut doc = toml_edit::DocumentMut::new();
+
+        let err = unset_toml_value(&mut doc, "agent.research.model").unwrap_err();
+
+        assert_eq!(err.to_string(), "key 'agent.research' is not set");
+    }
+
+    #[test]
+    fn unset_toml_value_errors_when_leaf_is_missing() {
+        let mut doc: toml_edit::DocumentMut =
+            "[agent.research]\nmodel = \"gpt-5\"\n".parse().unwrap();
+
+        let err = unset_toml_value(&mut doc, "agent.research.max_turns").unwrap_err();
+
+        assert_eq!(err.to_string(), "key 'agent.research.max_turns' is not set");
+    }
+
+    #[test]
+    fn navigate_config_table_mut_errors_when_path_segment_is_not_a_table() {
+        let mut doc: toml_edit::DocumentMut = "agent = \"claude\"\n".parse().unwrap();
+
+        let err = navigate_config_table_mut(&mut doc, &["agent"], false).unwrap_err();
+
+        assert_eq!(err.to_string(), "'agent' is not a table in config");
+    }
+
+    #[test]
+    fn load_or_create_toml_doc_returns_empty_document_for_missing_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+
+        let doc = load_or_create_toml_doc(&path).unwrap();
+
+        assert!(doc.as_table().is_empty());
+    }
+
+    #[test]
+    fn load_or_create_toml_doc_surfaces_parse_errors() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "[agent\nbackend = \"claude\"\n").unwrap();
+
+        let err = load_or_create_toml_doc(&path).unwrap_err();
+
+        assert!(err.to_string().contains("failed to parse config file"));
+    }
+
+    #[test]
+    fn write_toml_doc_creates_parent_directories() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("nested/config.toml");
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_value(&mut doc, "agent.backend", "codex").unwrap();
+
+        write_toml_doc(&path, &doc).unwrap();
+
+        let written: toml_edit::DocumentMut =
+            std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(written["agent"]["backend"].as_str(), Some("codex"));
+    }
+
+    #[test]
     fn config_template_mentions_claude_and_codex() {
         assert!(CONFIG_TEMPLATE.contains("backend = \"claude\""));
         assert!(CONFIG_TEMPLATE.contains("claude, codex"));
@@ -2548,6 +2633,18 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         assert_eq!(config.task.name, "demo");
         assert_eq!(config.paths.tunable, vec!["src/**"]);
         assert_eq!(config.measure.len(), 1);
+    }
+
+    #[test]
+    fn load_config_surfaces_missing_file_path() {
+        let repo = tempdir().unwrap();
+
+        let err = load_config(repo.path()).unwrap_err();
+
+        assert!(err.to_string().contains(&format!(
+            "failed to load config from {}",
+            repo.path().join(".autotune.toml").display()
+        )));
     }
 
     #[test]
