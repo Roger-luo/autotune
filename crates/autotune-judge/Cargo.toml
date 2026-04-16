@@ -1,0 +1,15 @@
+[package]
+name = "autotune-judge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+autotune-agent = { path = "../autotune-agent" }
+chrono = { version = "0.4", features = ["serde"] }
+dialoguer = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
