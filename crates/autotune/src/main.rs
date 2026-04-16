@@ -337,7 +337,7 @@ fn run_agent_assisted_init(repo_root: &Path) -> Result<InitFlowOutcome> {
     let global_config = GlobalConfig::load().context("failed to load global config")?;
     let agent = build_agent_from_global(&global_config, AgentRole::Init)?;
 
-    let validator_root = repo_root.clone();
+    let validator_root = repo_root.to_path_buf();
     let validator =
         move |config: &AutotuneConfig| -> Result<std::collections::HashMap<String, f64>, String> {
             validate_measure_config(&config.measure, &validator_root)
@@ -1757,10 +1757,16 @@ mod tests {
                     command: vec!["cargo".to_string(), "llvm-cov".to_string()],
                     timeout: 600,
                     adaptor: autotune_config::AdaptorConfig::Regex {
-                        patterns: vec![autotune_config::RegexPattern {
-                            name: "line_coverage".to_string(),
-                            pattern: "coverage: ([0-9.]+)".to_string(),
-                        }],
+                        patterns: vec![
+                            autotune_config::RegexPattern {
+                                name: "line_coverage".to_string(),
+                                pattern: "coverage: ([0-9.]+)".to_string(),
+                            },
+                            autotune_config::RegexPattern {
+                                name: "runtime_ms".to_string(),
+                                pattern: "runtime_ms: ([0-9.]+)".to_string(),
+                            },
+                        ],
                     },
                 },
                 autotune_config::MeasureConfig {
@@ -1939,14 +1945,20 @@ mod tests {
             command: vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "printf 'line_coverage: 72\\n'".to_string(),
+                "printf 'line_coverage: 72\\nruntime_ms: 100\\n'".to_string(),
             ],
             timeout: 30,
             adaptor: autotune_config::AdaptorConfig::Regex {
-                patterns: vec![autotune_config::RegexPattern {
-                    name: "line_coverage".to_string(),
-                    pattern: "line_coverage: ([0-9.]+)".to_string(),
-                }],
+                patterns: vec![
+                    autotune_config::RegexPattern {
+                        name: "line_coverage".to_string(),
+                        pattern: "line_coverage: ([0-9.]+)".to_string(),
+                    },
+                    autotune_config::RegexPattern {
+                        name: "runtime_ms".to_string(),
+                        pattern: "runtime_ms: ([0-9.]+)".to_string(),
+                    },
+                ],
             },
         }];
         std::fs::write(
