@@ -398,7 +398,7 @@ mod tests {
             vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "read stdout_line\nread stderr_line\nif [ \"$stdout_line\" = \"alpha\" ] && [ \"$stderr_line\" = \"beta\" ] && [ \"$PWD\" = \"$1\" ]; then\n  printf '{\"combined\": 2, \"pwd_ok\": 1}\\n'\nelse\n  printf '{\"combined\": 0, \"pwd_ok\": 0}\\n'\nfi"
+                "combined=$(cat)\nif printf '%s' \"$combined\" | grep -q 'alpha' && printf '%s' \"$combined\" | grep -q 'beta' && [ \"$PWD\" = \"$1\" ]; then\n  printf '{\"combined\": 2, \"pwd_ok\": 1}\\n'\nelse\n  printf '{\"combined\": 0, \"pwd_ok\": 0}\\n'\nfi"
                     .to_string(),
                 "sh".to_string(),
                 tmp.path().display().to_string(),
