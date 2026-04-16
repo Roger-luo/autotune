@@ -1752,7 +1752,7 @@ mod tests {
     fn global_backend_name_prefers_init_override() {
         let global = GlobalConfig {
             agent: Some(autotune_config::AgentConfig {
-                backend: "claude".to_string(),
+                backend: Some("claude".to_string()),
                 model: None,
                 max_turns: None,
                 reasoning_effort: None,
@@ -1798,7 +1798,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         .unwrap();
         let global = GlobalConfig {
             agent: Some(autotune_config::AgentConfig {
-                backend: "codex".to_string(),
+                backend: Some("codex".to_string()),
                 model: None,
                 max_turns: None,
                 reasoning_effort: None,
@@ -1819,7 +1819,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
 
         apply_global_agent_defaults(&mut config, &global);
 
-        assert_eq!(config.agent.backend, "codex");
+        assert_eq!(config.agent.backend.as_deref(), Some("codex"));
         assert_eq!(
             config
                 .agent
@@ -1890,7 +1890,7 @@ reasoning_effort = "low"
         .unwrap();
         let global = GlobalConfig {
             agent: Some(autotune_config::AgentConfig {
-                backend: "codex".to_string(),
+                backend: Some("codex".to_string()),
                 model: Some("global-top".to_string()),
                 max_turns: None,
                 reasoning_effort: Some(autotune_config::ReasoningEffort::Medium),
@@ -1918,7 +1918,7 @@ reasoning_effort = "low"
 
         apply_global_agent_defaults(&mut config, &global);
 
-        assert_eq!(config.agent.backend, "codex");
+        assert_eq!(config.agent.backend.as_deref(), Some("codex"));
 
         let research = config.agent.research.as_ref().expect("research role");
         assert_eq!(research.backend.as_deref(), Some("codex"));
@@ -1954,7 +1954,7 @@ reasoning_effort = "low"
     fn get_config_value_uses_shared_key_table_for_role_values() {
         let global = GlobalConfig {
             agent: Some(autotune_config::AgentConfig {
-                backend: "claude".to_string(),
+                backend: Some("claude".to_string()),
                 model: None,
                 max_turns: None,
                 reasoning_effort: None,
