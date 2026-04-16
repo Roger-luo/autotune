@@ -62,6 +62,34 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
         .with_context(|| format!("failed to load config from {}", config_path.display()))
 }
 
+fn global_user_config_path() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = test_support::global_user_config_path_override() {
+        return Ok(path);
+    }
+
+    GlobalConfig::user_config_path().context("could not determine user config directory")
+}
+
+fn load_global_config() -> Result<GlobalConfig> {
+    #[cfg(test)]
+    if let Some(path) = test_support::global_user_config_path_override() {
+        return GlobalConfig::load_from(&path).context("failed to load global config");
+    }
+
+    GlobalConfig::load().context("failed to load global config")
+}
+
+fn configured_editor() -> Result<String> {
+    #[cfg(test)]
+    if let Some(editor) = test_support::editor_override() {
+        return Ok(editor);
+    }
+
+    std::env::var("EDITOR")
+        .context("$EDITOR is not set. Set it to your preferred editor (e.g. export EDITOR=vim)")
+}
+
 fn codex_reasoning_effort(effort: Option<autotune_config::ReasoningEffort>) -> Option<String> {
     effort
         .map(|effort| match effort {
@@ -91,6 +119,36 @@ fn next_available_task_name(repo_root: &Path, base: &str) -> Result<String> {
         }
     }
     bail!("could not find an available fork name for task '{base}' after 10000 attempts");
+}
+
+fn prepare_run_task_dir(repo_root: &Path, config: &mut AutotuneConfig) -> Result<PathBuf> {
+    let mut task_dir = config.task_dir(repo_root);
+    if task_dir.exists() {
+        // If state.json is missing, this is leftover from a failed previous
+        // run (crashed before state was persisted). Clean it up and retry.
+        if !task_dir.join("state.json").exists() {
+            println!(
+                "[autotune] removing incomplete task state at {}",
+                task_dir.display()
+            );
+            std::fs::remove_dir_all(&task_dir)
+                .context("failed to remove incomplete task directory")?;
+        } else {
+            // Task already exists — auto-fork by appending a numeric suffix so
+            // each `run` invocation starts fresh. Users who want to continue
+            // the existing task should use `resume` instead.
+            let original_name = config.task.name.clone();
+            let forked_name = next_available_task_name(repo_root, &original_name)?;
+            println!(
+                "[autotune] task '{}' already exists — forking as '{}' (use 'resume' to continue the existing task)",
+                original_name, forked_name
+            );
+            config.task.name = forked_name;
+            task_dir = config.task_dir(repo_root);
+        }
+    }
+
+    Ok(task_dir)
 }
 
 /// Fill in missing agent role settings from the global user config.
@@ -263,6 +321,40 @@ fn build_agent_from_global(
 
     let backend = global_backend_name(global_config, role).unwrap_or("claude");
     build_agent_for_backend(backend)
+}
+
+enum InitFlowOutcome {
+    Config(AutotuneConfig),
+    Cancelled,
+}
+
+fn run_agent_assisted_init(repo_root: &Path) -> Result<InitFlowOutcome> {
+    #[cfg(test)]
+    if let Some(outcome) = test_support::take_init_override() {
+        return Ok(outcome);
+    }
+
+    let global_config = GlobalConfig::load().context("failed to load global config")?;
+    let agent = build_agent_from_global(&global_config, AgentRole::Init)?;
+
+    let validator_root = repo_root.clone();
+    let validator =
+        move |config: &AutotuneConfig| -> Result<std::collections::HashMap<String, f64>, String> {
+            validate_measure_config(&config.measure, &validator_root)
+        };
+
+    let terminal_input = autotune_init::TerminalInput;
+    match autotune_init::run_init(
+        &*agent,
+        &global_config,
+        repo_root,
+        &terminal_input,
+        Some(&validator),
+    ) {
+        Ok(result) => Ok(InitFlowOutcome::Config(result.config)),
+        Err(autotune_init::InitError::UserAborted) => Ok(InitFlowOutcome::Cancelled),
+        Err(e) => Err(e).context("agent-assisted init failed"),
+    }
 }
 
 #[cfg(feature = "mock")]
@@ -459,31 +551,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         config.task.name = name;
     }
 
-    let mut task_dir = config.task_dir(&repo_root);
-    if task_dir.exists() {
-        // If state.json is missing, this is leftover from a failed previous
-        // run (crashed before state was persisted). Clean it up and retry.
-        if !task_dir.join("state.json").exists() {
-            println!(
-                "[autotune] removing incomplete task state at {}",
-                task_dir.display()
-            );
-            std::fs::remove_dir_all(&task_dir)
-                .context("failed to remove incomplete task directory")?;
-        } else {
-            // Task already exists — auto-fork by appending a numeric suffix so
-            // each `run` invocation starts fresh. Users who want to continue
-            // the existing task should use `resume` instead.
-            let original_name = config.task.name.clone();
-            let forked_name = next_available_task_name(&repo_root, &original_name)?;
-            println!(
-                "[autotune] task '{}' already exists — forking as '{}' (use 'resume' to continue the existing task)",
-                original_name, forked_name
-            );
-            config.task.name = forked_name;
-            task_dir = config.task_dir(&repo_root);
-        }
-    }
+    let task_dir = prepare_run_task_dir(&repo_root, &mut config)?;
 
     let store = TaskStore::new(&task_dir).context("failed to create task store")?;
 
@@ -787,6 +855,7 @@ fn cmd_list() -> Result<()> {
 fn cmd_init(name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let config_path = repo_root.join(".autotune.toml");
+    let mut should_write = false;
 
     let mut config = if config_path.exists() {
         load_config(&repo_root)?
@@ -794,44 +863,28 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
         // Agent-assisted init
         println!("[autotune] no .autotune.toml found — starting agent-assisted init");
 
-        let global_config = GlobalConfig::load().context("failed to load global config")?;
-
-        let agent = build_agent_from_global(&global_config, AgentRole::Init)?;
-
-        // Build a validator that trial-runs tasks so the agent can fix bad config
-        let validator_root = repo_root.clone();
-        let validator =
-            move |config: &AutotuneConfig| -> Result<std::collections::HashMap<String, f64>, String> {
-                validate_measure_config(&config.measure, &validator_root)
-            };
-
-        let terminal_input = autotune_init::TerminalInput;
-        let result = match autotune_init::run_init(
-            &*agent,
-            &global_config,
-            &repo_root,
-            &terminal_input,
-            Some(&validator),
-        ) {
-            Ok(result) => result,
-            Err(autotune_init::InitError::UserAborted) => {
+        let config = match run_agent_assisted_init(&repo_root)? {
+            InitFlowOutcome::Config(config) => config,
+            InitFlowOutcome::Cancelled => {
                 println!("\n[autotune] init cancelled");
                 return Ok(());
             }
-            Err(e) => return Err(e).context("agent-assisted init failed"),
         };
-
-        // Write .autotune.toml
-        let toml_content =
-            toml::to_string_pretty(&result.config).context("failed to serialize config")?;
-        std::fs::write(&config_path, &toml_content).context("failed to write .autotune.toml")?;
-        println!("[autotune] wrote .autotune.toml");
-
-        result.config
+        should_write = true;
+        config
     };
 
     if let Some(name) = name_override {
-        config.task.name = name;
+        if config.task.name != name {
+            config.task.name = name;
+            should_write = true;
+        }
+    }
+
+    if should_write {
+        let toml_content = toml::to_string_pretty(&config).context("failed to serialize config")?;
+        std::fs::write(&config_path, &toml_content).context("failed to write .autotune.toml")?;
+        println!("[autotune] wrote .autotune.toml");
     }
 
     println!();
@@ -1114,23 +1167,21 @@ fn validate_measure_config(
 fn cmd_config(sub: ConfigCommands) -> Result<()> {
     match sub {
         ConfigCommands::Get { key } => {
-            let config = GlobalConfig::load().context("failed to load global config")?;
+            let config = load_global_config()?;
             match get_config_value(&config, &key) {
                 Some(value) => println!("{}", value),
                 None => bail!("key '{}' is not set", key),
             }
         }
         ConfigCommands::Set { key, value } => {
-            let path = GlobalConfig::user_config_path()
-                .context("could not determine user config directory")?;
+            let path = global_user_config_path()?;
             let mut doc = load_or_create_toml_doc(&path)?;
             set_toml_value(&mut doc, &key, &value)?;
             write_toml_doc(&path, &doc)?;
             println!("{} = {}", key, value);
         }
         ConfigCommands::Unset { key } => {
-            let path = GlobalConfig::user_config_path()
-                .context("could not determine user config directory")?;
+            let path = global_user_config_path()?;
             if !path.exists() {
                 bail!("no user config file exists");
             }
@@ -1140,16 +1191,15 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
             println!("unset {}", key);
         }
         ConfigCommands::List => {
-            let config = GlobalConfig::load().context("failed to load global config")?;
-            if let Some(p) = GlobalConfig::user_config_path() {
-                println!("# {}", p.display());
+            let config = load_global_config()?;
+            if let Ok(path) = global_user_config_path() {
+                println!("# {}", path.display());
                 println!();
             }
             print_config(&config);
         }
         ConfigCommands::Edit => {
-            let path = GlobalConfig::user_config_path()
-                .context("could not determine user config directory")?;
+            let path = global_user_config_path()?;
             // Ensure parent dir and file exist
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).context("failed to create config directory")?;
@@ -1157,9 +1207,7 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
             if !path.exists() {
                 std::fs::write(&path, CONFIG_TEMPLATE).context("failed to create config file")?;
             }
-            let editor = std::env::var("EDITOR").context(
-                "$EDITOR is not set. Set it to your preferred editor (e.g. export EDITOR=vim)",
-            )?;
+            let editor = configured_editor()?;
             let status = std::process::Command::new(&editor)
                 .arg(&path)
                 .status()
@@ -1170,6 +1218,65 @@ fn cmd_config(sub: ConfigCommands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test_support {
+    use super::{AutotuneConfig, InitFlowOutcome};
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+
+    #[derive(Default)]
+    struct TestOverrides {
+        user_config_path: Option<PathBuf>,
+        editor: Option<String>,
+        init_outcome: Option<InitFlowOutcome>,
+    }
+
+    fn overrides() -> &'static Mutex<TestOverrides> {
+        static OVERRIDES: OnceLock<Mutex<TestOverrides>> = OnceLock::new();
+        OVERRIDES.get_or_init(|| Mutex::new(TestOverrides::default()))
+    }
+
+    pub fn set_user_config_path_override(path: PathBuf) {
+        overrides().lock().unwrap().user_config_path = Some(path);
+    }
+
+    pub fn clear_user_config_path_override() {
+        overrides().lock().unwrap().user_config_path = None;
+    }
+
+    pub fn global_user_config_path_override() -> Option<PathBuf> {
+        overrides().lock().unwrap().user_config_path.clone()
+    }
+
+    pub fn set_editor_override(editor: impl Into<String>) {
+        overrides().lock().unwrap().editor = Some(editor.into());
+    }
+
+    pub fn clear_editor_override() {
+        overrides().lock().unwrap().editor = None;
+    }
+
+    pub fn editor_override() -> Option<String> {
+        overrides().lock().unwrap().editor.clone()
+    }
+
+    pub fn set_init_override_config(config: AutotuneConfig) {
+        overrides().lock().unwrap().init_outcome = Some(InitFlowOutcome::Config(config));
+    }
+
+    pub fn set_init_override_cancelled() {
+        overrides().lock().unwrap().init_outcome = Some(InitFlowOutcome::Cancelled);
+    }
+
+    pub fn clear_init_override() {
+        overrides().lock().unwrap().init_outcome = None;
+    }
+
+    pub fn take_init_override() -> Option<InitFlowOutcome> {
+        overrides().lock().unwrap().init_outcome.take()
+    }
 }
 
 const CONFIG_TEMPLATE: &str = r#"# Autotune global config
@@ -1610,6 +1717,8 @@ mod tests {
     use autotune_score::{ScoreError, ScoreInput};
     use serde_json::json;
     use std::collections::HashMap;
+    use std::process::Command;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
 
     fn sample_config() -> AutotuneConfig {
@@ -1762,6 +1871,112 @@ mod tests {
             candidate: to_map(candidate),
             best: to_map(best),
         }
+    }
+
+    fn command_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct CommandTestGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous_cwd: PathBuf,
+    }
+
+    impl CommandTestGuard {
+        fn enter(repo_root: &Path) -> Self {
+            let lock = command_test_lock().lock().unwrap();
+            let previous_cwd = std::env::current_dir().unwrap();
+            std::env::set_current_dir(repo_root).unwrap();
+            test_support::clear_user_config_path_override();
+            test_support::clear_editor_override();
+            test_support::clear_init_override();
+            Self {
+                _lock: lock,
+                previous_cwd,
+            }
+        }
+    }
+
+    impl Drop for CommandTestGuard {
+        fn drop(&mut self) {
+            test_support::clear_user_config_path_override();
+            test_support::clear_editor_override();
+            test_support::clear_init_override();
+            std::env::set_current_dir(&self.previous_cwd).unwrap();
+        }
+    }
+
+    fn run_git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo() -> tempfile::TempDir {
+        let repo = tempdir().unwrap();
+        run_git(repo.path(), &["init"]);
+        run_git(repo.path(), &["checkout", "-B", "main"]);
+        run_git(repo.path(), &["config", "user.name", "Autotune Tests"]);
+        run_git(repo.path(), &["config", "user.email", "autotune-tests@example.com"]);
+        std::fs::write(repo.path().join("README.md"), "seed\n").unwrap();
+        run_git(repo.path(), &["add", "README.md"]);
+        run_git(repo.path(), &["commit", "-m", "initial"]);
+        repo
+    }
+
+    fn write_project_config(repo_root: &Path, task_name: &str) -> AutotuneConfig {
+        let mut config = sample_config();
+        config.task.name = task_name.to_string();
+        config.task.canonical_branch = "main".to_string();
+        config.test.clear();
+        config.measure = vec![autotune_config::MeasureConfig {
+            name: "coverage".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf 'line_coverage: 72\\n'".to_string(),
+            ],
+            timeout: 30,
+            adaptor: autotune_config::AdaptorConfig::Regex {
+                patterns: vec![autotune_config::RegexPattern {
+                    name: "line_coverage".to_string(),
+                    pattern: "line_coverage: ([0-9.]+)".to_string(),
+                }],
+            },
+        }];
+        std::fs::write(
+            repo_root.join(".autotune.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        config
+    }
+
+    fn write_task_fixture(repo_root: &Path, task_name: &str, phase: Phase) -> TaskStore {
+        let mut state = sample_state();
+        state.task_name = task_name.to_string();
+        state.current_phase = phase;
+        state.advancing_branch = format!("autotune/{task_name}-main");
+
+        let mut config = sample_config();
+        config.task.name = task_name.to_string();
+        config.task.canonical_branch = "main".to_string();
+
+        let store = TaskStore::new(&repo_root.join(".autotune/tasks").join(task_name)).unwrap();
+        store.save_state(&state).unwrap();
+        store
+            .save_config_snapshot(&toml::to_string_pretty(&config).unwrap())
+            .unwrap();
+        for record in sample_ledger() {
+            store.append_ledger(&record).unwrap();
+        }
+        store.append_log("investigation notes").unwrap();
+        store
     }
 
     #[test]
@@ -2645,6 +2860,177 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             "failed to load config from {}",
             repo.path().join(".autotune.toml").display()
         )));
+    }
+
+    #[test]
+    fn prepare_run_task_dir_removes_incomplete_task_directory() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "demo");
+
+        let incomplete_dir = repo.path().join(".autotune/tasks/demo");
+        std::fs::create_dir_all(&incomplete_dir).unwrap();
+        std::fs::write(incomplete_dir.join("stale.txt"), "leftover").unwrap();
+
+        let mut config = load_config(repo.path()).unwrap();
+        let task_dir = prepare_run_task_dir(repo.path(), &mut config).unwrap();
+
+        assert_eq!(config.task.name, "demo");
+        assert_eq!(task_dir, incomplete_dir);
+        assert!(!task_dir.exists());
+    }
+
+    #[test]
+    fn prepare_run_task_dir_auto_forks_existing_task() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "demo");
+        write_task_fixture(repo.path(), "demo", Phase::Planning);
+        std::fs::create_dir_all(repo.path().join(".autotune/tasks/demo-2")).unwrap();
+
+        let mut config = load_config(repo.path()).unwrap();
+        let task_dir = prepare_run_task_dir(repo.path(), &mut config).unwrap();
+
+        assert_eq!(config.task.name, "demo-3");
+        assert_eq!(task_dir, repo.path().join(".autotune/tasks/demo-3"));
+    }
+
+    #[test]
+    fn cmd_report_supports_table_and_json_formats() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "report-task");
+        write_task_fixture(repo.path(), "report-task", Phase::Scoring);
+
+        cmd_report(None, ReportFormat::Table).unwrap();
+        cmd_report(Some("report-task".to_string()), ReportFormat::Json).unwrap();
+    }
+
+    #[test]
+    fn cmd_list_handles_empty_and_populated_task_sets() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "list-task");
+
+        cmd_list().unwrap();
+
+        write_task_fixture(repo.path(), "list-task", Phase::Planning);
+        std::fs::create_dir_all(repo.path().join(".autotune/tasks/broken-task")).unwrap();
+
+        cmd_list().unwrap();
+    }
+
+    #[test]
+    fn cmd_export_writes_task_snapshot_to_json_file() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "export-task");
+        write_task_fixture(repo.path(), "export-task", Phase::Scoring);
+
+        let output_path = repo.path().join("export.json");
+        cmd_export(
+            "export-task".to_string(),
+            output_path.display().to_string(),
+        )
+        .unwrap();
+
+        let export: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(output_path).unwrap()).unwrap();
+        assert_eq!(export["task_name"], json!("export-task"));
+        assert_eq!(export["log"], json!("investigation notes\n"));
+        assert_eq!(export["state"]["current_phase"], json!("scoring"));
+    }
+
+    #[test]
+    fn cmd_step_rejects_unexpected_phase_before_running_machine() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "step-task");
+        write_task_fixture(repo.path(), "step-task", Phase::Scoring);
+
+        let err = cmd_step("step-task".to_string(), Phase::Planning).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("task 'step-task' is in phase Scoring, but this command requires phase Planning"));
+    }
+
+    #[test]
+    fn cmd_config_set_get_list_and_unset_use_overridden_user_config_path() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        let user_config = repo.path().join(".config/autotune/config.toml");
+        test_support::set_user_config_path_override(user_config.clone());
+
+        cmd_config(ConfigCommands::Set {
+            key: "agent.research.model".to_string(),
+            value: "gpt-5.4".to_string(),
+        })
+        .unwrap();
+        cmd_config(ConfigCommands::Get {
+            key: "agent.research.model".to_string(),
+        })
+        .unwrap();
+        cmd_config(ConfigCommands::List).unwrap();
+        cmd_config(ConfigCommands::Unset {
+            key: "agent.research.model".to_string(),
+        })
+        .unwrap();
+
+        let doc: toml_edit::DocumentMut =
+            std::fs::read_to_string(user_config).unwrap().parse().unwrap();
+        assert!(doc["agent"]["research"].get("model").is_none());
+    }
+
+    #[test]
+    fn cmd_config_edit_creates_template_and_uses_editor_override() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        let user_config = repo.path().join(".config/autotune/config.toml");
+        test_support::set_user_config_path_override(user_config.clone());
+        test_support::set_editor_override("true");
+
+        cmd_config(ConfigCommands::Edit).unwrap();
+
+        let content = std::fs::read_to_string(user_config).unwrap();
+        assert!(content.contains("Autotune global config"));
+    }
+
+    #[test]
+    fn cmd_init_writes_generated_config_and_persists_name_override() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        let mut config = sample_config();
+        config.task.name = "generated-task".to_string();
+        test_support::set_init_override_config(config);
+
+        cmd_init(Some("cli-name".to_string())).unwrap();
+
+        let written = load_config(repo.path()).unwrap();
+        assert_eq!(written.task.name, "cli-name");
+    }
+
+    #[test]
+    fn cmd_init_updates_existing_config_when_name_is_overridden() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "original-name");
+
+        cmd_init(Some("renamed-task".to_string())).unwrap();
+
+        let written = load_config(repo.path()).unwrap();
+        assert_eq!(written.task.name, "renamed-task");
+    }
+
+    #[test]
+    fn cmd_init_cancelled_flow_leaves_config_absent() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        test_support::set_init_override_cancelled();
+
+        cmd_init(None).unwrap();
+
+        assert!(!repo.path().join(".autotune.toml").exists());
     }
 
     #[test]
