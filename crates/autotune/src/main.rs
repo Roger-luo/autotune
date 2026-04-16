@@ -2236,10 +2236,10 @@ reasoning_effort = "low"
 
         apply_resume_stop_condition_overrides(&mut config, Some(7), None, Some(0.4));
 
-        assert_eq!(
+        assert!(matches!(
             config.task.max_iterations,
             Some(autotune_config::StopValue::Finite(7))
-        );
+        ));
         assert_eq!(config.task.max_duration.as_deref(), Some("2h"));
         assert_eq!(config.task.target_improvement, Some(0.4));
     }
