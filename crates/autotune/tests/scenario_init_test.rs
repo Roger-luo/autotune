@@ -9,7 +9,8 @@
 
 use assert_cmd::Command;
 use scenario::{Project, Scenario, Terminal};
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn autotune_bin() -> String {
@@ -59,6 +60,68 @@ fn git_init(dir: &Path) {
         .current_dir(dir)
         .output()
         .expect("git commit failed");
+}
+
+fn fake_codex_bin(home: &Path) -> PathBuf {
+    let bin_dir = home.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+    let script_path = bin_dir.join("codex");
+    let script = format!(
+        r#"#!/bin/sh
+count_file="{count}"
+expected_add_dir="{expected_add_dir}"
+found=0
+prev=
+for arg in "$@"; do
+  if [ "$prev" = "--add-dir" ] && [ "$arg" = "$expected_add_dir" ]; then
+    found=1
+  fi
+  prev="$arg"
+done
+
+printf 'ARGS:' >> "{log}"
+for arg in "$@"; do
+  printf ' [%s]' "$arg" >> "{log}"
+done
+printf '\n' >> "{log}"
+
+if [ "$found" -ne 1 ]; then
+  echo "missing codex state mount: $expected_add_dir" >&2
+  exit 1
+fi
+
+count=0
+if [ -f "$count_file" ]; then
+  count="$(cat "$count_file")"
+fi
+count=$((count + 1))
+printf '%s' "$count" > "$count_file"
+
+if [ "$count" -eq 1 ]; then
+  cat <<'EOF'
+{{"type":"thread.started","thread_id":"thread-123"}}
+{{"type":"item.completed","item":{{"type":"agent_message","text":"<question><text>Which stop condition should autotune use?</text><option><key>iter</key><label>Iteration cap</label><description>Stop after a fixed number of iterations</description></option></question>"}}}}
+{{"type":"turn.completed"}}
+EOF
+else
+  cat <<'EOF'
+{{"type":"thread.started","thread_id":"thread-123"}}
+{{"type":"item.completed","item":{{"type":"agent_message","text":"<task><name>test-coverage</name><description><![CDATA[Improve Rust test coverage]]></description><canonical-branch>main</canonical-branch><max-iterations>5</max-iterations></task><paths><tunable>src/**/*.rs</tunable></paths><measure><name>coverage</name><command><segment>echo</segment><segment>coverage: 80.0</segment></command><adaptor><type>regex</type><pattern><name>line_coverage</name><regex><![CDATA[coverage: ([0-9.]+)]]></regex></pattern></adaptor></measure><score><type>weighted_sum</type><primary-metric><name>line_coverage</name><direction>Maximize</direction></primary-metric></score>"}}}}
+{{"type":"turn.completed"}}
+EOF
+fi
+"#,
+        count = home.join("codex-count").display(),
+        expected_add_dir = home.join(".codex").display(),
+        log = home.join("codex-invocations.log").display(),
+    );
+    std::fs::write(&script_path, script).unwrap();
+    let mut permissions = std::fs::metadata(&script_path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script_path, permissions).unwrap();
+    script_path
 }
 
 // --- Piped stdin tests (non-interactive, via assert_cmd) ---
@@ -206,6 +269,63 @@ reasoning_effort = "low"
     assert!(
         project.path().join(".autotune.toml").exists(),
         ".autotune.toml should exist"
+    );
+}
+
+#[test]
+fn scenario_init_codex_mounts_codex_state_dir() {
+    let project = mock_project();
+    let home = tempfile::tempdir().unwrap();
+    let config_dir = home.path().join(".config").join("autotune");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        r#"[agent]
+backend = "codex"
+
+[agent.init]
+backend = "codex"
+model = "gpt-5-mini"
+reasoning_effort = "low"
+"#,
+    )
+    .unwrap();
+    let fake_codex = fake_codex_bin(home.path());
+    let path = format!(
+        "{}:{}",
+        fake_codex.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("init")
+        .env("HOME", home.path())
+        .env("PATH", path)
+        .current_dir(project.path())
+        .write_stdin("test coverage\n1\ny\n")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "autotune init failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        project.path().join(".autotune.toml").exists(),
+        ".autotune.toml should exist"
+    );
+
+    let invocations = std::fs::read_to_string(home.path().join("codex-invocations.log")).unwrap();
+    assert!(
+        invocations.contains(&format!(
+            "[--add-dir] [{}]",
+            home.path().join(".codex").display()
+        )),
+        "expected codex state dir mount.\nlog:\n{invocations}"
     );
 }
 

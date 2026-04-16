@@ -9,6 +9,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 quick-xml = "0.36"
 autotune-config = { path = "../autotune-config" }
+dirs = "6"
 
 [dev-dependencies]
 tempfile = "3"

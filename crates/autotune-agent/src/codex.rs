@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 pub struct CodexAgent {
     command: PathBuf,
+    codex_home: Option<PathBuf>,
     sessions: Mutex<HashMap<String, SessionContext>>,
 }
 
@@ -29,14 +30,19 @@ impl CodexAgent {
     }
 
     pub fn with_command(command: PathBuf) -> Self {
+        Self::with_command_and_codex_home(command, Self::default_codex_home())
+    }
+
+    pub fn with_command_and_codex_home(command: PathBuf, codex_home: Option<PathBuf>) -> Self {
         Self {
             command,
+            codex_home,
             sessions: Mutex::new(HashMap::new()),
         }
     }
 
-    fn build_args(config: &AgentConfig, session_id: Option<&str>) -> Vec<String> {
-        let mut args = Self::permission_args(&config.allowed_tools);
+    fn build_args(&self, config: &AgentConfig, session_id: Option<&str>) -> Vec<String> {
+        let mut args = Self::permission_args(&config.allowed_tools, self.codex_home.as_deref());
         args.extend([
             "-C".to_string(),
             config.working_directory.display().to_string(),
@@ -62,6 +68,12 @@ impl CodexAgent {
         args
     }
 
+    fn default_codex_home() -> Option<PathBuf> {
+        std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+    }
+
     fn normalize_prompt(prompt: &str) -> &str {
         if prompt.trim().is_empty() {
             "Continue."
@@ -70,7 +82,7 @@ impl CodexAgent {
         }
     }
 
-    fn permission_args(perms: &[ToolPermission]) -> Vec<String> {
+    fn permission_args(perms: &[ToolPermission], codex_home: Option<&Path>) -> Vec<String> {
         let mut writable_dirs = BTreeSet::new();
         let mut has_write = false;
         let mut deny_bash = false;
@@ -123,6 +135,9 @@ impl CodexAgent {
 
         for dir in writable_dirs {
             args.extend(["--add-dir".to_string(), dir]);
+        }
+        if let Some(dir) = codex_home {
+            args.extend(["--add-dir".to_string(), dir.display().to_string()]);
         }
         if allow_search {
             args.push("--search".to_string());
@@ -413,7 +428,7 @@ impl Default for CodexAgent {
 
 impl Agent for CodexAgent {
     fn spawn(&self, config: &AgentConfig) -> Result<AgentResponse, AgentError> {
-        let args = Self::build_args(config, None);
+        let args = self.build_args(config, None);
         let response = self.run_codex(&args, &config.working_directory)?;
         self.remember_session(&response.session_id, config)?;
         Ok(response)
@@ -421,7 +436,7 @@ impl Agent for CodexAgent {
 
     fn send(&self, session: &AgentSession, message: &str) -> Result<AgentResponse, AgentError> {
         let config = self.config_for_session(&session.session_id, message)?;
-        let args = Self::build_args(&config, Some(&session.session_id));
+        let args = self.build_args(&config, Some(&session.session_id));
         let response = self.run_codex(&args, &config.working_directory)?;
         self.remember_session(&response.session_id, &config)?;
         Ok(response)
@@ -432,7 +447,7 @@ impl Agent for CodexAgent {
         config_with_events: AgentConfigWithEvents,
     ) -> Result<AgentResponse, AgentError> {
         let config = &config_with_events.config;
-        let args = Self::build_args(config, None);
+        let args = self.build_args(config, None);
         let response = if let Some(ref handler) = config_with_events.event_handler {
             self.run_codex_streaming(&args, &config.working_directory, handler)?
         } else {
@@ -449,7 +464,7 @@ impl Agent for CodexAgent {
         event_handler: Option<&EventHandler>,
     ) -> Result<AgentResponse, AgentError> {
         let config = self.config_for_session(&session.session_id, message)?;
-        let args = Self::build_args(&config, Some(&session.session_id));
+        let args = self.build_args(&config, Some(&session.session_id));
         let response = if let Some(handler) = event_handler {
             self.run_codex_streaming(&args, &config.working_directory, handler)?
         } else {

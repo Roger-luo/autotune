@@ -148,7 +148,10 @@ fn codex_send_preserves_spawn_context() {
 {"event":"agent_message_delta","delta":"spawned"}
 {"event":"turn_complete","last_agent_message":"spawned"}"#,
     );
-    let agent = CodexAgent::with_command(harness.codex_path());
+    let codex_home = harness.root.join("codex-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    let agent =
+        CodexAgent::with_command_and_codex_home(harness.codex_path(), Some(codex_home.clone()));
     let working_directory = harness.root.join("workspace");
     fs::create_dir_all(&working_directory).unwrap();
 
@@ -187,6 +190,8 @@ fn codex_send_preserves_spawn_context() {
             "untrusted".to_string(),
             "--sandbox".to_string(),
             "read-only".to_string(),
+            "--add-dir".to_string(),
+            codex_home.display().to_string(),
             "-C".to_string(),
             working_directory.display().to_string(),
             "exec".to_string(),
@@ -249,7 +254,10 @@ fn codex_spawn_uses_top_level_approval_flags() {
         r#"{"event":"thread.started","thread_id":"thread-123"}
 {"event":"turn_complete","last_agent_message":"spawned"}"#,
     );
-    let agent = CodexAgent::with_command(harness.codex_path());
+    let codex_home = harness.root.join("codex-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    let agent =
+        CodexAgent::with_command_and_codex_home(harness.codex_path(), Some(codex_home.clone()));
     let working_directory = harness.root.join("workspace");
     let writable_dir = harness.root.join("scratch");
     fs::create_dir_all(&working_directory).unwrap();
@@ -280,6 +288,8 @@ fn codex_spawn_uses_top_level_approval_flags() {
             "workspace-write".to_string(),
             "--add-dir".to_string(),
             writable_dir.display().to_string(),
+            "--add-dir".to_string(),
+            codex_home.display().to_string(),
             "-C".to_string(),
             working_directory.display().to_string(),
             "exec".to_string(),
@@ -298,6 +308,39 @@ fn codex_spawn_uses_top_level_approval_flags() {
             .count(),
         1,
         "approval flag should only be passed at the top level: {:?}",
+        invocations[0].args
+    );
+}
+
+#[test]
+fn codex_spawn_mounts_codex_home_for_read_only_runs() {
+    let harness = FakeCodexHarness::new(
+        r#"{"event":"thread.started","thread_id":"thread-123"}
+{"event":"turn_complete","last_agent_message":"spawned"}"#,
+    );
+    let codex_home = harness.root.join("codex-home");
+    fs::create_dir_all(&codex_home).unwrap();
+    let agent =
+        CodexAgent::with_command_and_codex_home(harness.codex_path(), Some(codex_home.clone()));
+
+    agent.spawn(&basic_config(&harness.root)).unwrap();
+
+    let invocations = harness.read_invocations();
+    assert!(
+        invocations[0].args.starts_with(&[
+            "-a".to_string(),
+            "never".to_string(),
+            "--sandbox".to_string(),
+            "read-only".to_string(),
+            "--add-dir".to_string(),
+            codex_home.display().to_string(),
+            "-C".to_string(),
+            harness.root.display().to_string(),
+            "exec".to_string(),
+            "--json".to_string(),
+            "--skip-git-repo-check".to_string(),
+        ]),
+        "unexpected args: {:?}",
         invocations[0].args
     );
 }

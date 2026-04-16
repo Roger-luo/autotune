@@ -144,6 +144,7 @@ name = "autotune-agent"
 version = "0.1.0"
 dependencies = [
  "autotune-config",
+ "dirs",
  "quick-xml",
  "serde",
  "serde_json",

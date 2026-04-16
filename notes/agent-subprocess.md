@@ -71,6 +71,9 @@ Current behavior is the strictest supported approximation:
 
 - Run Codex with `-a untrusted` plus the sandbox/worktree restrictions Autotune
   already applies.
+- Always mount Codex's own state directory (`CODEX_HOME` or `~/.codex`) via
+  `--add-dir`. Without that, sandboxed `codex exec` can fail before the agent
+  starts because it cannot create session files or read plugin/skill metadata.
 - Persist the backend name in task state and explicitly re-hydrate the session
   on resume, because the CLI contract is session-based rather than
   re-derivable from a fresh process invocation alone.
