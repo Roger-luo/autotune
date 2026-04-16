@@ -1175,79 +1175,122 @@ const CONFIG_TEMPLATE: &str = r#"# Autotune global config
 "#;
 
 /// Valid config keys and their dotted paths.
-const VALID_KEYS: &[&str] = &[
-    "agent.backend",
-    "agent.research.model",
-    "agent.research.max_turns",
-    "agent.research.backend",
-    "agent.implementation.model",
-    "agent.implementation.max_turns",
-    "agent.implementation.backend",
-    "agent.init.model",
-    "agent.init.max_turns",
-    "agent.init.backend",
+#[derive(Clone, Copy)]
+enum ConfigValueKind {
+    String,
+    Integer,
+}
+
+struct ConfigKeyDef {
+    key: &'static str,
+    kind: ConfigValueKind,
+    get: fn(&GlobalConfig) -> Option<String>,
+}
+
+const CONFIG_KEYS: &[ConfigKeyDef] = &[
+    ConfigKeyDef {
+        key: "agent.backend",
+        kind: ConfigValueKind::String,
+        get: |config| Some(config.agent.as_ref()?.backend.clone()),
+    },
+    ConfigKeyDef {
+        key: "agent.research.model",
+        kind: ConfigValueKind::String,
+        get: |config| config.agent.as_ref()?.research.as_ref()?.model.clone(),
+    },
+    ConfigKeyDef {
+        key: "agent.research.max_turns",
+        kind: ConfigValueKind::Integer,
+        get: |config| {
+            config
+                .agent
+                .as_ref()?
+                .research
+                .as_ref()?
+                .max_turns
+                .map(|value| value.to_string())
+        },
+    },
+    ConfigKeyDef {
+        key: "agent.research.backend",
+        kind: ConfigValueKind::String,
+        get: |config| config.agent.as_ref()?.research.as_ref()?.backend.clone(),
+    },
+    ConfigKeyDef {
+        key: "agent.implementation.model",
+        kind: ConfigValueKind::String,
+        get: |config| config.agent.as_ref()?.implementation.as_ref()?.model.clone(),
+    },
+    ConfigKeyDef {
+        key: "agent.implementation.max_turns",
+        kind: ConfigValueKind::Integer,
+        get: |config| {
+            config
+                .agent
+                .as_ref()?
+                .implementation
+                .as_ref()?
+                .max_turns
+                .map(|value| value.to_string())
+        },
+    },
+    ConfigKeyDef {
+        key: "agent.implementation.backend",
+        kind: ConfigValueKind::String,
+        get: |config| config.agent.as_ref()?.implementation.as_ref()?.backend.clone(),
+    },
+    ConfigKeyDef {
+        key: "agent.init.model",
+        kind: ConfigValueKind::String,
+        get: |config| config.agent.as_ref()?.init.as_ref()?.model.clone(),
+    },
+    ConfigKeyDef {
+        key: "agent.init.max_turns",
+        kind: ConfigValueKind::Integer,
+        get: |config| config.agent.as_ref()?.init.as_ref()?.max_turns.map(|value| value.to_string()),
+    },
+    ConfigKeyDef {
+        key: "agent.init.backend",
+        kind: ConfigValueKind::String,
+        get: |config| config.agent.as_ref()?.init.as_ref()?.backend.clone(),
+    },
 ];
 
+fn config_key_def(key: &str) -> Option<&'static ConfigKeyDef> {
+    CONFIG_KEYS.iter().find(|def| def.key == key)
+}
+
 fn validate_key(key: &str) -> Result<()> {
-    if VALID_KEYS.contains(&key) {
+    if config_key_def(key).is_some() {
         Ok(())
     } else {
         bail!(
             "unknown config key '{}'. Valid keys:\n  {}",
             key,
-            VALID_KEYS.join("\n  ")
+            CONFIG_KEYS
+                .iter()
+                .map(|def| def.key)
+                .collect::<Vec<_>>()
+                .join("\n  ")
         )
     }
 }
 
 fn get_config_value(config: &GlobalConfig, key: &str) -> Option<String> {
-    let agent = config.agent.as_ref()?;
-    match key {
-        "agent.backend" => Some(agent.backend.clone()),
-        "agent.research.model" => agent.research.as_ref()?.model.clone(),
-        "agent.research.max_turns" => agent.research.as_ref()?.max_turns.map(|v| v.to_string()),
-        "agent.research.backend" => agent.research.as_ref()?.backend.clone(),
-        "agent.implementation.model" => agent.implementation.as_ref()?.model.clone(),
-        "agent.implementation.max_turns" => agent
-            .implementation
-            .as_ref()?
-            .max_turns
-            .map(|v| v.to_string()),
-        "agent.implementation.backend" => agent.implementation.as_ref()?.backend.clone(),
-        "agent.init.model" => agent.init.as_ref()?.model.clone(),
-        "agent.init.max_turns" => agent.init.as_ref()?.max_turns.map(|v| v.to_string()),
-        "agent.init.backend" => agent.init.as_ref()?.backend.clone(),
-        _ => None,
-    }
+    config_key_def(key).and_then(|def| (def.get)(config))
 }
 
 fn print_config(config: &GlobalConfig) {
-    let agent = match &config.agent {
-        Some(a) => a,
-        None => {
-            println!("(no config set)");
-            return;
+    let mut printed_any = false;
+    for def in CONFIG_KEYS {
+        if let Some(value) = (def.get)(config) {
+            println!("{} = {}", def.key, value);
+            printed_any = true;
         }
-    };
+    }
 
-    println!("agent.backend = {}", agent.backend);
-
-    for (name, role) in [
-        ("research", &agent.research),
-        ("implementation", &agent.implementation),
-        ("init", &agent.init),
-    ] {
-        if let Some(r) = role {
-            if let Some(ref b) = r.backend {
-                println!("agent.{}.backend = {}", name, b);
-            }
-            if let Some(ref m) = r.model {
-                println!("agent.{}.model = {}", name, m);
-            }
-            if let Some(t) = r.max_turns {
-                println!("agent.{}.max_turns = {}", name, t);
-            }
-        }
+    if !printed_any {
+        println!("(no config set)");
     }
 }
 
@@ -1269,32 +1312,48 @@ fn write_toml_doc(path: &Path, doc: &toml_edit::DocumentMut) -> Result<()> {
     std::fs::write(path, doc.to_string()).context("failed to write config file")
 }
 
-fn set_toml_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<()> {
+fn split_config_key(key: &str) -> Result<Vec<&str>> {
     validate_key(key)?;
+    Ok(key.split('.').collect())
+}
 
-    let parts: Vec<&str> = key.split('.').collect();
-
-    // Navigate/create intermediate tables
+fn navigate_config_table_mut<'a>(
+    doc: &'a mut toml_edit::DocumentMut,
+    parts: &[&str],
+    create_missing: bool,
+) -> Result<&'a mut toml_edit::Table> {
     let mut table = doc.as_table_mut();
-    for &part in &parts[..parts.len() - 1] {
-        if !table.contains_key(part) {
+    for &part in parts {
+        if create_missing && !table.contains_key(part) {
             table.insert(part, toml_edit::Item::Table(toml_edit::Table::new()));
         }
-        table = table[part]
+
+        let item = match table.get_mut(part) {
+            Some(item) => item,
+            None => bail!("key '{}' is not set", parts.join(".")),
+        };
+
+        table = item
             .as_table_mut()
             .with_context(|| format!("'{}' is not a table in config", part))?;
     }
+    Ok(table)
+}
 
+fn set_toml_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<()> {
+    let parts = split_config_key(key)?;
+    let def = config_key_def(key).expect("validated config key must exist");
+    let table = navigate_config_table_mut(doc, &parts[..parts.len() - 1], true)?;
     let leaf = parts[parts.len() - 1];
 
-    // Parse value: try integer first, then string
-    let toml_value = if key.ends_with("max_turns") {
-        let n: u64 = value
-            .parse()
-            .with_context(|| format!("'{}' must be an integer", key))?;
-        toml_edit::value(n as i64)
-    } else {
-        toml_edit::value(value)
+    let toml_value = match def.kind {
+        ConfigValueKind::Integer => {
+            let n: u64 = value
+                .parse()
+                .with_context(|| format!("'{}' must be an integer", key))?;
+            toml_edit::value(n as i64)
+        }
+        ConfigValueKind::String => toml_edit::value(value),
     };
 
     table.insert(leaf, toml_value);
@@ -1302,22 +1361,8 @@ fn set_toml_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> R
 }
 
 fn unset_toml_value(doc: &mut toml_edit::DocumentMut, key: &str) -> Result<()> {
-    validate_key(key)?;
-
-    let parts: Vec<&str> = key.split('.').collect();
-
-    let mut table = doc.as_table_mut();
-    for &part in &parts[..parts.len() - 1] {
-        match table.get_mut(part) {
-            Some(item) => {
-                table = item
-                    .as_table_mut()
-                    .with_context(|| format!("'{}' is not a table in config", part))?;
-            }
-            None => bail!("key '{}' is not set", key),
-        }
-    }
-
+    let parts = split_config_key(key)?;
+    let table = navigate_config_table_mut(doc, &parts[..parts.len() - 1], false)?;
     let leaf = parts[parts.len() - 1];
     if table.remove(leaf).is_none() {
         bail!("key '{}' is not set", key);
@@ -1602,6 +1647,61 @@ reasoning_effort = "low"
             init.reasoning_effort,
             Some(autotune_config::ReasoningEffort::High)
         );
+    }
+
+    #[test]
+    fn get_config_value_uses_shared_key_table_for_role_values() {
+        let global = GlobalConfig {
+            agent: Some(autotune_config::AgentConfig {
+                backend: "claude".to_string(),
+                model: None,
+                max_turns: None,
+                reasoning_effort: None,
+                max_fix_attempts: None,
+                max_fresh_spawns: None,
+                research: None,
+                implementation: Some(autotune_config::AgentRoleConfig {
+                    backend: Some("codex".to_string()),
+                    model: Some("gpt-5".to_string()),
+                    max_turns: Some(42),
+                    reasoning_effort: None,
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+                init: None,
+            }),
+        };
+
+        assert_eq!(
+            get_config_value(&global, "agent.implementation.backend").as_deref(),
+            Some("codex")
+        );
+        assert_eq!(
+            get_config_value(&global, "agent.implementation.model").as_deref(),
+            Some("gpt-5")
+        );
+        assert_eq!(
+            get_config_value(&global, "agent.implementation.max_turns").as_deref(),
+            Some("42")
+        );
+    }
+
+    #[test]
+    fn set_and_unset_toml_value_share_dotted_path_navigation() {
+        let mut doc: toml_edit::DocumentMut = "[agent]\nbackend = \"claude\"\n".parse().unwrap();
+
+        set_toml_value(&mut doc, "agent.research.max_turns", "7").unwrap();
+        set_toml_value(&mut doc, "agent.research.model", "opus").unwrap();
+
+        assert_eq!(
+            doc["agent"]["research"]["max_turns"].as_integer(),
+            Some(7)
+        );
+        assert_eq!(doc["agent"]["research"]["model"].as_str(), Some("opus"));
+
+        unset_toml_value(&mut doc, "agent.research.max_turns").unwrap();
+        assert!(doc["agent"]["research"].get("max_turns").is_none());
+        assert_eq!(doc["agent"]["research"]["model"].as_str(), Some("opus"));
     }
 
     #[test]
