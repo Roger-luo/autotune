@@ -53,6 +53,7 @@ fn agent_config_builds() {
         working_directory: PathBuf::from("/tmp"),
         model: Some("opus".to_string()),
         max_turns: None,
+        reasoning_effort: None,
     };
 
     assert_eq!(config.prompt, "test prompt");
@@ -76,6 +77,7 @@ fn claude_send_preserves_spawn_context() {
         working_directory: working_directory.clone(),
         model: Some("opus".to_string()),
         max_turns: Some(7),
+        reasoning_effort: None,
     };
 
     let response = agent.spawn(&config).unwrap();
@@ -159,6 +161,7 @@ fn codex_send_preserves_spawn_context() {
         working_directory: working_directory.clone(),
         model: Some("gpt-5.4".to_string()),
         max_turns: Some(12),
+        reasoning_effort: None,
     };
 
     let response = agent.spawn(&config).unwrap();
@@ -209,6 +212,38 @@ fn codex_send_preserves_spawn_context() {
 }
 
 #[test]
+fn codex_spawn_uses_reasoning_effort_flag() {
+    let harness = FakeCodexHarness::new(
+        r#"{"event":"thread.started","thread_id":"thread-123"}
+{"event":"turn_complete","last_agent_message":"spawned"}"#,
+    );
+    let agent = CodexAgent::with_command(harness.codex_path());
+    let working_directory = harness.root.join("workspace");
+    fs::create_dir_all(&working_directory).unwrap();
+
+    let config = AgentConfig {
+        prompt: "initial prompt".to_string(),
+        allowed_tools: vec![ToolPermission::Allow("Read".to_string())],
+        working_directory,
+        model: Some("gpt-5.4".to_string()),
+        max_turns: None,
+        reasoning_effort: Some("high".to_string()),
+    };
+
+    agent.spawn(&config).unwrap();
+
+    let invocations = harness.read_invocations();
+    assert!(invocations[0].args.contains(&"-c".to_string()));
+    assert!(
+        invocations[0]
+            .args
+            .contains(&"model_reasoning_effort=high".to_string()),
+        "unexpected args: {:?}",
+        invocations[0].args
+    );
+}
+
+#[test]
 fn codex_spawn_uses_top_level_approval_flags() {
     let harness = FakeCodexHarness::new(
         r#"{"event":"thread.started","thread_id":"thread-123"}
@@ -230,6 +265,7 @@ fn codex_spawn_uses_top_level_approval_flags() {
         working_directory: working_directory.clone(),
         model: None,
         max_turns: None,
+        reasoning_effort: None,
     };
 
     agent.spawn(&config).unwrap();
@@ -309,6 +345,49 @@ fn codex_streaming_parses_jsonl_events() {
 }
 
 #[test]
+fn codex_parses_current_cli_event_shape() {
+    let harness = FakeCodexHarness::new(
+        r#"{"type":"thread.started","thread_id":"thread-123"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed"}"#,
+    );
+    let agent = CodexAgent::with_command(harness.codex_path());
+
+    let response = agent.spawn(&basic_config(&harness.root)).unwrap();
+
+    assert_eq!(response.session_id, "thread-123");
+    assert_eq!(response.text, "OK");
+}
+
+#[test]
+fn codex_streaming_reports_stderr_when_command_fails_before_json() {
+    let harness = FakeCodexHarness::new_with_stderr_and_status(
+        "",
+        "Error loading config.toml: invalid type: unit variant, expected string only",
+        1,
+    );
+    let agent = CodexAgent::with_command(harness.codex_path());
+
+    let error = agent
+        .spawn_streaming(
+            AgentConfigWithEvents::new(basic_config(&harness.root))
+                .with_event_handler(Box::new(|_event| {})),
+        )
+        .unwrap_err();
+
+    match error {
+        AgentError::CommandFailed { message } => {
+            assert!(
+                message.contains("Error loading config.toml"),
+                "unexpected error: {message}"
+            );
+        }
+        other => panic!("expected command failure, got {other:?}"),
+    }
+}
+
+#[test]
 fn codex_grant_session_permission_persists_to_send() {
     let harness = FakeCodexHarness::new(
         r#"{"event":"thread.started","thread_id":"thread-123"}
@@ -367,6 +446,7 @@ fn codex_hydrate_session_allows_resume_on_fresh_agent_instance() {
         working_directory: working_directory.clone(),
         model: Some("gpt-5.4".to_string()),
         max_turns: Some(12),
+        reasoning_effort: None,
     };
 
     let response = spawn_agent.spawn(&config).unwrap();
@@ -424,6 +504,7 @@ fn basic_config(root: &Path) -> AgentConfig {
         working_directory: root.to_path_buf(),
         model: None,
         max_turns: None,
+        reasoning_effort: None,
     }
 }
 
@@ -449,6 +530,10 @@ struct FakeCodexHarness {
 
 impl FakeCodexHarness {
     fn new(initial_response: &str) -> Self {
+        Self::new_with_stderr_and_status(initial_response, "", 0)
+    }
+
+    fn new_with_stderr_and_status(initial_response: &str, stderr: &str, status: i32) -> Self {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -462,14 +547,20 @@ impl FakeCodexHarness {
         fs::create_dir_all(&bin_dir).unwrap();
 
         let response_file = root.join("response.jsonl");
+        let stderr_file = root.join("stderr.txt");
+        let status_file = root.join("status.txt");
         let invocations_file = root.join("invocations.log");
         fs::write(&response_file, initial_response).unwrap();
+        fs::write(&stderr_file, stderr).unwrap();
+        fs::write(&status_file, status.to_string()).unwrap();
 
         let script_path = bin_dir.join("codex");
         let script = format!(
-            "#!/bin/sh\nprintf 'PWD=%s\\n' \"$PWD\" >> '{log}'\nfor arg in \"$@\"; do\n  printf 'ARG=%s\\n' \"$arg\" >> '{log}'\ndone\nprintf 'END\\n' >> '{log}'\ncat '{response}'\n",
+            "#!/bin/sh\nprintf 'PWD=%s\\n' \"$PWD\" >> '{log}'\nfor arg in \"$@\"; do\n  printf 'ARG=%s\\n' \"$arg\" >> '{log}'\ndone\nprintf 'END\\n' >> '{log}'\ncat '{response}'\ncat '{stderr}' >&2\nexit \"$(cat '{status}')\"\n",
             log = invocations_file.display(),
-            response = response_file.display()
+            response = response_file.display(),
+            stderr = stderr_file.display(),
+            status = status_file.display(),
         );
         fs::write(&script_path, script).unwrap();
 

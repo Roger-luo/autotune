@@ -490,6 +490,7 @@ mod tests {
             working_directory: tmp.path().to_path_buf(),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         };
         agent.spawn(&config).unwrap();
 
@@ -513,6 +514,7 @@ mod tests {
             working_directory: tmp.path().to_path_buf(),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         };
         agent.spawn(&config).unwrap();
 
@@ -540,6 +542,7 @@ mod tests {
             working_directory: tmp.path().to_path_buf(),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         };
         agent.spawn(&config).unwrap();
 
@@ -563,6 +566,7 @@ mod tests {
             working_directory: tmp.path().to_path_buf(),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         };
         // spawn() consumes research_responses[0]
         let spawn_resp = agent.spawn(&config).unwrap();
@@ -625,6 +629,7 @@ mod tests {
             working_directory: tmp.path().to_path_buf(),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         };
         agent.spawn(&config).unwrap();
         assert_eq!(agent.spawn_count(), 1);
@@ -712,6 +717,7 @@ mod tests {
             working_directory: research_tmp.path().to_path_buf(),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         };
         agent.spawn(&research_config).unwrap();
 
@@ -722,6 +728,7 @@ mod tests {
             working_directory: tmp.path().to_path_buf(),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         };
         let resp = agent.spawn(&impl_config).unwrap();
 

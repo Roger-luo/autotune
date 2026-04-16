@@ -62,6 +62,16 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
         .with_context(|| format!("failed to load config from {}", config_path.display()))
 }
 
+fn codex_reasoning_effort(effort: Option<autotune_config::ReasoningEffort>) -> Option<String> {
+    effort
+        .map(|effort| match effort {
+            autotune_config::ReasoningEffort::Low => "low",
+            autotune_config::ReasoningEffort::Medium => "medium",
+            autotune_config::ReasoningEffort::High => "high",
+        })
+        .map(str::to_string)
+}
+
 /// Find the next available task name by appending `-2`, `-3`, ... to the base
 /// name. A name is "available" when both its task directory and its advancing
 /// git branch (`autotune/<name>-main`) don't exist yet. The `-main` suffix
@@ -244,6 +254,13 @@ fn research_agent_session_config(
         working_directory: repo_root.to_path_buf(),
         model: config.agent.research.as_ref().and_then(|r| r.model.clone()),
         max_turns: config.agent.research.as_ref().and_then(|r| r.max_turns),
+        reasoning_effort: codex_reasoning_effort(
+            config
+                .agent
+                .research
+                .as_ref()
+                .and_then(|r| r.reasoning_effort),
+        ),
     }
 }
 

@@ -20,6 +20,7 @@ struct SessionContext {
     working_directory: PathBuf,
     model: Option<String>,
     max_turns: Option<u64>,
+    reasoning_effort: Option<String>,
 }
 
 impl ClaudeAgent {
@@ -139,6 +140,7 @@ impl ClaudeAgent {
                 working_directory: config.working_directory.clone(),
                 model: config.model.clone(),
                 max_turns: config.max_turns,
+                reasoning_effort: config.reasoning_effort.clone(),
             },
         );
         Ok(())
@@ -167,6 +169,7 @@ impl ClaudeAgent {
             working_directory: context.working_directory.clone(),
             model: context.model.clone(),
             max_turns: context.max_turns,
+            reasoning_effort: context.reasoning_effort.clone(),
         })
     }
 

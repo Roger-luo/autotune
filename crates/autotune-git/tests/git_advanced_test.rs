@@ -227,6 +227,32 @@ fn rebase_continue_after_resolve() {
 }
 
 #[test]
+fn rebase_continue_ignores_editor_configuration() {
+    let repo = init_repo();
+    create_branch(repo.path(), "feature").unwrap();
+
+    checkout(repo.path(), "main").unwrap();
+    write_file(&repo.path().join("README.md"), "main-update\n");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "main update"]);
+
+    checkout(repo.path(), "feature").unwrap();
+    write_file(&repo.path().join("README.md"), "feature-update\n");
+    git(repo.path(), &["add", "README.md"]);
+    git(repo.path(), &["commit", "-m", "feature update"]);
+
+    let result = rebase(repo.path(), "main").unwrap();
+    assert!(!result); // conflict
+
+    // Emulate a broken interactive editor; rebase_continue must not rely on it.
+    git(repo.path(), &["config", "core.editor", "false"]);
+
+    write_file(&repo.path().join("README.md"), "resolved\n");
+    let done = rebase_continue(repo.path()).unwrap();
+    assert!(done);
+}
+
+#[test]
 fn merge_ff_only_fast_forwards() {
     let repo = init_repo();
     create_branch(repo.path(), "feature").unwrap();

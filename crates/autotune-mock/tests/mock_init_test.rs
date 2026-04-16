@@ -18,6 +18,7 @@ fn mock_agent_init_conversation() {
         working_directory: PathBuf::from("/tmp"),
         model: None,
         max_turns: None,
+        reasoning_effort: None,
     };
 
     // spawn returns first init_response

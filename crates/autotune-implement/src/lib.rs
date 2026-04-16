@@ -241,6 +241,7 @@ pub fn run_implementation(
     log_content: &str,
     model: Option<&str>,
     max_turns: Option<u64>,
+    reasoning_effort: Option<&str>,
     event_handler: Option<EventHandler>,
 ) -> Result<ImplementResult, ImplementError> {
     let mut prompt = String::new();
@@ -286,6 +287,7 @@ pub fn run_implementation(
         working_directory: worktree_path.to_path_buf(),
         model: model.map(String::from),
         max_turns,
+        reasoning_effort: reasoning_effort.map(String::from),
     };
 
     // Record the commit SHA before the agent runs so we can detect new commits.
@@ -482,6 +484,7 @@ pub fn run_fix_respawn(
     fix_history: &[String],
     model: Option<&str>,
     max_turns: Option<u64>,
+    reasoning_effort: Option<&str>,
     event_handler: Option<EventHandler>,
 ) -> Result<FixOutcome, ImplementError> {
     let mut prompt = String::new();
@@ -520,6 +523,7 @@ pub fn run_fix_respawn(
         working_directory: worktree_path.to_path_buf(),
         model: model.map(String::from),
         max_turns,
+        reasoning_effort: reasoning_effort.map(String::from),
     };
 
     let sha_before = autotune_git::latest_commit_sha(worktree_path)?;

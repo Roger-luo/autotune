@@ -19,6 +19,7 @@ struct SessionContext {
     working_directory: PathBuf,
     model: Option<String>,
     max_turns: Option<u64>,
+    reasoning_effort: Option<String>,
     allowed_tools: Vec<ToolPermission>,
 }
 
@@ -48,8 +49,11 @@ impl CodexAgent {
         if let Some(model) = &config.model {
             args.extend(["--model".to_string(), model.clone()]);
         }
-        if let Some(turns) = config.max_turns {
-            args.extend(["-c".to_string(), format!("model_reasoning_effort={turns}")]);
+        if let Some(reasoning_effort) = &config.reasoning_effort {
+            args.extend([
+                "-c".to_string(),
+                format!("model_reasoning_effort={reasoning_effort}"),
+            ]);
         }
         if let Some(session_id) = session_id {
             args.push(session_id.to_string());
@@ -144,6 +148,7 @@ impl CodexAgent {
                 working_directory: config.working_directory.clone(),
                 model: config.model.clone(),
                 max_turns: config.max_turns,
+                reasoning_effort: config.reasoning_effort.clone(),
                 allowed_tools: config.allowed_tools.clone(),
             },
         );
@@ -173,6 +178,7 @@ impl CodexAgent {
             working_directory: context.working_directory.clone(),
             model: context.model.clone(),
             max_turns: context.max_turns,
+            reasoning_effort: context.reasoning_effort.clone(),
         })
     }
 
@@ -200,17 +206,12 @@ impl CodexAgent {
                 .and_then(Value::as_str)
                 .unwrap_or("");
 
+            if thread_id.is_none() {
+                thread_id = Self::extract_thread_id(&value);
+            }
+
             match event {
-                "thread.started" | "thread/started" | "thread_started" => {
-                    if let Some(found) = value
-                        .get("thread_id")
-                        .or_else(|| value.get("threadId"))
-                        .or_else(|| value.get("thread").and_then(|thread| thread.get("id")))
-                        .and_then(Value::as_str)
-                    {
-                        thread_id = Some(found.to_string());
-                    }
-                }
+                "thread.started" | "thread/started" | "thread_started" => {}
                 "agent_message_delta" => {
                     if let Some(text) = Self::delta_text(&value)
                         && !text.is_empty()
@@ -229,21 +230,24 @@ impl CodexAgent {
                         });
                     }
                 }
-                "turn_complete" | "task_complete" => {
+                "item.completed" | "item_completed" | "item/completed" => {
+                    if let Some(text) = value.get("item").and_then(|item| {
+                        match item.get("type").and_then(Value::as_str) {
+                            Some("agent_message") => item.get("text").and_then(Value::as_str),
+                            _ => None,
+                        }
+                    }) {
+                        last_message = text.to_string();
+                    }
+                }
+                "turn_complete" | "task_complete" | "turn.completed" | "task.completed"
+                | "turn/completed" | "task/completed" => {
                     if let Some(text) = value
                         .get("last_agent_message")
                         .or_else(|| value.get("lastAgentMessage"))
                         .and_then(Value::as_str)
                     {
                         last_message = text.to_string();
-                    }
-                    if thread_id.is_none() {
-                        thread_id = value
-                            .get("thread_id")
-                            .or_else(|| value.get("threadId"))
-                            .or_else(|| value.get("thread").and_then(|thread| thread.get("id")))
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned);
                     }
                 }
                 _ => {}
@@ -258,6 +262,15 @@ impl CodexAgent {
             text: last_message,
             session_id,
         })
+    }
+
+    fn extract_thread_id(value: &Value) -> Option<String> {
+        value
+            .get("thread_id")
+            .or_else(|| value.get("threadId"))
+            .or_else(|| value.get("thread").and_then(|thread| thread.get("id")))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
     }
 
     fn delta_text(value: &Value) -> Option<String> {
@@ -293,6 +306,7 @@ impl CodexAgent {
         let output = Command::new(&self.command)
             .args(args)
             .current_dir(cwd)
+            .stdin(Stdio::null())
             .output()
             .map_err(|source| AgentError::Io { source })?;
 
@@ -327,6 +341,7 @@ impl CodexAgent {
         let mut child = Command::new(&self.command)
             .args(args)
             .current_dir(cwd)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -345,7 +360,7 @@ impl CodexAgent {
                 message: "failed to capture codex stderr".to_string(),
             })?;
 
-        let response = Self::parse_jsonl(BufReader::new(stdout), Some(event_handler))?;
+        let response = Self::parse_jsonl(BufReader::new(stdout), Some(event_handler));
         let status = child.wait().map_err(|source| AgentError::Io { source })?;
 
         if !status.success() {
@@ -368,7 +383,7 @@ impl CodexAgent {
             });
         }
 
-        Ok(response)
+        response
     }
 
     fn output_details(stdout: &[u8], stderr: &[u8]) -> String {

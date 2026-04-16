@@ -364,6 +364,17 @@ fn run_init_inner(
         .as_ref()
         .and_then(|a| a.init.as_ref())
         .and_then(|i| i.max_turns);
+    let reasoning_effort = global_config
+        .agent
+        .as_ref()
+        .and_then(|a| a.init.as_ref())
+        .and_then(|i| i.reasoning_effort)
+        .map(|effort| match effort {
+            autotune_config::ReasoningEffort::Low => "low",
+            autotune_config::ReasoningEffort::Medium => "medium",
+            autotune_config::ReasoningEffort::High => "high",
+        })
+        .map(str::to_string);
 
     // Show agent info
     let model_display = model.as_deref().unwrap_or("default");
@@ -379,6 +390,7 @@ fn run_init_inner(
         working_directory: repo_root.to_path_buf(),
         model,
         max_turns,
+        reasoning_effort,
     };
 
     fn make_event_handler(default_status: &str, quiet: bool) -> EventHandler {

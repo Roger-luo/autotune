@@ -37,6 +37,17 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+fn codex_reasoning_effort(
+    effort: Option<autotune_config::ReasoningEffort>,
+) -> Option<&'static str> {
+    match effort {
+        Some(autotune_config::ReasoningEffort::Low) => Some("low"),
+        Some(autotune_config::ReasoningEffort::Medium) => Some("medium"),
+        Some(autotune_config::ReasoningEffort::High) => Some("high"),
+        None => None,
+    }
+}
+
 /// Execute exactly one phase transition, returning the expected phase that was
 /// executed. Returns `Ok(true)` if the task has reached the Done phase.
 pub fn run_single_phase(
@@ -416,6 +427,13 @@ fn run_implementing(
         .implementation
         .as_ref()
         .and_then(|c| c.max_turns);
+    let impl_reasoning_effort = codex_reasoning_effort(
+        config
+            .agent
+            .implementation
+            .as_ref()
+            .and_then(|c| c.reasoning_effort),
+    );
 
     let impl_stream = crate::stream_ui::Stream::implementation(&format!(
         "iteration {} — implementing '{}'...",
@@ -433,6 +451,7 @@ fn run_implementing(
                 &log_content,
                 impl_model,
                 impl_max_turns,
+                impl_reasoning_effort,
                 Some(impl_stream.handler()),
             )
             .map_err(anyhow::Error::from)
@@ -627,6 +646,13 @@ fn run_fixing(
         .implementation
         .as_ref()
         .and_then(|c| c.max_turns);
+    let impl_reasoning_effort = codex_reasoning_effort(
+        config
+            .agent
+            .implementation
+            .as_ref()
+            .and_then(|c| c.reasoning_effort),
+    );
 
     // Same-process retries must reuse the original implementation-agent
     // instance because Claude/Codex keep session context in memory. After a
@@ -695,6 +721,7 @@ fn run_fixing(
                     &history,
                     impl_model,
                     impl_max_turns,
+                    impl_reasoning_effort,
                     Some(impl_stream.handler()),
                 )
                 .context("implementer fix turn failed")

@@ -61,6 +61,7 @@ fn dummy_config(dir: &Path) -> AgentConfig {
         working_directory: dir.to_path_buf(),
         model: Some("test-model".to_string()),
         max_turns: Some(10),
+        reasoning_effort: None,
     }
 }
 

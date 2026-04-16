@@ -39,6 +39,33 @@ fn git(dir: &Path, args: &[&OsStr]) -> Result<GitOutput, GitError> {
     Ok(GitOutput { stdout, stderr })
 }
 
+fn git_with_env(dir: &Path, args: &[&OsStr], envs: &[(&str, &str)]) -> Result<GitOutput, GitError> {
+    let mut command = Command::new("git");
+    command.args(args.iter().copied()).current_dir(dir);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().map_err(|source| GitError::Io { source })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !output.status.success() {
+        return Err(GitError::CommandFailed {
+            command: format!(
+                "git {}",
+                args.iter()
+                    .map(|arg| arg.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            stderr,
+        });
+    }
+
+    Ok(GitOutput { stdout, stderr })
+}
+
 /// Find the root of the git repository containing `dir`.
 pub fn repo_root(dir: &Path) -> Result<PathBuf, GitError> {
     let GitOutput { stdout, stderr } = git(
@@ -371,7 +398,11 @@ pub fn rebase(dir: &Path, onto: &str) -> Result<bool, GitError> {
 /// conflict was hit.
 pub fn rebase_continue(dir: &Path) -> Result<bool, GitError> {
     git(dir, &[OsStr::new("add"), OsStr::new("-A")])?;
-    let result = git(dir, &[OsStr::new("rebase"), OsStr::new("--continue")]);
+    let result = git_with_env(
+        dir,
+        &[OsStr::new("rebase"), OsStr::new("--continue")],
+        &[("GIT_EDITOR", "true")],
+    );
     match result {
         Ok(_) => Ok(true),
         Err(_) => {

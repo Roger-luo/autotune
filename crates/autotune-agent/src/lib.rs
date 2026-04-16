@@ -56,6 +56,7 @@ pub struct AgentConfig {
     pub working_directory: PathBuf,
     pub model: Option<String>,
     pub max_turns: Option<u64>,
+    pub reasoning_effort: Option<String>,
 }
 
 /// Extended config with optional event streaming. Used internally
@@ -162,6 +163,7 @@ mod tests {
             working_directory: PathBuf::from("."),
             model: None,
             max_turns: None,
+            reasoning_effort: None,
         }
     }
 
