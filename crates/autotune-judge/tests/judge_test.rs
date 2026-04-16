@@ -426,3 +426,47 @@ fn mock_backend_rejects_non_integer_score() {
         .unwrap_err();
     assert!(err.to_string().contains("not an integer"));
 }
+
+#[test]
+fn approved_review_can_be_persisted_as_example() {
+    use autotune_judge::judge::MockJudgeBackend;
+    use autotune_judge::review::MockReviewPrompter;
+    use autotune_judge::{
+        AgentJudge, JsonlExampleStore, NoStore, ReviewInput, ReviewPrompter, StoredExample, Subject,
+    };
+
+    // 1. assess
+    let backend = MockJudgeBackend::new(
+        7,
+        "Extending the trait system requires little core modification.",
+        "mock",
+        Some("test-model".into()),
+        Some("trace-1".into()),
+    );
+    let judge = AgentJudge::<_, NoStore>::new(backend, None, 0);
+    let subject = Subject::new("Trait API", "Review of the Judge / JudgeBackend surface");
+    let assessment = judge.assess(&subject, &sample_rubric()).unwrap();
+
+    assert_eq!(assessment.rubric_id, "trait-extensibility");
+    assert_eq!(assessment.score, 7);
+
+    // 2. review
+    let review = MockReviewPrompter::accept()
+        .review(&ReviewInput::new(sample_rubric(), assessment))
+        .unwrap();
+    assert_eq!(review.approved_score, 7);
+    assert!(!review.score_edited);
+
+    // 3. persist and reload
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("examples.jsonl");
+    let store = JsonlExampleStore::new(path);
+
+    let example = StoredExample::new(sample_rubric(), subject, review);
+    use autotune_judge::ExampleStore;
+    store.append_example(&example).unwrap();
+
+    let loaded = store.load_examples("trait-extensibility", 10).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].review.approved_score, 7);
+}
