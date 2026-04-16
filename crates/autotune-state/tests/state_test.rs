@@ -46,6 +46,7 @@ fn sample_approach() -> ApproachState {
         fix_attempts: 0,
         fresh_spawns: 0,
         fix_history: Vec::new(),
+        score_reason: None,
     }
 }
 

@@ -387,6 +387,7 @@ fn run_planning(
         fix_attempts: 0,
         fresh_spawns: 0,
         fix_history: Vec::new(),
+        score_reason: None,
     });
     state.current_phase = Phase::Implementing;
     store.save_state(state)?;
@@ -1012,6 +1013,7 @@ fn run_scoring(
 
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.rank = Some(score_output.rank);
+    approach_mut.score_reason = Some(score_output.reason.clone());
 
     let (score_line, metrics_line) =
         format_scoring_status_lines(state.current_iteration, &score_output, &candidate_metrics);
@@ -1071,6 +1073,22 @@ fn format_scoring_status_lines(
     )
 }
 
+fn build_kept_record(iteration: usize, approach: &ApproachState) -> IterationRecord {
+    IterationRecord {
+        iteration,
+        approach: approach.name.clone(),
+        status: IterationStatus::Kept,
+        hypothesis: Some(approach.hypothesis.clone()),
+        metrics: approach.metrics.clone().unwrap_or_default(),
+        rank: approach.rank.unwrap_or(0.0),
+        score: Some("keep".to_string()),
+        reason: approach.score_reason.clone(),
+        fix_attempts: approach.fix_attempts,
+        fresh_spawns: approach.fresh_spawns,
+        timestamp: Utc::now(),
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn format_metrics_status_sorts_all_metrics() {
@@ -1123,25 +1141,12 @@ fn run_integrating(
         .context("fast-forward advancing branch failed")?;
 
     let metrics = approach.metrics.clone().unwrap_or_default();
-    let rank = approach.rank.unwrap_or(0.0);
 
     // Save iteration metrics
     let _ = store.save_iteration_metrics(state.current_iteration, &approach.name, &metrics);
 
     // Record as kept in ledger
-    let record = IterationRecord {
-        iteration: state.current_iteration,
-        approach: approach.name.clone(),
-        status: IterationStatus::Kept,
-        hypothesis: Some(approach.hypothesis.clone()),
-        metrics,
-        rank,
-        score: Some("keep".to_string()),
-        reason: None,
-        fix_attempts: approach.fix_attempts,
-        fresh_spawns: approach.fresh_spawns,
-        timestamp: Utc::now(),
-    };
+    let record = build_kept_record(state.current_iteration, approach);
     store.append_ledger(&record)?;
 
     state.current_phase = Phase::Recorded;
@@ -1684,6 +1689,7 @@ mod tests {
             fix_attempts: 0,
             fresh_spawns: 0,
             fix_history: vec![],
+            score_reason: None,
         };
 
         let session = implementation_session_from_approach(&approach).unwrap();
@@ -1748,6 +1754,7 @@ mod tests {
             fix_attempts: 0,
             fresh_spawns: 0,
             fix_history: vec![],
+            score_reason: None,
         };
 
         assert!(!can_continue_implementation_session(&approach, false));
@@ -1868,5 +1875,36 @@ mod tests {
         // Append a record with empty metrics — the target_metric check should not fire
         store.append_ledger(&make_kept_record(0.5)).unwrap();
         assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn build_kept_record_preserves_score_reason() {
+        let approach = ApproachState {
+            name: "raise-line-coverage".to_string(),
+            hypothesis: "Add report tests".to_string(),
+            worktree_path: PathBuf::from("/tmp/worktree"),
+            branch_name: "autotune/task/raise-line-coverage".to_string(),
+            commit_sha: Some("abc123".to_string()),
+            test_results: vec![],
+            metrics: Some(std::collections::HashMap::from([(
+                "line_coverage".to_string(),
+                78.9,
+            )])),
+            rank: Some(0.064),
+            files_to_modify: vec![],
+            impl_session_id: Some("impl-1".to_string()),
+            impl_backend: Some("codex".to_string()),
+            fix_attempts: 1,
+            fresh_spawns: 0,
+            fix_history: vec![],
+            score_reason: Some("coverage improved".to_string()),
+        };
+
+        let record = build_kept_record(2, &approach);
+
+        assert_eq!(record.iteration, 2);
+        assert_eq!(record.score.as_deref(), Some("keep"));
+        assert_eq!(record.reason.as_deref(), Some("coverage improved"));
+        assert_eq!(record.metrics.get("line_coverage"), Some(&78.9));
     }
 }

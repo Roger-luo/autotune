@@ -155,6 +155,7 @@ mod tests {
             fix_attempts: 0,
             fresh_spawns: 0,
             fix_history: vec![],
+            score_reason: None,
         }
     }
 

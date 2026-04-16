@@ -130,6 +130,10 @@ pub struct ApproachState {
     /// sees the full trail, not just the latest.
     #[serde(default)]
     pub fix_history: Vec<String>,
+    /// Scorer-provided reason persisted between Scoring and Integrating so
+    /// kept ledger rows can retain the explanation that produced the rank.
+    #[serde(default)]
+    pub score_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

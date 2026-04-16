@@ -1537,8 +1537,21 @@ fn render_report_table(task_name: &str, state: &TaskState, ledger: &[IterationRe
             record.reason.as_deref().unwrap_or("")
         )
         .ok();
+        writeln!(output, "       metrics:").ok();
+        for (name, value) in sorted_metrics(&record.metrics) {
+            writeln!(output, "         {name}={value:.4}").ok();
+        }
     }
     output
+}
+
+fn sorted_metrics(metrics: &std::collections::HashMap<String, f64>) -> Vec<(&str, f64)> {
+    let mut entries: Vec<_> = metrics
+        .iter()
+        .map(|(name, value)| (name.as_str(), *value))
+        .collect();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries
 }
 
 fn render_task_list_table(rows: &[(String, Option<TaskState>)]) -> String {
@@ -1698,6 +1711,7 @@ mod tests {
                 fix_attempts: 1,
                 fresh_spawns: 0,
                 fix_history: vec![],
+                score_reason: Some("coverage improved".to_string()),
             }),
         }
     }
@@ -2075,6 +2089,9 @@ reasoning_effort = "low"
         assert!(table.contains(&truncate("very-long-coverage-approach-name", 18)));
         assert!(table.contains("0.0640"));
         assert!(table.contains("coverage improved"));
+        assert!(table.contains("metrics:"));
+        assert!(table.contains("line_coverage=72.4000"));
+        assert!(table.contains("line_coverage=78.9000"));
     }
 
     #[test]
