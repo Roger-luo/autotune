@@ -13,7 +13,7 @@ use autotune_agent::{Agent, AgentSession};
 use autotune_config::AutotuneConfig;
 use autotune_implement::{FixOutcome, ImplementError};
 use autotune_plan::ToolApprover;
-use autotune_score::{ScoreCalculator, ScoreInput};
+use autotune_score::{ScoreCalculator, ScoreInput, ScoreOutput};
 use autotune_state::{
     ApproachState, IterationRecord, IterationStatus, Phase, TaskState, TaskStore,
 };
@@ -1013,10 +1013,10 @@ fn run_scoring(
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.rank = Some(score_output.rank);
 
-    println!(
-        "[autotune] iteration {} — score: rank={:.4}, decision={}, reason={}",
-        state.current_iteration, score_output.rank, score_output.decision, score_output.reason
-    );
+    let (score_line, metrics_line) =
+        format_scoring_status_lines(state.current_iteration, &score_output, &candidate_metrics);
+    println!("{score_line}");
+    println!("{metrics_line}");
     autotune_agent::trace::record(
         "phase.decision",
         serde_json::json!({
@@ -1041,6 +1041,48 @@ fn run_scoring(
         record_discard(state, store, &score_output.reason)?;
     }
     Ok(())
+}
+
+fn format_metrics_status(metrics: &std::collections::HashMap<String, f64>) -> String {
+    let mut entries: Vec<_> = metrics.iter().collect();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries
+        .into_iter()
+        .map(|(name, value)| format!("{name}={value:.4}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_scoring_status_lines(
+    iteration: usize,
+    score_output: &ScoreOutput,
+    candidate_metrics: &std::collections::HashMap<String, f64>,
+) -> (String, String) {
+    (
+        format!(
+            "[autotune] iteration {} — score: rank={:.4}, decision={}, reason={}",
+            iteration, score_output.rank, score_output.decision, score_output.reason
+        ),
+        format!(
+            "[autotune] iteration {} — metrics: {}",
+            iteration,
+            format_metrics_status(candidate_metrics)
+        ),
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn format_metrics_status_sorts_all_metrics() {
+    let metrics = std::collections::HashMap::from([
+        ("throughput".to_string(), 88.0),
+        ("latency_ms".to_string(), 12.3),
+    ]);
+
+    assert_eq!(
+        format_metrics_status(&metrics),
+        "latency_ms=12.3000, throughput=88.0000"
+    );
 }
 
 fn run_integrating(
@@ -1414,6 +1456,30 @@ mod tests {
         assert_eq!(
             max_fresh,
             autotune_config::AgentRoleConfig::DEFAULT_MAX_FRESH_SPAWNS
+        );
+    }
+
+    #[test]
+    fn format_scoring_status_lines_includes_score_and_metrics() {
+        let metrics = std::collections::HashMap::from([
+            ("throughput".to_string(), 88.0),
+            ("latency_ms".to_string(), 12.3),
+        ]);
+        let score_output = ScoreOutput {
+            rank: 0.1234,
+            decision: "keep".to_string(),
+            reason: "better".to_string(),
+        };
+
+        let (score_line, metrics_line) = format_scoring_status_lines(3, &score_output, &metrics);
+
+        assert_eq!(
+            score_line,
+            "[autotune] iteration 3 — score: rank=0.1234, decision=keep, reason=better"
+        );
+        assert_eq!(
+            metrics_line,
+            "[autotune] iteration 3 — metrics: latency_ms=12.3000, throughput=88.0000"
         );
     }
 

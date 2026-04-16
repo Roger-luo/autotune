@@ -324,8 +324,7 @@ mod tests {
 
     #[test]
     fn spawn_output_reader_propagates_read_errors() {
-        let reader = spawn_output_reader(Some(BrokenReader::new("read failed")), "broken")
-            .unwrap();
+        let reader = spawn_output_reader(Some(BrokenReader::new("read failed")), "broken").unwrap();
         let err = collect_output(reader, "broken").unwrap_err();
 
         match err {
@@ -340,8 +339,7 @@ mod tests {
     #[test]
     fn collect_output_returns_string_for_successful_reader() {
         let reader =
-            spawn_output_reader(Some(Cursor::new(b"captured output".to_vec())), "success")
-                .unwrap();
+            spawn_output_reader(Some(Cursor::new(b"captured output".to_vec())), "success").unwrap();
 
         let output = collect_output(reader, "success").unwrap();
         assert_eq!(output, "captured output");

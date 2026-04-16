@@ -414,10 +414,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
             perms.set_mode(0o755);
             fs::set_permissions(&script, perms).unwrap();
         }
-        let adaptor = script_adaptor(
-            vec![script.display().to_string()],
-            tmp.path(),
-        );
+        let adaptor = script_adaptor(vec![script.display().to_string()], tmp.path());
         let output = MeasureOutput {
             stdout: "alpha".to_string(),
             stderr: "beta".to_string(),

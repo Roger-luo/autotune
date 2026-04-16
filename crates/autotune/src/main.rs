@@ -448,11 +448,7 @@ fn build_initial_task_state(
     }
 }
 
-fn completion_messages(
-    task_name: &str,
-    resumed: bool,
-    handover_command: &str,
-) -> (String, String) {
+fn completion_messages(task_name: &str, resumed: bool, handover_command: &str) -> (String, String) {
     let status = if resumed {
         format!("\n[autotune] task '{task_name}' resumed and complete")
     } else {
@@ -1240,7 +1236,15 @@ const CONFIG_KEYS: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         key: "agent.implementation.model",
         kind: ConfigValueKind::String,
-        get: |config| config.agent.as_ref()?.implementation.as_ref()?.model.clone(),
+        get: |config| {
+            config
+                .agent
+                .as_ref()?
+                .implementation
+                .as_ref()?
+                .model
+                .clone()
+        },
     },
     ConfigKeyDef {
         key: "agent.implementation.max_turns",
@@ -1258,7 +1262,15 @@ const CONFIG_KEYS: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         key: "agent.implementation.backend",
         kind: ConfigValueKind::String,
-        get: |config| config.agent.as_ref()?.implementation.as_ref()?.backend.clone(),
+        get: |config| {
+            config
+                .agent
+                .as_ref()?
+                .implementation
+                .as_ref()?
+                .backend
+                .clone()
+        },
     },
     ConfigKeyDef {
         key: "agent.init.model",
@@ -1268,7 +1280,15 @@ const CONFIG_KEYS: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         key: "agent.init.max_turns",
         kind: ConfigValueKind::Integer,
-        get: |config| config.agent.as_ref()?.init.as_ref()?.max_turns.map(|value| value.to_string()),
+        get: |config| {
+            config
+                .agent
+                .as_ref()?
+                .init
+                .as_ref()?
+                .max_turns
+                .map(|value| value.to_string())
+        },
     },
     ConfigKeyDef {
         key: "agent.init.backend",
@@ -1571,8 +1591,8 @@ mod tests {
     use autotune::agent_factory::AgentRole;
     use autotune_agent::ToolPermission;
     use autotune_score::{ScoreError, ScoreInput};
-    use std::collections::HashMap;
     use serde_json::json;
+    use std::collections::HashMap;
     use tempfile::tempdir;
 
     fn sample_config() -> AutotuneConfig {
@@ -1596,7 +1616,12 @@ mod tests {
             },
             test: vec![autotune_config::TestConfig {
                 name: "unit".to_string(),
-                command: vec!["cargo".to_string(), "test".to_string(), "-p".to_string(), "autotune".to_string()],
+                command: vec![
+                    "cargo".to_string(),
+                    "test".to_string(),
+                    "-p".to_string(),
+                    "autotune".to_string(),
+                ],
                 timeout: 300,
             }],
             measure: vec![
@@ -1937,10 +1962,7 @@ reasoning_effort = "low"
         set_toml_value(&mut doc, "agent.research.max_turns", "7").unwrap();
         set_toml_value(&mut doc, "agent.research.model", "opus").unwrap();
 
-        assert_eq!(
-            doc["agent"]["research"]["max_turns"].as_integer(),
-            Some(7)
-        );
+        assert_eq!(doc["agent"]["research"]["max_turns"].as_integer(), Some(7));
         assert_eq!(doc["agent"]["research"]["model"].as_str(), Some("opus"));
 
         unset_toml_value(&mut doc, "agent.research.max_turns").unwrap();
@@ -2085,7 +2107,10 @@ reasoning_effort = "low"
         );
 
         assert_eq!(export["task_name"], json!("coverage-task"));
-        assert_eq!(export["config"], json!("[task]\nname = \"coverage-task\"\n"));
+        assert_eq!(
+            export["config"],
+            json!("[task]\nname = \"coverage-task\"\n")
+        );
         assert_eq!(export["log"], json!("investigation notes"));
         assert_eq!(export["state"]["current_phase"], json!("scoring"));
         assert_eq!(export["ledger"][1]["status"], json!("kept"));
@@ -2290,8 +2315,14 @@ reasoning_effort = "low"
             resume_status,
             "\n[autotune] task 'coverage-task' resumed and complete"
         );
-        assert_eq!(run_handover, "[autotune] research agent handover: codex resume");
-        assert_eq!(resume_handover, "[autotune] research agent handover: codex resume");
+        assert_eq!(
+            run_handover,
+            "[autotune] research agent handover: codex resume"
+        );
+        assert_eq!(
+            resume_handover,
+            "[autotune] research agent handover: codex resume"
+        );
     }
 
     #[test]
@@ -2334,7 +2365,10 @@ reasoning_effort = "low"
         let scorer = build_scorer(&sample_config());
 
         let err = scorer
-            .calculate(&score_input(&[("line_coverage", 80.0)], &[("line_coverage", 88.0)]))
+            .calculate(&score_input(
+                &[("line_coverage", 80.0)],
+                &[("line_coverage", 88.0)],
+            ))
             .unwrap_err();
 
         assert!(matches!(err, ScoreError::MissingMetric { ref name } if name == "runtime_ms"));
@@ -2380,12 +2414,20 @@ reasoning_effort = "low"
 
         let mut script_config = sample_config();
         script_config.score = autotune_config::ScoreConfig::Script {
-            command: vec!["sh".to_string(), "-c".to_string(), output_program.to_string()],
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                output_program.to_string(),
+            ],
         };
 
         let mut command_config = sample_config();
         command_config.score = autotune_config::ScoreConfig::Command {
-            command: vec!["sh".to_string(), "-c".to_string(), output_program.to_string()],
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                output_program.to_string(),
+            ],
         };
 
         let input = score_input(&[("line_coverage", 80.0)], &[("line_coverage", 88.0)]);

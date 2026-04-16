@@ -1340,10 +1340,7 @@ mod tests {
             ..Default::default()
         };
         let reply = build_next_turn_reply(
-            &[
-                "task: bad".to_string(),
-                "paths: also bad".to_string(),
-            ],
+            &["task: bad".to_string(), "paths: also bad".to_string()],
             Some("user input".to_string()),
             &["task accepted".to_string()],
             &acc,
