@@ -394,6 +394,74 @@ fn build_scorer(config: &AutotuneConfig) -> Box<dyn ScoreCalculator> {
     }
 }
 
+fn apply_resume_stop_condition_overrides(
+    config: &mut AutotuneConfig,
+    max_iterations: Option<u64>,
+    max_duration: Option<String>,
+    target_improvement: Option<f64>,
+) {
+    if let Some(max) = max_iterations {
+        config.task.max_iterations = Some(autotune_config::StopValue::Finite(max));
+    }
+    if let Some(duration) = max_duration {
+        config.task.max_duration = Some(duration);
+    }
+    if let Some(target) = target_improvement {
+        config.task.target_improvement = Some(target);
+    }
+}
+
+fn build_baseline_record(
+    baseline_metrics: std::collections::HashMap<String, f64>,
+    timestamp: chrono::DateTime<Utc>,
+) -> IterationRecord {
+    IterationRecord {
+        iteration: 0,
+        approach: "baseline".to_string(),
+        status: IterationStatus::Baseline,
+        hypothesis: None,
+        metrics: baseline_metrics,
+        rank: 0.0,
+        score: None,
+        reason: None,
+        fix_attempts: 0,
+        fresh_spawns: 0,
+        timestamp,
+    }
+}
+
+fn build_initial_task_state(
+    task_name: &str,
+    canonical_branch: &str,
+    research_session_id: &str,
+    research_backend: &str,
+) -> TaskState {
+    TaskState {
+        task_name: task_name.to_string(),
+        canonical_branch: canonical_branch.to_string(),
+        advancing_branch: format!("autotune/{task_name}-main"),
+        research_session_id: research_session_id.to_string(),
+        research_backend: research_backend.to_string(),
+        current_iteration: 1,
+        current_phase: Phase::Planning,
+        current_approach: None,
+    }
+}
+
+fn completion_messages(
+    task_name: &str,
+    resumed: bool,
+    handover_command: &str,
+) -> (String, String) {
+    let status = if resumed {
+        format!("\n[autotune] task '{task_name}' resumed and complete")
+    } else {
+        format!("\n[autotune] task '{task_name}' complete")
+    };
+    let handover = format!("[autotune] research agent handover: {handover_command}");
+    (status, handover)
+}
+
 fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let mut config = load_config(&repo_root)?;
@@ -483,19 +551,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     baseline_output_files.sort();
 
     // Score baseline against itself (rank=0)
-    let baseline_record = IterationRecord {
-        iteration: 0,
-        approach: "baseline".to_string(),
-        status: IterationStatus::Baseline,
-        hypothesis: None,
-        metrics: baseline_metrics.clone(),
-        rank: 0.0,
-        score: None,
-        reason: None,
-        fix_attempts: 0,
-        fresh_spawns: 0,
-        timestamp: Utc::now(),
-    };
+    let baseline_record = build_baseline_record(baseline_metrics.clone(), Utc::now());
     store
         .append_ledger(&baseline_record)
         .context("failed to record baseline")?;
@@ -560,16 +616,13 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     );
 
     // Initialize state
-    let initial_state = TaskState {
-        task_name: config.task.name.clone(),
-        canonical_branch: config.task.canonical_branch.clone(),
-        advancing_branch,
-        research_session_id: research_response.session_id.clone(),
-        research_backend,
-        current_iteration: 1,
-        current_phase: Phase::Planning,
-        current_approach: None,
-    };
+    let initial_state = build_initial_task_state(
+        &config.task.name,
+        &config.task.canonical_branch,
+        &research_response.session_id,
+        &research_backend,
+    );
+    debug_assert_eq!(initial_state.advancing_branch, advancing_branch);
     store.save_state(&initial_state)?;
 
     // Set up Ctrl+C handler
@@ -598,11 +651,13 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         session_id: final_state.research_session_id.clone(),
         backend: final_state.research_backend.clone(),
     };
-    println!("\n[autotune] task '{}' complete", config.task.name);
-    println!(
-        "[autotune] research agent handover: {}",
-        agent.handover_command(&research_session)
+    let (status_line, handover_line) = completion_messages(
+        &config.task.name,
+        false,
+        &agent.handover_command(&research_session),
     );
+    println!("{status_line}");
+    println!("{handover_line}");
     println!("[autotune] results at: {}", task_dir.display());
 
     Ok(())
@@ -629,15 +684,12 @@ fn cmd_resume(
         toml::from_str(&config_snapshot).context("failed to parse frozen config")?;
 
     // Apply transient stop-condition overrides
-    if let Some(max) = max_iterations {
-        config.task.max_iterations = Some(autotune_config::StopValue::Finite(max));
-    }
-    if let Some(duration) = max_duration {
-        config.task.max_duration = Some(duration);
-    }
-    if let Some(target) = target_improvement {
-        config.task.target_improvement = Some(target);
-    }
+    apply_resume_stop_condition_overrides(
+        &mut config,
+        max_iterations,
+        max_duration,
+        target_improvement,
+    );
 
     let persisted_state = store.load_state().context("failed to load task state")?;
     let agent = build_agent_for_backend(&persisted_state.research_backend)?;
@@ -682,11 +734,10 @@ fn cmd_resume(
         session_id: final_state.research_session_id.clone(),
         backend: final_state.research_backend.clone(),
     };
-    println!("\n[autotune] task '{}' resumed and complete", task_name);
-    println!(
-        "[autotune] research agent handover: {}",
-        agent.handover_command(&research_session)
-    );
+    let (status_line, handover_line) =
+        completion_messages(&task_name, true, &agent.handover_command(&research_session));
+    println!("{status_line}");
+    println!("{handover_line}");
 
     Ok(())
 }
@@ -2174,6 +2225,73 @@ reasoning_effort = "low"
         assert_eq!(session_config.model, None);
         assert_eq!(session_config.max_turns, None);
         assert_eq!(session_config.reasoning_effort, None);
+    }
+
+    #[test]
+    fn apply_resume_stop_condition_overrides_updates_only_requested_fields() {
+        let mut config = sample_config();
+        config.task.max_iterations = Some(autotune_config::StopValue::Infinite);
+        config.task.max_duration = Some("2h".to_string());
+        config.task.target_improvement = Some(0.25);
+
+        apply_resume_stop_condition_overrides(&mut config, Some(7), None, Some(0.4));
+
+        assert_eq!(
+            config.task.max_iterations,
+            Some(autotune_config::StopValue::Finite(7))
+        );
+        assert_eq!(config.task.max_duration.as_deref(), Some("2h"));
+        assert_eq!(config.task.target_improvement, Some(0.4));
+    }
+
+    #[test]
+    fn build_baseline_record_sets_baseline_defaults() {
+        let timestamp = Utc::now();
+        let metrics = HashMap::from([("line_coverage".to_string(), 72.4)]);
+
+        let record = build_baseline_record(metrics.clone(), timestamp);
+
+        assert_eq!(record.iteration, 0);
+        assert_eq!(record.approach, "baseline");
+        assert_eq!(record.status, IterationStatus::Baseline);
+        assert_eq!(record.hypothesis, None);
+        assert_eq!(record.metrics, metrics);
+        assert_eq!(record.rank, 0.0);
+        assert_eq!(record.score, None);
+        assert_eq!(record.reason, None);
+        assert_eq!(record.fix_attempts, 0);
+        assert_eq!(record.fresh_spawns, 0);
+        assert_eq!(record.timestamp, timestamp);
+    }
+
+    #[test]
+    fn build_initial_task_state_seeds_planning_iteration_one() {
+        let state = build_initial_task_state("coverage-task", "main", "session-123", "codex");
+
+        assert_eq!(state.task_name, "coverage-task");
+        assert_eq!(state.canonical_branch, "main");
+        assert_eq!(state.advancing_branch, "autotune/coverage-task-main");
+        assert_eq!(state.research_session_id, "session-123");
+        assert_eq!(state.research_backend, "codex");
+        assert_eq!(state.current_iteration, 1);
+        assert_eq!(state.current_phase, Phase::Planning);
+        assert!(state.current_approach.is_none());
+    }
+
+    #[test]
+    fn completion_messages_render_run_and_resume_variants() {
+        let (run_status, run_handover) =
+            completion_messages("coverage-task", false, "codex resume");
+        let (resume_status, resume_handover) =
+            completion_messages("coverage-task", true, "codex resume");
+
+        assert_eq!(run_status, "\n[autotune] task 'coverage-task' complete");
+        assert_eq!(
+            resume_status,
+            "\n[autotune] task 'coverage-task' resumed and complete"
+        );
+        assert_eq!(run_handover, "[autotune] research agent handover: codex resume");
+        assert_eq!(resume_handover, "[autotune] research agent handover: codex resume");
     }
 
     #[test]
