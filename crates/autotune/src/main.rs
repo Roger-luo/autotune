@@ -177,7 +177,7 @@ fn global_backend_name(global_config: &GlobalConfig, role: AgentRole) -> Option<
     global_config
         .agent
         .as_ref()
-        .map(|agent_config| resolve_backend_name(agent_config, role))
+        .and_then(|agent_config| resolve_backend_name(agent_config, role))
 }
 
 fn build_agent(config: &AutotuneConfig, role: AgentRole) -> Result<Box<dyn Agent>> {
@@ -494,7 +494,9 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         .save_config_snapshot(&config_content)
         .context("failed to save config snapshot")?;
 
-    let research_backend = resolve_backend_name(&config.agent, AgentRole::Research).to_string();
+    let research_backend = resolve_backend_name(&config.agent, AgentRole::Research)
+        .unwrap_or("claude")
+        .to_string();
     let agent = build_agent(&config, AgentRole::Research)?;
     let scorer = build_scorer(&config);
 
