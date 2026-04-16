@@ -9,6 +9,40 @@ fn format_option(opt: &QuestionOption) -> String {
     }
 }
 
+const FREE_RESPONSE_SENTINEL: &str = "Type your own answer...";
+
+enum SelectOutcome {
+    SelectedKey(String),
+    PromptForText,
+}
+
+fn build_select_items(options: &[QuestionOption], allow_free_response: bool) -> Vec<String> {
+    let mut items: Vec<String> = options.iter().map(format_option).collect();
+
+    if allow_free_response {
+        items.push(FREE_RESPONSE_SENTINEL.to_string());
+    }
+
+    items
+}
+
+fn resolve_select_outcome(
+    selection: usize,
+    options: &[QuestionOption],
+    allow_free_response: bool,
+) -> SelectOutcome {
+    if allow_free_response && selection == options.len() {
+        SelectOutcome::PromptForText
+    } else {
+        SelectOutcome::SelectedKey(options[selection].key.clone())
+    }
+}
+
+fn parse_approval_text(input: &str) -> bool {
+    let trimmed = input.trim().to_ascii_lowercase();
+    trimmed.is_empty() || trimmed == "yes" || trimmed == "y"
+}
+
 /// Trait for user interaction during the init conversation.
 /// Implementations handle text prompts, option selection, and approval.
 pub trait UserInput {
@@ -77,11 +111,7 @@ impl UserInput for TerminalInput {
 
         if io::stdin().is_terminal() {
             let _terminal_guard = autotune_agent::terminal::Guard::new();
-            let mut items: Vec<String> = options.iter().map(format_option).collect();
-
-            if allow_free_response {
-                items.push("Type your own answer...".to_string());
-            }
+            let items = build_select_items(options, allow_free_response);
 
             let selection = dialoguer::Select::new()
                 .items(&items)
@@ -89,14 +119,15 @@ impl UserInput for TerminalInput {
                 .interact()
                 .map_err(io::Error::other)?;
 
-            if allow_free_response && selection == options.len() {
-                let text = dialoguer::Input::<String>::new()
-                    .with_prompt("Type your answer")
-                    .interact_text()
-                    .map_err(io::Error::other)?;
-                Ok(text)
-            } else {
-                Ok(options[selection].key.clone())
+            match resolve_select_outcome(selection, options, allow_free_response) {
+                SelectOutcome::PromptForText => {
+                    let text = dialoguer::Input::<String>::new()
+                        .with_prompt("Type your answer")
+                        .interact_text()
+                        .map_err(io::Error::other)?;
+                    Ok(text)
+                }
+                SelectOutcome::SelectedKey(key) => Ok(key),
             }
         } else {
             // Piped: numbered list, accept number or free text
@@ -132,8 +163,7 @@ impl UserInput for TerminalInput {
             print!("> ");
             io::stdout().flush()?;
             let input = Self::read_line()?;
-            let trimmed = input.to_lowercase();
-            Ok(trimmed.is_empty() || trimmed == "yes" || trimmed == "y")
+            Ok(parse_approval_text(&input))
         }
     }
 }
@@ -203,6 +233,54 @@ mod tests {
     fn format_option_with_empty_description() {
         let o = opt("k", "Label", Some(""));
         assert_eq!(format_option(&o), "Label");
+    }
+
+    #[test]
+    fn build_select_items_without_free_response() {
+        let items = build_select_items(&[opt("k", "Label", Some("Desc"))], false);
+        assert_eq!(items, vec!["Label — Desc"]);
+    }
+
+    #[test]
+    fn build_select_items_with_free_response() {
+        let items = build_select_items(&[opt("k", "Label", None)], true);
+        assert_eq!(items, vec!["Label", FREE_RESPONSE_SENTINEL]);
+    }
+
+    #[test]
+    fn resolve_select_outcome_returns_option_key() {
+        let options = vec![opt("first", "First", None), opt("second", "Second", None)];
+        match resolve_select_outcome(1, &options, true) {
+            SelectOutcome::SelectedKey(key) => assert_eq!(key, "second"),
+            SelectOutcome::PromptForText => panic!("expected selected key"),
+        }
+    }
+
+    #[test]
+    fn resolve_select_outcome_returns_prompt_for_free_response() {
+        let options = vec![opt("first", "First", None), opt("second", "Second", None)];
+        assert!(matches!(
+            resolve_select_outcome(2, &options, true),
+            SelectOutcome::PromptForText
+        ));
+    }
+
+    #[test]
+    fn parse_approval_text_accepts_default_yes() {
+        assert!(parse_approval_text(""));
+    }
+
+    #[test]
+    fn parse_approval_text_accepts_explicit_yes() {
+        assert!(parse_approval_text("YeS"));
+        assert!(parse_approval_text(" y "));
+    }
+
+    #[test]
+    fn parse_approval_text_rejects_other_values() {
+        assert!(!parse_approval_text("n"));
+        assert!(!parse_approval_text("no"));
+        assert!(!parse_approval_text("anything else"));
     }
 
     #[test]
