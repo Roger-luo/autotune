@@ -162,6 +162,34 @@ pub fn all_passed(results: &[TestResult]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{self, Cursor};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    #[derive(Clone)]
+    struct BrokenReader {
+        message: Arc<Mutex<Option<&'static str>>>,
+    }
+
+    impl BrokenReader {
+        fn new(message: &'static str) -> Self {
+            Self {
+                message: Arc::new(Mutex::new(Some(message))),
+            }
+        }
+    }
+
+    impl Read for BrokenReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            let message = self
+                .message
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or("reader reused after failure");
+            Err(io::Error::other(message))
+        }
+    }
 
     fn make_result(passed: bool) -> TestResult {
         TestResult {
@@ -246,5 +274,92 @@ mod tests {
         let results = run_all_tests(&configs, &tmp).unwrap();
         assert_eq!(results.len(), 2);
         assert!(all_passed(&results));
+    }
+
+    #[test]
+    fn run_test_timeout_returns_timeout_error() {
+        let tmp = std::env::temp_dir();
+        let config = TestConfig {
+            name: "timeout".to_string(),
+            command: vec!["sh".to_string(), "-c".to_string(), "sleep 1".to_string()],
+            timeout: 0,
+        };
+
+        let err = run_test(&config, &tmp).unwrap_err();
+        match err {
+            TestError::Timeout { name, timeout } => {
+                assert_eq!(name, "timeout");
+                assert_eq!(timeout, 0);
+            }
+            other => panic!("expected timeout error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_test_failure_captures_stdout_and_stderr() {
+        let tmp = std::env::temp_dir();
+        let config = make_config(
+            "fail-with-output",
+            &["sh", "-c", "printf 'hello'; printf 'oops' >&2; exit 1"],
+        );
+
+        let result = run_test(&config, &tmp).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.stdout, "hello");
+        assert_eq!(result.stderr, "oops");
+    }
+
+    #[test]
+    fn spawn_output_reader_without_pipe_returns_io_error() {
+        let missing_pipe: Option<Cursor<Vec<u8>>> = None;
+        let err = spawn_output_reader(missing_pipe, "missing-pipe").unwrap_err();
+        match err {
+            TestError::Io { name, source } => {
+                assert_eq!(name, "missing-pipe");
+                assert_eq!(source.to_string(), "child output pipe was not captured");
+            }
+            other => panic!("expected IO error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_output_reader_propagates_read_errors() {
+        let reader = spawn_output_reader(Some(BrokenReader::new("read failed")), "broken")
+            .unwrap();
+        let err = collect_output(reader, "broken").unwrap_err();
+
+        match err {
+            TestError::Io { name, source } => {
+                assert_eq!(name, "broken");
+                assert_eq!(source.to_string(), "read failed");
+            }
+            other => panic!("expected IO error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_output_returns_string_for_successful_reader() {
+        let reader =
+            spawn_output_reader(Some(Cursor::new(b"captured output".to_vec())), "success")
+                .unwrap();
+
+        let output = collect_output(reader, "success").unwrap();
+        assert_eq!(output, "captured output");
+    }
+
+    #[test]
+    fn collect_output_reports_panicked_reader_thread() {
+        let reader = thread::spawn(|| -> Result<Vec<u8>, TestError> {
+            panic!("boom");
+        });
+
+        let err = collect_output(reader, "panic-case").unwrap_err();
+        match err {
+            TestError::Io { name, source } => {
+                assert_eq!(name, "panic-case");
+                assert_eq!(source.to_string(), "child output reader thread panicked");
+            }
+            other => panic!("expected IO error, got {other:?}"),
+        }
     }
 }

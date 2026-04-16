@@ -155,6 +155,7 @@ pub trait Agent {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
 
     fn dummy_config() -> AgentConfig {
         AgentConfig {
@@ -294,5 +295,122 @@ mod tests {
         let response = agent.send_streaming(&session, "hello", None).unwrap();
         assert_eq!(response.text, "sent");
         assert_eq!(response.session_id, "sess-2");
+    }
+
+    #[test]
+    fn default_hydrate_session_succeeds() {
+        struct MinimalAgent;
+
+        impl Agent for MinimalAgent {
+            fn spawn(&self, _config: &AgentConfig) -> Result<AgentResponse, AgentError> {
+                unimplemented!()
+            }
+
+            fn send(
+                &self,
+                _session: &AgentSession,
+                _message: &str,
+            ) -> Result<AgentResponse, AgentError> {
+                unimplemented!()
+            }
+
+            fn backend_name(&self) -> &str {
+                "minimal"
+            }
+
+            fn handover_command(&self, _session: &AgentSession) -> String {
+                String::new()
+            }
+        }
+
+        let agent = MinimalAgent;
+        let session = AgentSession {
+            session_id: "sess-3".to_string(),
+            backend: "minimal".to_string(),
+        };
+
+        agent.hydrate_session(&session, &dummy_config()).unwrap();
+    }
+
+    #[test]
+    fn agent_error_display_messages_include_context() {
+        let command_failed = AgentError::CommandFailed {
+            message: "boom".to_string(),
+        };
+        assert_eq!(command_failed.to_string(), "agent command failed: boom");
+
+        let parse_failed = AgentError::ParseFailed {
+            message: "bad xml".to_string(),
+        };
+        assert_eq!(
+            parse_failed.to_string(),
+            "failed to parse agent response: bad xml"
+        );
+
+        let timeout = AgentError::Timeout { seconds: 42 };
+        assert_eq!(timeout.to_string(), "agent timed out after 42s");
+
+        let interrupted = AgentError::Interrupted;
+        assert_eq!(interrupted.to_string(), "agent interrupted by signal");
+
+        let io = AgentError::Io {
+            source: std::io::Error::other("disk gone"),
+        };
+        let io_message = io.to_string();
+        assert!(io_message.contains("IO error:"));
+        assert!(io_message.contains("disk gone"));
+    }
+
+    #[test]
+    fn tool_permission_variants_preserve_values() {
+        match ToolPermission::Allow("Read".to_string()) {
+            ToolPermission::Allow(tool) => assert_eq!(tool, "Read"),
+            _ => panic!("unexpected variant"),
+        }
+
+        match ToolPermission::AllowScoped("Edit".to_string(), "src".to_string()) {
+            ToolPermission::AllowScoped(tool, scope) => {
+                assert_eq!(tool, "Edit");
+                assert_eq!(scope, "src");
+            }
+            _ => panic!("unexpected variant"),
+        }
+
+        match ToolPermission::Deny("Bash".to_string()) {
+            ToolPermission::Deny(tool) => assert_eq!(tool, "Bash"),
+            _ => panic!("unexpected variant"),
+        }
+    }
+
+    #[test]
+    fn event_handler_receives_tool_and_text_events() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&received);
+        let handler: EventHandler = Box::new(move |event| {
+            sink.lock().unwrap().push(event);
+        });
+
+        handler(AgentEvent::ToolUse {
+            tool: "Read".to_string(),
+            input_summary: "Cargo.toml".to_string(),
+        });
+        handler(AgentEvent::Text("working".to_string()));
+
+        let events = received.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            AgentEvent::ToolUse {
+                tool,
+                input_summary,
+            } => {
+                assert_eq!(tool, "Read");
+                assert_eq!(input_summary, "Cargo.toml");
+            }
+            _ => panic!("expected tool use event"),
+        }
+        match &events[1] {
+            AgentEvent::Text(text) => assert_eq!(text, "working"),
+            _ => panic!("expected text event"),
+        }
     }
 }
