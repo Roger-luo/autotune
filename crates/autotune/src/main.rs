@@ -1985,7 +1985,7 @@ reasoning_effort = "low"
         assert!(table.contains("Iteration: 3"));
         assert!(table.contains("Iter   Approach             Status     Rank"));
         assert!(table.contains("baseline"));
-        assert!(table.contains("very-long-coverage…"));
+        assert!(table.contains(&truncate("very-long-coverage-approach-name", 18)));
         assert!(table.contains("0.0640"));
         assert!(table.contains("coverage improved"));
     }
