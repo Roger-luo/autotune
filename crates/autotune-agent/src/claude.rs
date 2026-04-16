@@ -544,3 +544,319 @@ fn trace_send(session: &AgentSession, message: &str, response: &AgentResponse) {
         }),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+
+    fn config_with_tools(allowed_tools: Vec<ToolPermission>) -> AgentConfig {
+        AgentConfig {
+            prompt: "prompt".to_string(),
+            allowed_tools,
+            working_directory: PathBuf::from("/tmp/worktree"),
+            model: Some("sonnet".to_string()),
+            max_turns: Some(7),
+            reasoning_effort: Some("high".to_string()),
+        }
+    }
+
+    fn session(id: &str) -> AgentSession {
+        AgentSession {
+            session_id: id.to_string(),
+            backend: "claude".to_string(),
+        }
+    }
+
+    struct ClaudeHarness {
+        _tmp: TempDir,
+        root: PathBuf,
+        script_path: PathBuf,
+        stdout_path: PathBuf,
+        stderr_path: PathBuf,
+        status_path: PathBuf,
+    }
+
+    impl ClaudeHarness {
+        fn new(stdout: &str, stderr: &str, status: i32) -> Self {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let script_path = root.join("claude");
+            let stdout_path = root.join("stdout.jsonl");
+            let stderr_path = root.join("stderr.txt");
+            let status_path = root.join("status.txt");
+
+            fs::write(&stdout_path, stdout).unwrap();
+            fs::write(&stderr_path, stderr).unwrap();
+            fs::write(&status_path, status.to_string()).unwrap();
+            fs::create_dir_all(root.join("workspace")).unwrap();
+
+            let script = format!(
+                "#!/bin/sh\ncat '{stdout}'\ncat '{stderr}' >&2\nexit \"$(cat '{status}')\"\n",
+                stdout = stdout_path.display(),
+                stderr = stderr_path.display(),
+                status = status_path.display(),
+            );
+            fs::write(&script_path, script).unwrap();
+            let mut perms = fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script_path, perms).unwrap();
+
+            Self {
+                _tmp: tmp,
+                root,
+                script_path,
+                stdout_path,
+                stderr_path,
+                status_path,
+            }
+        }
+
+        fn agent(&self) -> ClaudeAgent {
+            ClaudeAgent::with_command(self.script_path.clone())
+        }
+
+        fn workspace(&self) -> PathBuf {
+            self.root.join("workspace")
+        }
+
+        fn write_stdout(&self, stdout: &str) {
+            fs::write(&self.stdout_path, stdout).unwrap();
+        }
+
+        fn write_stderr_and_status(&self, stderr: &str, status: i32) {
+            fs::write(&self.stderr_path, stderr).unwrap();
+            fs::write(&self.status_path, status.to_string()).unwrap();
+        }
+    }
+
+    #[test]
+    fn build_args_maps_config_and_session_into_claude_flags() {
+        let args = ClaudeAgent::build_args(
+            &config_with_tools(vec![
+                ToolPermission::Allow("Read".to_string()),
+                ToolPermission::AllowScoped("Edit".to_string(), "/tmp/worktree/**/*.rs".to_string()),
+                ToolPermission::Deny("Bash".to_string()),
+            ]),
+            Some("sess-123"),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "-p".to_string(),
+                "prompt".to_string(),
+                "--output-format".to_string(),
+                "json".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+                "--disable-slash-commands".to_string(),
+                "-r".to_string(),
+                "sess-123".to_string(),
+                "--model".to_string(),
+                "sonnet".to_string(),
+                "--max-turns".to_string(),
+                "7".to_string(),
+                "--allowedTools".to_string(),
+                "Read".to_string(),
+                "--allowedTools".to_string(),
+                "Edit:/tmp/worktree/**/*.rs".to_string(),
+                "--disallowedTools".to_string(),
+                "Bash".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_response_requires_session_id_and_result() {
+        let ok = ClaudeAgent::parse_response(r#"{"session_id":"sess-1","result":"done"}"#).unwrap();
+        assert_eq!(ok.session_id, "sess-1");
+        assert_eq!(ok.text, "done");
+
+        assert!(matches!(
+            ClaudeAgent::parse_response("not json"),
+            Err(AgentError::ParseFailed { .. })
+        ));
+        assert!(matches!(
+            ClaudeAgent::parse_response(r#"{"result":"done"}"#),
+            Err(AgentError::ParseFailed { .. })
+        ));
+        assert!(matches!(
+            ClaudeAgent::parse_response(r#"{"session_id":"sess-1"}"#),
+            Err(AgentError::ParseFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn summarize_tool_input_prefers_paths_then_pattern_then_command() {
+        assert_eq!(
+            ClaudeAgent::summarize_tool_input(Some(&serde_json::json!({ "file_path": "/tmp/a.rs" }))),
+            "/tmp/a.rs"
+        );
+        assert_eq!(
+            ClaudeAgent::summarize_tool_input(Some(&serde_json::json!({ "pattern": "needle" }))),
+            "pattern: needle"
+        );
+        assert_eq!(
+            ClaudeAgent::summarize_tool_input(Some(&serde_json::json!({ "command": "cargo test" }))),
+            "cargo test"
+        );
+        assert_eq!(ClaudeAgent::summarize_tool_input(None), "");
+    }
+
+    #[test]
+    fn remember_hydrate_and_grant_permission_update_session_context() {
+        let original = config_with_tools(vec![ToolPermission::Allow("Read".to_string())]);
+        let agent = ClaudeAgent::with_command(PathBuf::from("claude"));
+
+        agent.remember_session("sess-1", &original).unwrap();
+        agent
+            .grant_session_permission(
+                &session("sess-1"),
+                ToolPermission::AllowScoped("Edit".to_string(), "/tmp/worktree".to_string()),
+            )
+            .unwrap();
+
+        let resumed = agent.config_for_session("sess-1", "continue").unwrap();
+        assert_eq!(resumed.prompt, "continue");
+        assert_eq!(resumed.working_directory, original.working_directory);
+        assert_eq!(resumed.model, original.model);
+        assert_eq!(resumed.max_turns, original.max_turns);
+        assert_eq!(resumed.reasoning_effort, original.reasoning_effort);
+        assert_eq!(resumed.allowed_tools.len(), 2);
+
+        let fresh = ClaudeAgent::with_command(PathBuf::from("claude"));
+        fresh.hydrate_session(&session("sess-2"), &original).unwrap();
+        let hydrated = fresh.config_for_session("sess-2", "resumed").unwrap();
+        assert_eq!(hydrated.prompt, "resumed");
+        assert_eq!(hydrated.allowed_tools.len(), 1);
+    }
+
+    #[test]
+    fn grant_session_permission_requires_known_session() {
+        let agent = ClaudeAgent::with_command(PathBuf::from("claude"));
+        let err = agent
+            .grant_session_permission(
+                &session("missing"),
+                ToolPermission::Allow("Read".to_string()),
+            )
+            .unwrap_err();
+
+        match err {
+            AgentError::CommandFailed { message } => {
+                assert!(message.contains("no session context for 'missing'"));
+            }
+            other => panic!("expected command failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_claude_streaming_emits_tool_use_and_text_events() {
+        let harness = ClaudeHarness::new(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/input.rs"}},{"type":"text","text":"assistant text"}]}}
+{"type":"content_block_start","content_block":{"type":"tool_use","name":"Grep","input":{"pattern":"needle"}}}
+{"type":"content_block_delta","delta":{"type":"text_delta","text":"delta text"}}
+{"type":"result","session_id":"sess-123","result":"final"}"#,
+            "",
+            0,
+        );
+        let agent = harness.agent();
+        let seen = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let seen_for_handler = Arc::clone(&seen);
+        let handler: EventHandler = Box::new(move |event| {
+            seen_for_handler.lock().unwrap().push(event);
+        });
+        let mut config = config_with_tools(vec![]);
+        config.working_directory = harness.workspace();
+        let args = ClaudeAgent::build_args(&config, None);
+
+        let response = agent
+            .run_claude_streaming(&args, &config.working_directory, &handler)
+            .unwrap();
+
+        assert_eq!(response.session_id, "sess-123");
+        assert_eq!(response.text, "final");
+
+        let events = seen.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolUse { tool, input_summary }
+            if tool == "Read" && input_summary == "/tmp/input.rs"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::Text(text) if text == "assistant text"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::ToolUse { tool, input_summary }
+            if tool == "Grep" && input_summary.is_empty()
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::Text(text) if text == "delta text"
+        )));
+    }
+
+    #[test]
+    fn run_claude_streaming_rejects_missing_result_event() {
+        let harness = ClaudeHarness::new(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}"#,
+            "",
+            0,
+        );
+        let agent = harness.agent();
+        let mut config = config_with_tools(vec![]);
+        config.working_directory = harness.workspace();
+        let args = ClaudeAgent::build_args(&config, None);
+        let handler: EventHandler = Box::new(|_event| {});
+
+        let err = agent
+            .run_claude_streaming(&args, &config.working_directory, &handler)
+            .unwrap_err();
+
+        match err {
+            AgentError::ParseFailed { message } => {
+                assert!(message.contains("ended without a result event"));
+            }
+            other => panic!("expected parse failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_claude_streaming_reports_stderr_on_command_failure() {
+        let harness = ClaudeHarness::new("", "permission denied", 1);
+        let agent = harness.agent();
+        let mut config = config_with_tools(vec![]);
+        config.working_directory = harness.workspace();
+        let args = ClaudeAgent::build_args(&config, None);
+        let handler: EventHandler = Box::new(|_event| {});
+
+        let err = agent
+            .run_claude_streaming(&args, &config.working_directory, &handler)
+            .unwrap_err();
+
+        match err {
+            AgentError::CommandFailed { message } => {
+                assert!(message.contains("permission denied"));
+                assert!(message.contains("--verbose"));
+                assert!(message.contains("stream-json"));
+            }
+            other => panic!("expected command failure, got {other:?}"),
+        }
+
+        harness.write_stdout("");
+        harness.write_stderr_and_status("", 1);
+        let err = agent
+            .run_claude_streaming(&args, &config.working_directory, &handler)
+            .unwrap_err();
+        match err {
+            AgentError::CommandFailed { message } => {
+                assert!(message.contains("(no stderr output)"));
+            }
+            other => panic!("expected command failure, got {other:?}"),
+        }
+    }
+}

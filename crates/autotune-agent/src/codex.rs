@@ -514,3 +514,294 @@ impl Agent for CodexAgent {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    fn config_with_tools(allowed_tools: Vec<ToolPermission>) -> AgentConfig {
+        AgentConfig {
+            prompt: "initial prompt".to_string(),
+            allowed_tools,
+            working_directory: PathBuf::from("/tmp/worktree"),
+            model: Some("gpt-5.4".to_string()),
+            max_turns: Some(5),
+            reasoning_effort: Some("medium".to_string()),
+        }
+    }
+
+    fn session(id: &str) -> AgentSession {
+        AgentSession {
+            session_id: id.to_string(),
+            backend: "codex".to_string(),
+        }
+    }
+
+    #[test]
+    fn normalize_prompt_replaces_blank_prompts() {
+        assert_eq!(CodexAgent::normalize_prompt(""), "Continue.");
+        assert_eq!(CodexAgent::normalize_prompt("  \n\t "), "Continue.");
+        assert_eq!(CodexAgent::normalize_prompt("keep original"), "keep original");
+    }
+
+    #[test]
+    fn looks_like_glob_detects_glob_metacharacters() {
+        assert!(CodexAgent::looks_like_glob("src/**/*.rs"));
+        assert!(CodexAgent::looks_like_glob("file?.rs"));
+        assert!(CodexAgent::looks_like_glob("[ab].txt"));
+        assert!(CodexAgent::looks_like_glob("{a,b}.txt"));
+        assert!(!CodexAgent::looks_like_glob("/tmp/worktree"));
+    }
+
+    #[test]
+    fn permission_args_translate_tools_into_codex_flags() {
+        let args = CodexAgent::permission_args(
+            &[
+                ToolPermission::Allow("Read".to_string()),
+                ToolPermission::Allow("WebSearch".to_string()),
+                ToolPermission::AllowScoped("Edit".to_string(), "/tmp/b".to_string()),
+                ToolPermission::AllowScoped("Write".to_string(), "/tmp/a".to_string()),
+                ToolPermission::AllowScoped("Write".to_string(), "/tmp/**/*.rs".to_string()),
+                ToolPermission::Deny("Bash".to_string()),
+            ],
+            Some(Path::new("/codex/home")),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "-a".to_string(),
+                "untrusted".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+                "--add-dir".to_string(),
+                "/tmp/a".to_string(),
+                "--add-dir".to_string(),
+                "/tmp/b".to_string(),
+                "--add-dir".to_string(),
+                "/codex/home".to_string(),
+                "--search".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_thread_id_supports_all_known_shapes() {
+        assert_eq!(
+            CodexAgent::extract_thread_id(&serde_json::json!({ "thread_id": "thread-1" })),
+            Some("thread-1".to_string())
+        );
+        assert_eq!(
+            CodexAgent::extract_thread_id(&serde_json::json!({ "threadId": "thread-2" })),
+            Some("thread-2".to_string())
+        );
+        assert_eq!(
+            CodexAgent::extract_thread_id(&serde_json::json!({ "thread": { "id": "thread-3" } })),
+            Some("thread-3".to_string())
+        );
+    }
+
+    #[test]
+    fn delta_text_supports_string_object_and_text_fallback_shapes() {
+        assert_eq!(
+            CodexAgent::delta_text(&serde_json::json!({ "delta": "partial" })),
+            Some("partial".to_string())
+        );
+        assert_eq!(
+            CodexAgent::delta_text(&serde_json::json!({ "delta": { "text": "nested" } })),
+            Some("nested".to_string())
+        );
+        assert_eq!(
+            CodexAgent::delta_text(&serde_json::json!({ "text": "fallback" })),
+            Some("fallback".to_string())
+        );
+        assert_eq!(CodexAgent::delta_text(&serde_json::json!({ "delta": 3 })), None);
+    }
+
+    #[test]
+    fn command_summary_handles_array_string_other_and_missing_values() {
+        assert_eq!(
+            CodexAgent::command_summary(&serde_json::json!({ "command": ["rg", "needle"] })),
+            "rg needle"
+        );
+        assert_eq!(
+            CodexAgent::command_summary(&serde_json::json!({ "command": "cargo test" })),
+            "cargo test"
+        );
+        assert_eq!(
+            CodexAgent::command_summary(&serde_json::json!({ "command": { "raw": "x" } })),
+            r#"{"raw":"x"}"#
+        );
+        assert_eq!(CodexAgent::command_summary(&serde_json::json!({})), "");
+    }
+
+    #[test]
+    fn output_details_formats_stdout_stderr_and_empty_output() {
+        assert_eq!(
+            CodexAgent::output_details(b"stdout text\n", b"stderr text\n"),
+            "\nstderr: stderr text\nstdout: stdout text"
+        );
+        assert_eq!(CodexAgent::output_details(b"", b""), " (no output)");
+    }
+
+    #[test]
+    fn build_args_adds_resume_model_reasoning_and_normalized_prompt() {
+        let agent = CodexAgent::with_command_and_codex_home(
+            PathBuf::from("codex"),
+            Some(PathBuf::from("/codex/home")),
+        );
+        let mut config = config_with_tools(vec![
+            ToolPermission::AllowScoped("Write".to_string(), "/tmp/worktree".to_string()),
+            ToolPermission::Deny("Bash".to_string()),
+        ]);
+        config.prompt = "   ".to_string();
+
+        let args = agent.build_args(&config, Some("thread-123"));
+
+        assert_eq!(
+            args,
+            vec![
+                "-a".to_string(),
+                "untrusted".to_string(),
+                "--sandbox".to_string(),
+                "workspace-write".to_string(),
+                "--add-dir".to_string(),
+                "/tmp/worktree".to_string(),
+                "--add-dir".to_string(),
+                "/codex/home".to_string(),
+                "-C".to_string(),
+                "/tmp/worktree".to_string(),
+                "exec".to_string(),
+                "resume".to_string(),
+                "--json".to_string(),
+                "--skip-git-repo-check".to_string(),
+                "--model".to_string(),
+                "gpt-5.4".to_string(),
+                "-c".to_string(),
+                "model_reasoning_effort=medium".to_string(),
+                "thread-123".to_string(),
+                "Continue.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn remember_hydrate_and_grant_permission_update_session_context() {
+        let original = config_with_tools(vec![ToolPermission::Allow("Read".to_string())]);
+        let agent = CodexAgent::with_command(PathBuf::from("codex"));
+
+        agent.remember_session("thread-1", &original).unwrap();
+        agent
+            .grant_session_permission(
+                &session("thread-1"),
+                ToolPermission::AllowScoped("Edit".to_string(), "/tmp/worktree".to_string()),
+            )
+            .unwrap();
+
+        let resumed = agent.config_for_session("thread-1", "continue").unwrap();
+        assert_eq!(resumed.prompt, "continue");
+        assert_eq!(resumed.working_directory, original.working_directory);
+        assert_eq!(resumed.model, original.model);
+        assert_eq!(resumed.max_turns, original.max_turns);
+        assert_eq!(resumed.reasoning_effort, original.reasoning_effort);
+        assert_eq!(resumed.allowed_tools.len(), 2);
+
+        let fresh = CodexAgent::with_command(PathBuf::from("codex"));
+        fresh.hydrate_session(&session("thread-2"), &original).unwrap();
+        let hydrated = fresh.config_for_session("thread-2", "resumed").unwrap();
+        assert_eq!(hydrated.prompt, "resumed");
+        assert_eq!(hydrated.allowed_tools.len(), 1);
+        assert!(matches!(
+            hydrated.allowed_tools.first(),
+            Some(ToolPermission::Allow(tool)) if tool == "Read"
+        ));
+    }
+
+    #[test]
+    fn grant_session_permission_requires_known_session() {
+        let agent = CodexAgent::with_command(PathBuf::from("codex"));
+        let err = agent
+            .grant_session_permission(
+                &session("missing"),
+                ToolPermission::Allow("Read".to_string()),
+            )
+            .unwrap_err();
+
+        match err {
+            AgentError::CommandFailed { message } => {
+                assert!(message.contains("no session context for 'missing'"));
+            }
+            other => panic!("expected command failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_jsonl_emits_text_and_tool_use_and_uses_latest_message_source() {
+        let jsonl = r#"{"event":"thread.started","thread":{"id":"thread-123"}}
+{"event":"agent_message_delta","delta":{"text":"thinking"}}
+{"event":"exec_command_begin","command":["rg","needle"]}
+{"event":"item.completed","item":{"type":"agent_message","text":"final answer"}}
+{"event":"turn_complete","last_agent_message":"ignored"}"#;
+        let seen = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+        let seen_for_handler = Arc::clone(&seen);
+        let handler: EventHandler = Box::new(move |event| {
+            seen_for_handler.lock().unwrap().push(event);
+        });
+
+        let response = CodexAgent::parse_jsonl(std::io::Cursor::new(jsonl), Some(&handler)).unwrap();
+
+        assert_eq!(response.session_id, "thread-123");
+        assert_eq!(response.text, "ignored");
+        let events = seen.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], AgentEvent::Text(text) if text == "thinking"));
+        assert!(matches!(
+            &events[1],
+            AgentEvent::ToolUse { tool, input_summary }
+            if tool == "exec_command" && input_summary == "rg needle"
+        ));
+    }
+
+    #[test]
+    fn parse_jsonl_accepts_current_cli_item_completed_shape() {
+        let jsonl = r#"{"type":"thread.started","thread_id":"thread-123"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed"}"#;
+
+        let response = CodexAgent::parse_jsonl(std::io::Cursor::new(jsonl), None).unwrap();
+
+        assert_eq!(response.session_id, "thread-123");
+        assert_eq!(response.text, "OK");
+    }
+
+    #[test]
+    fn parse_jsonl_rejects_missing_thread_id() {
+        let err = CodexAgent::parse_jsonl(
+            std::io::Cursor::new(r#"{"event":"turn_complete","last_agent_message":"done"}"#),
+            None,
+        )
+        .unwrap_err();
+
+        match err {
+            AgentError::ParseFailed { message } => {
+                assert!(message.contains("missing thread/session id"));
+            }
+            other => panic!("expected parse failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_jsonl_rejects_malformed_json() {
+        let err = CodexAgent::parse_jsonl(std::io::Cursor::new("{not json}\n"), None).unwrap_err();
+
+        match err {
+            AgentError::ParseFailed { message } => {
+                assert!(message.contains("invalid codex JSON output"));
+            }
+            other => panic!("expected parse failure, got {other:?}"),
+        }
+    }
+}
