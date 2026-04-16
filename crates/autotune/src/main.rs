@@ -1958,6 +1958,7 @@ reasoning_effort = "low"
             r#"
 [task]
 name = "demo"
+max_iterations = "1"
 
 [paths]
 tunable = ["src/**"]
