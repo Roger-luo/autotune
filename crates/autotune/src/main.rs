@@ -1475,6 +1475,77 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use autotune::agent_factory::AgentRole;
+    use std::collections::HashMap;
+    use tempfile::tempdir;
+
+    fn sample_config() -> AutotuneConfig {
+        AutotuneConfig {
+            task: autotune_config::TaskConfig {
+                name: "coverage-task".to_string(),
+                description: Some("Improve line coverage".to_string()),
+                canonical_branch: "main".to_string(),
+                max_iterations: Some(autotune_config::StopValue::Infinite),
+                target_improvement: Some(0.25),
+                max_duration: Some("2h".to_string()),
+                target_metric: vec![autotune_config::TargetMetric {
+                    name: "line_coverage".to_string(),
+                    value: 80.0,
+                    direction: autotune_config::Direction::Maximize,
+                }],
+            },
+            paths: autotune_config::PathsConfig {
+                tunable: vec!["src/**".to_string(), "crates/**".to_string()],
+                denied: vec!["tests/**".to_string()],
+            },
+            test: vec![autotune_config::TestConfig {
+                name: "unit".to_string(),
+                command: vec!["cargo".to_string(), "test".to_string(), "-p".to_string(), "autotune".to_string()],
+                timeout: 300,
+            }],
+            measure: vec![
+                autotune_config::MeasureConfig {
+                    name: "coverage".to_string(),
+                    command: vec!["cargo".to_string(), "llvm-cov".to_string()],
+                    timeout: 600,
+                    adaptor: autotune_config::AdaptorConfig::Regex {
+                        patterns: vec![autotune_config::RegexPattern {
+                            name: "line_coverage".to_string(),
+                            pattern: "coverage: ([0-9.]+)".to_string(),
+                        }],
+                    },
+                },
+                autotune_config::MeasureConfig {
+                    name: "criterion".to_string(),
+                    command: vec!["cargo".to_string(), "bench".to_string()],
+                    timeout: 600,
+                    adaptor: autotune_config::AdaptorConfig::Criterion {
+                        measure_name: "throughput".to_string(),
+                    },
+                },
+                autotune_config::MeasureConfig {
+                    name: "scripted".to_string(),
+                    command: vec!["./bench.sh".to_string()],
+                    timeout: 600,
+                    adaptor: autotune_config::AdaptorConfig::Script {
+                        command: vec!["python3".to_string(), "extract.py".to_string()],
+                    },
+                },
+            ],
+            score: autotune_config::ScoreConfig::WeightedSum {
+                primary_metrics: vec![autotune_config::PrimaryMetric {
+                    name: "line_coverage".to_string(),
+                    direction: autotune_config::Direction::Maximize,
+                    weight: 1.5,
+                }],
+                guardrail_metrics: vec![autotune_config::GuardrailMetric {
+                    name: "runtime_ms".to_string(),
+                    direction: autotune_config::Direction::Minimize,
+                    max_regression: 0.1,
+                }],
+            },
+            agent: autotune_config::AgentConfig::default(),
+        }
+    }
 
     #[test]
     fn global_backend_name_prefers_init_override() {
@@ -1708,5 +1779,217 @@ reasoning_effort = "low"
     fn config_template_mentions_claude_and_codex() {
         assert!(CONFIG_TEMPLATE.contains("backend = \"claude\""));
         assert!(CONFIG_TEMPLATE.contains("claude, codex"));
+    }
+
+    #[test]
+    fn build_research_agent_prompt_includes_high_value_context() {
+        let config = sample_config();
+        let baseline_metrics = HashMap::from([
+            ("runtime_ms".to_string(), 12.0),
+            ("line_coverage".to_string(), 78.5),
+        ]);
+        let baseline_output_files = vec![
+            PathBuf::from(".autotune/tasks/coverage-task/iterations/000-baseline/coverage.stdout"),
+            PathBuf::from(".autotune/tasks/coverage-task/iterations/000-baseline/coverage.stderr"),
+        ];
+
+        let prompt =
+            build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files);
+
+        assert!(prompt.contains("- Name: coverage-task"));
+        assert!(prompt.contains("- Description: Improve line coverage"));
+        assert!(prompt.contains("- max_iterations: inf (no hard cap)"));
+        assert!(prompt.contains("- target_improvement: rank >= 0.25"));
+        assert!(prompt.contains("- max_duration: 2h"));
+        assert!(prompt.contains("- target_metric: line_coverage >= 80"));
+        assert!(prompt.contains("Tunable globs"));
+        assert!(prompt.contains("- src/**"));
+        assert!(prompt.contains("Denied globs"));
+        assert!(prompt.contains("- tests/**"));
+        assert!(prompt.contains("- unit: `cargo test -p autotune`"));
+        assert!(prompt.contains("- coverage: `cargo llvm-cov`"));
+        assert!(prompt.contains("extracts `line_coverage` via regex"));
+        assert!(prompt.contains("extracts criterion metrics from `throughput`"));
+        assert!(prompt.contains("extracts metrics via script: `python3 extract.py`"));
+        assert!(prompt.contains("Score is a weighted sum"));
+        assert!(prompt.contains("- line_coverage (Maximize, weight=1.5)"));
+        assert!(prompt.contains("- runtime_ms (Minimize, max_regression=0.1)"));
+        assert!(prompt.contains("- line_coverage: 78.5"));
+        assert!(prompt.contains("- runtime_ms: 12"));
+        assert!(prompt.contains("Do NOT re-run the measure commands"));
+        assert!(prompt.contains("<request-tool>"));
+        assert!(prompt.contains(&format!("- `{}`", baseline_output_files[0].display())));
+    }
+
+    #[test]
+    fn build_research_agent_prompt_handles_missing_optional_sections() {
+        let mut config = sample_config();
+        config.task.description = None;
+        config.task.max_iterations = None;
+        config.task.target_improvement = None;
+        config.task.max_duration = None;
+        config.task.target_metric.clear();
+        config.paths.denied.clear();
+        config.test.clear();
+        config.measure.truncate(1);
+        config.score = autotune_config::ScoreConfig::Threshold {
+            conditions: vec![autotune_config::ThresholdCondition {
+                metric: "line_coverage".to_string(),
+                direction: autotune_config::Direction::Maximize,
+                threshold: 85.0,
+            }],
+        };
+
+        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[]);
+
+        assert!(prompt.contains("- (none configured)"));
+        assert!(!prompt.contains("Denied globs"));
+        assert!(!prompt.contains("# Test suites run by the CLI after each approach"));
+        assert!(prompt.contains("(no baseline metrics were extracted)"));
+        assert!(prompt.contains("Score uses thresholds:"));
+        assert!(prompt.contains("- line_coverage Maximize 85"));
+        assert!(!prompt.contains("Baseline raw measure output"));
+    }
+
+    #[test]
+    fn validate_measure_config_extracts_metrics_from_successful_commands() {
+        let workdir = tempdir().unwrap();
+        let measures = vec![autotune_config::MeasureConfig {
+            name: "echo-metric".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf 'metric: 41.5\\n'".to_string(),
+            ],
+            timeout: 600,
+            adaptor: autotune_config::AdaptorConfig::Regex {
+                patterns: vec![autotune_config::RegexPattern {
+                    name: "metric".to_string(),
+                    pattern: "metric: ([0-9.]+)".to_string(),
+                }],
+            },
+        }];
+
+        let metrics = validate_measure_config(&measures, workdir.path()).unwrap();
+
+        assert_eq!(metrics.get("metric"), Some(&41.5));
+    }
+
+    #[test]
+    fn validate_measure_config_surfaces_command_failure_output() {
+        let workdir = tempdir().unwrap();
+        let measures = vec![autotune_config::MeasureConfig {
+            name: "broken".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf 'out\\n'; printf 'err\\n' 1>&2; exit 7".to_string(),
+            ],
+            timeout: 600,
+            adaptor: autotune_config::AdaptorConfig::Regex {
+                patterns: vec![autotune_config::RegexPattern {
+                    name: "metric".to_string(),
+                    pattern: "metric: ([0-9.]+)".to_string(),
+                }],
+            },
+        }];
+
+        let err = validate_measure_config(&measures, workdir.path()).unwrap_err();
+
+        assert!(err.contains("measure 'broken' command failed (exit code 7)"));
+        assert!(err.contains("stdout:\nout"));
+        assert!(err.contains("stderr:\nerr"));
+    }
+
+    #[test]
+    fn validate_measure_config_surfaces_extraction_failure_output() {
+        let workdir = tempdir().unwrap();
+        let measures = vec![autotune_config::MeasureConfig {
+            name: "missing-metric".to_string(),
+            command: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf 'no metrics here\\n'; printf 'debug\\n' 1>&2".to_string(),
+            ],
+            timeout: 600,
+            adaptor: autotune_config::AdaptorConfig::Regex {
+                patterns: vec![autotune_config::RegexPattern {
+                    name: "metric".to_string(),
+                    pattern: "metric: ([0-9.]+)".to_string(),
+                }],
+            },
+        }];
+
+        let err = validate_measure_config(&measures, workdir.path()).unwrap_err();
+
+        assert!(err.contains("metric extraction failed for measure 'missing-metric'"));
+        assert!(err.contains("Measure command output (stdout):\nno metrics here"));
+        assert!(err.contains("Measure command output (stderr):\ndebug"));
+    }
+
+    #[test]
+    fn codex_reasoning_effort_maps_all_variants() {
+        assert_eq!(codex_reasoning_effort(None), None);
+        assert_eq!(
+            codex_reasoning_effort(Some(autotune_config::ReasoningEffort::Low)),
+            Some("low".to_string())
+        );
+        assert_eq!(
+            codex_reasoning_effort(Some(autotune_config::ReasoningEffort::Medium)),
+            Some("medium".to_string())
+        );
+        assert_eq!(
+            codex_reasoning_effort(Some(autotune_config::ReasoningEffort::High)),
+            Some("high".to_string())
+        );
+    }
+
+    #[test]
+    fn truncate_preserves_short_strings_and_ellipsizes_longer_ones() {
+        assert_eq!(truncate("short", 10), "short");
+        assert_eq!(truncate("abcdef", 4), "abc…");
+    }
+
+    #[test]
+    fn load_config_reads_autotune_toml_from_repo_root() {
+        let repo = tempdir().unwrap();
+        std::fs::write(
+            repo.path().join(".autotune.toml"),
+            r#"
+[task]
+name = "demo"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "bench"
+command = ["echo", "metric: 1"]
+adaptor = { type = "regex", patterns = [{ name = "metric", pattern = "metric: ([0-9]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric", direction = "Minimize" }]
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(repo.path()).unwrap();
+
+        assert_eq!(config.task.name, "demo");
+        assert_eq!(config.paths.tunable, vec!["src/**"]);
+        assert_eq!(config.measure.len(), 1);
+    }
+
+    #[test]
+    fn next_available_task_name_skips_taken_task_directories() {
+        let repo = tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".autotune/tasks/demo-2")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".autotune/tasks/demo-3")).unwrap();
+
+        let name = next_available_task_name(repo.path(), "demo").unwrap();
+
+        assert_eq!(name, "demo-4");
     }
 }
