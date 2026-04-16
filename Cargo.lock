@@ -214,6 +214,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "autotune-judge"
+version = "0.1.0"
+dependencies = [
+ "autotune-agent",
+ "chrono",
+ "dialoguer",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "autotune-mock"
 version = "0.1.0"
 dependencies = [
