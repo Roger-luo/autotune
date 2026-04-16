@@ -1600,7 +1600,27 @@ mod tests {
             research_backend: "codex".to_string(),
             current_iteration: 3,
             current_phase: Phase::Scoring,
-            current_approach: Some("raise-line-coverage".to_string()),
+            current_approach: Some(autotune_state::ApproachState {
+                name: "raise-line-coverage".to_string(),
+                hypothesis: "Add tests around reporting formatters".to_string(),
+                worktree_path: PathBuf::from("/tmp/coverage-task"),
+                branch_name: "autotune/coverage-task/raise-line-coverage".to_string(),
+                commit_sha: Some("abc123".to_string()),
+                test_results: vec![autotune_state::TestResult {
+                    name: "unit".to_string(),
+                    passed: true,
+                    duration_secs: 1.2,
+                    output: None,
+                }],
+                metrics: Some(HashMap::from([("line_coverage".to_string(), 78.9)])),
+                rank: Some(0.064),
+                files_to_modify: vec!["crates/autotune/src/main.rs".to_string()],
+                impl_session_id: Some("impl-123".to_string()),
+                impl_backend: Some("codex".to_string()),
+                fix_attempts: 1,
+                fresh_spawns: 0,
+                fix_history: vec![],
+            }),
         }
     }
 
@@ -1626,7 +1646,7 @@ mod tests {
                 hypothesis: Some("Add missing formatter tests".to_string()),
                 metrics: HashMap::from([("line_coverage".to_string(), 78.9)]),
                 rank: 0.064,
-                score: Some(0.064),
+                score: Some("keep".to_string()),
                 reason: Some("coverage improved".to_string()),
                 fix_attempts: 1,
                 fresh_spawns: 0,
