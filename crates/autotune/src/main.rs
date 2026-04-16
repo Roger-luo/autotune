@@ -2022,8 +2022,8 @@ reasoning_effort = "low"
         assert_eq!(export["task_name"], json!("coverage-task"));
         assert_eq!(export["config"], json!("[task]\nname = \"coverage-task\"\n"));
         assert_eq!(export["log"], json!("investigation notes"));
-        assert_eq!(export["state"]["current_phase"], json!("Scoring"));
-        assert_eq!(export["ledger"][1]["status"], json!("Kept"));
+        assert_eq!(export["state"]["current_phase"], json!("scoring"));
+        assert_eq!(export["ledger"][1]["status"], json!("kept"));
     }
 
     #[test]
