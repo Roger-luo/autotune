@@ -26,11 +26,12 @@ pub trait Judge {
 /// Composes a `JudgeBackend` with an optional `ExampleStore` to implement `Judge`.
 ///
 /// `S` is a type parameter rather than `dyn` so callers control example-store
-/// representation. When you don't want examples, pass `None` and pick any
-/// `ExampleStore` type as the phantom:
+/// representation. When you don't want examples, pass `None` and use `NoStore`
+/// as the phantom type:
 ///
 /// ```ignore
-/// let judge = AgentJudge::<_, JsonlExampleStore>::new(backend, None, 0);
+/// use autotune_judge::{AgentJudge, NoStore};
+/// let judge = AgentJudge::<_, NoStore>::new(backend, None, 0);
 /// ```
 ///
 /// `example_limit` is ignored when `store` is `None` or zero.
