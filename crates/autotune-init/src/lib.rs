@@ -246,6 +246,80 @@ fn adaptor_metric_names(adaptor: &autotune_config::AdaptorConfig) -> Vec<String>
     }
 }
 
+/// Detect whether a streaming text chunk begins a known protocol tag.
+/// This is intentionally narrow to avoid hiding legitimate prose.
+fn is_protocol_tag_start(s: &str) -> bool {
+    const TAGS: &[&str] = &[
+        "<message",
+        "<question",
+        "<task",
+        "<paths",
+        "<test",
+        "<measure",
+        "<score",
+        "<agent",
+    ];
+    TAGS.iter().any(|t| s.starts_with(t))
+}
+
+fn describe_tool_use(tool: &str, input: &str) -> String {
+    if input.is_empty() {
+        format!("{tool}()")
+    } else {
+        let summary = if input.len() > 60 {
+            format!("{}...", &input[..57])
+        } else {
+            input.to_string()
+        };
+        format!("{tool}({summary})")
+    }
+}
+
+fn format_validation_retry(rejection_lines: &[String], acc: &ConfigAccumulator) -> String {
+    let still_missing = acc.missing_sections().join(", ");
+    format!(
+        "Validation errors:\n{}\nPlease correct and re-emit the affected fragments. Still needed: {}.",
+        rejection_lines
+            .iter()
+            .map(|line| format!("- {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        still_missing
+    )
+}
+
+fn format_completion_ack() -> String {
+    "All required sections accepted. If you want to add optional sections (test, agent), emit them now; otherwise await the preview.".to_string()
+}
+
+fn format_progress_ack(ack_lines: &[String], missing_sections: &[&str]) -> String {
+    format!(
+        "Accepted: {}. Still needed: {}. Please emit the next fragment(s).",
+        ack_lines.join(", "),
+        missing_sections.join(", ")
+    )
+}
+
+fn build_next_turn_reply(
+    rejection_lines: &[String],
+    user_reply: Option<String>,
+    ack_lines: &[String],
+    acc: &ConfigAccumulator,
+) -> String {
+    if !rejection_lines.is_empty() {
+        format_validation_retry(rejection_lines, acc)
+    } else if let Some(reply) = user_reply {
+        reply
+    } else {
+        let missing = acc.missing_sections();
+        if missing.is_empty() {
+            format_completion_ack()
+        } else {
+            format_progress_ack(ack_lines, &missing)
+        }
+    }
+}
+
 /// Permissions for the init agent: read-only access.
 fn init_agent_permissions() -> Vec<ToolPermission> {
     vec![
@@ -464,35 +538,6 @@ fn run_init_inner(
                 }
             }
         })
-    }
-
-    /// Detect whether a streaming text chunk begins a known protocol tag.
-    /// This is intentionally narrow to avoid hiding legitimate prose.
-    fn is_protocol_tag_start(s: &str) -> bool {
-        const TAGS: &[&str] = &[
-            "<message",
-            "<question",
-            "<task",
-            "<paths",
-            "<test",
-            "<measure",
-            "<score",
-            "<agent",
-        ];
-        TAGS.iter().any(|t| s.starts_with(t))
-    }
-
-    fn describe_tool_use(tool: &str, input: &str) -> String {
-        if input.is_empty() {
-            format!("{tool}()")
-        } else {
-            let summary = if input.len() > 60 {
-                format!("{}...", &input[..57])
-            } else {
-                input.to_string()
-            };
-            format!("{tool}({summary})")
-        }
     }
 
     fn clear_status() {
@@ -748,31 +793,7 @@ fn run_init_inner(
 
         // Build the reply for the next turn.
         // Priority: rejection errors > user reply > ack + what's still missing.
-        let reply = if !rejection_lines.is_empty() {
-            let still_missing = acc.missing_sections().join(", ");
-            format!(
-                "Validation errors:\n{}\nPlease correct and re-emit the affected fragments. Still needed: {}.",
-                rejection_lines
-                    .iter()
-                    .map(|l| format!("- {l}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                still_missing
-            )
-        } else if let Some(r) = user_reply {
-            r
-        } else {
-            let missing = acc.missing_sections();
-            if missing.is_empty() {
-                "All required sections accepted. If you want to add optional sections (test, agent), emit them now; otherwise await the preview.".to_string()
-            } else {
-                format!(
-                    "Accepted: {}. Still needed: {}. Please emit the next fragment(s).",
-                    ack_lines.join(", "),
-                    missing.join(", ")
-                )
-            }
-        };
+        let reply = build_next_turn_reply(&rejection_lines, user_reply, &ack_lines, &acc);
 
         let handler = make_event_handler("thinking...", false);
         let response = agent.send_streaming(&session, &reply, Some(&handler))?;
@@ -1284,6 +1305,97 @@ mod tests {
             command: vec!["sh".to_string()],
         };
         assert!(adaptor_metric_names(&adaptor).is_empty());
+    }
+
+    // --- streaming helper tests ---
+
+    #[test]
+    fn protocol_tag_start_matches_known_tags() {
+        assert!(is_protocol_tag_start("<message>Hello"));
+        assert!(is_protocol_tag_start("<measure><![CDATA[x]]></measure>"));
+        assert!(!is_protocol_tag_start("plain text <message"));
+        assert!(!is_protocol_tag_start("<unknown>"));
+    }
+
+    #[test]
+    fn describe_tool_use_handles_empty_input() {
+        assert_eq!(describe_tool_use("Read", ""), "Read()");
+    }
+
+    #[test]
+    fn describe_tool_use_truncates_long_input() {
+        let long = "x".repeat(80);
+        let described = describe_tool_use("Glob", &long);
+        assert!(described.starts_with("Glob("));
+        assert!(described.ends_with("...)"));
+        assert!(described.len() < long.len() + "Glob()".len());
+    }
+
+    // --- next-turn reply tests ---
+
+    #[test]
+    fn build_next_turn_reply_prioritizes_validation_errors() {
+        let acc = ConfigAccumulator {
+            task: Some(minimal_task()),
+            ..Default::default()
+        };
+        let reply = build_next_turn_reply(
+            &[
+                "task: bad".to_string(),
+                "paths: also bad".to_string(),
+            ],
+            Some("user input".to_string()),
+            &["task accepted".to_string()],
+            &acc,
+        );
+        assert!(reply.contains("Validation errors:"));
+        assert!(reply.contains("- task: bad"));
+        assert!(reply.contains("Still needed: paths, measure (at least one), score."));
+        assert!(!reply.contains("user input"));
+    }
+
+    #[test]
+    fn build_next_turn_reply_uses_user_reply_when_no_rejections() {
+        let reply = build_next_turn_reply(
+            &[],
+            Some("please change the timeout".to_string()),
+            &["paths accepted".to_string()],
+            &ConfigAccumulator::default(),
+        );
+        assert_eq!(reply, "please change the timeout");
+    }
+
+    #[test]
+    fn build_next_turn_reply_reports_progress_when_sections_missing() {
+        let acc = ConfigAccumulator {
+            task: Some(minimal_task()),
+            paths: Some(minimal_paths()),
+            ..Default::default()
+        };
+        let reply = build_next_turn_reply(
+            &[],
+            None,
+            &["task accepted".to_string(), "paths accepted".to_string()],
+            &acc,
+        );
+        assert_eq!(
+            reply,
+            "Accepted: task accepted, paths accepted. Still needed: measure (at least one), score. Please emit the next fragment(s)."
+        );
+    }
+
+    #[test]
+    fn build_next_turn_reply_uses_completion_message_when_nothing_missing() {
+        let reply = build_next_turn_reply(
+            &[],
+            None,
+            &["score accepted".to_string()],
+            &complete_accumulator(),
+        );
+        assert_eq!(
+            reply,
+            "All required sections accepted. If you want to add optional sections (test, agent), emit them now; otherwise await the preview."
+        );
     }
 
     // --- map_io tests ---
