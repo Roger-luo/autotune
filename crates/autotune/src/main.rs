@@ -1518,6 +1518,8 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use autotune::agent_factory::AgentRole;
+    use autotune_agent::ToolPermission;
+    use autotune_score::{ScoreError, ScoreInput};
     use std::collections::HashMap;
     use serde_json::json;
     use tempfile::tempdir;
@@ -1653,6 +1655,18 @@ mod tests {
                 timestamp: Utc::now(),
             },
         ]
+    }
+
+    fn score_input(best: &[(&str, f64)], candidate: &[(&str, f64)]) -> ScoreInput {
+        let to_map = |pairs: &[(&str, f64)]| -> HashMap<String, f64> {
+            pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+        };
+
+        ScoreInput {
+            baseline: to_map(best),
+            candidate: to_map(candidate),
+            best: to_map(best),
+        }
     }
 
     #[test]
@@ -2117,6 +2131,155 @@ reasoning_effort = "low"
             codex_reasoning_effort(Some(autotune_config::ReasoningEffort::High)),
             Some("high".to_string())
         );
+    }
+
+    #[test]
+    fn research_agent_session_config_uses_research_role_settings() {
+        let repo = tempdir().unwrap();
+        let mut config = sample_config();
+        config.agent.research = Some(autotune_config::AgentRoleConfig {
+            backend: Some("codex".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            max_turns: Some(12),
+            reasoning_effort: Some(autotune_config::ReasoningEffort::High),
+            max_fix_attempts: None,
+            max_fresh_spawns: None,
+        });
+
+        let session_config = research_agent_session_config(&config, repo.path());
+
+        assert_eq!(session_config.prompt, "");
+        assert_eq!(session_config.working_directory, repo.path());
+        assert_eq!(session_config.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(session_config.max_turns, Some(12));
+        assert_eq!(session_config.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(session_config.allowed_tools.len(), 3);
+        assert!(matches!(
+            session_config.allowed_tools.as_slice(),
+            [
+                ToolPermission::Allow(read),
+                ToolPermission::Allow(glob),
+                ToolPermission::Allow(grep),
+            ] if read == "Read" && glob == "Glob" && grep == "Grep"
+        ));
+    }
+
+    #[test]
+    fn research_agent_session_config_leaves_optional_settings_unset() {
+        let repo = tempdir().unwrap();
+        let config = sample_config();
+
+        let session_config = research_agent_session_config(&config, repo.path());
+
+        assert_eq!(session_config.model, None);
+        assert_eq!(session_config.max_turns, None);
+        assert_eq!(session_config.reasoning_effort, None);
+    }
+
+    #[test]
+    fn build_scorer_weighted_sum_keeps_improving_candidate() {
+        let scorer = build_scorer(&sample_config());
+
+        let output = scorer
+            .calculate(&score_input(
+                &[("line_coverage", 80.0), ("runtime_ms", 100.0)],
+                &[("line_coverage", 88.0), ("runtime_ms", 105.0)],
+            ))
+            .unwrap();
+
+        assert_eq!(output.decision, "keep");
+        assert!((output.rank - 0.15).abs() < 1e-9);
+        assert_eq!(output.reason, "line_coverage: 10.00%");
+    }
+
+    #[test]
+    fn build_scorer_weighted_sum_discards_guardrail_regression() {
+        let scorer = build_scorer(&sample_config());
+
+        let output = scorer
+            .calculate(&score_input(
+                &[("line_coverage", 80.0), ("runtime_ms", 100.0)],
+                &[("line_coverage", 88.0), ("runtime_ms", 111.0)],
+            ))
+            .unwrap();
+
+        assert_eq!(output.decision, "discard");
+        assert!((output.rank + 0.11).abs() < 1e-9);
+        assert_eq!(
+            output.reason,
+            "guardrail 'runtime_ms' failed: regression 11.00% exceeds max 10.00%"
+        );
+    }
+
+    #[test]
+    fn build_scorer_weighted_sum_surfaces_missing_metrics() {
+        let scorer = build_scorer(&sample_config());
+
+        let err = scorer
+            .calculate(&score_input(&[("line_coverage", 80.0)], &[("line_coverage", 88.0)]))
+            .unwrap_err();
+
+        assert!(matches!(err, ScoreError::MissingMetric { ref name } if name == "runtime_ms"));
+    }
+
+    #[test]
+    fn build_scorer_threshold_uses_threshold_conditions() {
+        let mut config = sample_config();
+        config.score = autotune_config::ScoreConfig::Threshold {
+            conditions: vec![
+                autotune_config::ThresholdCondition {
+                    metric: "line_coverage".to_string(),
+                    direction: autotune_config::Direction::Maximize,
+                    threshold: 2.0,
+                },
+                autotune_config::ThresholdCondition {
+                    metric: "runtime_ms".to_string(),
+                    direction: autotune_config::Direction::Minimize,
+                    threshold: 5.0,
+                },
+            ],
+        };
+        let scorer = build_scorer(&config);
+
+        let output = scorer
+            .calculate(&score_input(
+                &[("line_coverage", 80.0), ("runtime_ms", 100.0)],
+                &[("line_coverage", 83.5), ("runtime_ms", 93.0)],
+            ))
+            .unwrap();
+
+        assert_eq!(output.decision, "keep");
+        assert!((output.rank - 10.5).abs() < 1e-9);
+        assert_eq!(
+            output.reason,
+            "line_coverage: passed (+3.5000), runtime_ms: passed (+7.0000)"
+        );
+    }
+
+    #[test]
+    fn build_scorer_script_and_command_delegate_to_script_scorer() {
+        let output_program = r#"printf '{"rank":1.25,"decision":"keep","reason":"script ok"}'"#;
+
+        let mut script_config = sample_config();
+        script_config.score = autotune_config::ScoreConfig::Script {
+            command: vec!["sh".to_string(), "-c".to_string(), output_program.to_string()],
+        };
+
+        let mut command_config = sample_config();
+        command_config.score = autotune_config::ScoreConfig::Command {
+            command: vec!["sh".to_string(), "-c".to_string(), output_program.to_string()],
+        };
+
+        let input = score_input(&[("line_coverage", 80.0)], &[("line_coverage", 88.0)]);
+        let script_output = build_scorer(&script_config).calculate(&input).unwrap();
+        let command_output = build_scorer(&command_config).calculate(&input).unwrap();
+
+        assert_eq!(script_output.rank, 1.25);
+        assert_eq!(script_output.decision, "keep");
+        assert_eq!(script_output.reason, "script ok");
+        assert_eq!(command_output.rank, 1.25);
+        assert_eq!(command_output.decision, "keep");
+        assert_eq!(command_output.reason, "script ok");
     }
 
     #[test]
