@@ -155,7 +155,10 @@ fn run_command_with_timeout(
     config: &MeasureConfig,
     working_dir: &Path,
 ) -> Result<Output, MeasureError> {
-    let command = config.command.as_deref().unwrap_or(&[]);
+    let command = config.command.as_deref().ok_or_else(|| MeasureError::Io {
+        name: config.name.clone(),
+        source: std::io::Error::other("measure command is required but not set"),
+    })?;
     let program = &command[0];
     let args = &command[1..];
 

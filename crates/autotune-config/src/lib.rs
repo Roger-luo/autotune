@@ -362,6 +362,25 @@ impl AutotuneConfig {
                             ),
                         });
                     }
+                    let mut seen_ids = std::collections::HashSet::new();
+                    for r in rubrics {
+                        if !seen_ids.insert(&r.id) {
+                            return Err(ConfigError::Validation {
+                                message: format!(
+                                    "measure '{}' has duplicate rubric id '{}'",
+                                    b.name, r.id
+                                ),
+                            });
+                        }
+                        if r.score_range.min > r.score_range.max {
+                            return Err(ConfigError::Validation {
+                                message: format!(
+                                    "measure '{}' rubric '{}' score_range min ({}) > max ({})",
+                                    b.name, r.id, r.score_range.min, r.score_range.max
+                                ),
+                            });
+                        }
+                    }
                     if let Some(cmd) = &b.command
                         && cmd.is_empty()
                     {
@@ -1163,6 +1182,65 @@ primary_metrics = [
         let names = config.adaptor_metric_names(&config.measure[0].adaptor);
         assert!(names.contains(&"r1".to_string()));
         assert!(names.contains(&"r2".to_string()));
+    }
+
+    #[test]
+    fn judge_rubric_score_range_min_gt_max_fails_validation() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "critique"
+[measure.adaptor]
+type = "judge"
+persona = "A reviewer"
+[[measure.adaptor.rubrics]]
+id = "q"
+title = "Q"
+instruction = "Score."
+score_range = { min = 5, max = 1 }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "q", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("min") && err.to_string().contains("max"), "error: {err}");
+    }
+
+    #[test]
+    fn judge_rubric_duplicate_id_fails_validation() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "critique"
+[measure.adaptor]
+type = "judge"
+persona = "A reviewer"
+[[measure.adaptor.rubrics]]
+id = "q"
+title = "Q1"
+instruction = "Score."
+score_range = { min = 1, max = 5 }
+[[measure.adaptor.rubrics]]
+id = "q"
+title = "Q2"
+instruction = "Score again."
+score_range = { min = 1, max = 5 }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "q", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("duplicate") && err.to_string().contains("q"), "error: {err}");
     }
 
     #[test]
