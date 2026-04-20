@@ -1051,7 +1051,7 @@ fn run_scoring(
 
 fn format_metrics_status(metrics: &std::collections::HashMap<String, f64>) -> String {
     let mut entries: Vec<_> = metrics.iter().collect();
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_by_key(|(left, _)| *left);
     entries
         .into_iter()
         .map(|(name, value)| format!("{name}={value:.4}"))
@@ -1426,7 +1426,7 @@ mod tests {
             test: vec![],
             measure: vec![autotune_config::MeasureConfig {
                 name: "perf".to_string(),
-                command: vec!["cargo".to_string(), "bench".to_string()],
+                command: Some(vec!["cargo".to_string(), "bench".to_string()]),
                 timeout: 600,
                 adaptor: autotune_config::AdaptorConfig::Regex { patterns: vec![] },
             }],
@@ -1787,11 +1787,11 @@ mod tests {
         let mut config = make_minimal_config(None, None);
         config.measure = vec![autotune_config::MeasureConfig {
             name: "coverage".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "printf 'metric: 41.5\\n'; printf 'trace\\n' 1>&2".to_string(),
-            ],
+            ]),
             timeout: 10,
             adaptor: autotune_config::AdaptorConfig::Regex {
                 patterns: vec![autotune_config::RegexPattern {

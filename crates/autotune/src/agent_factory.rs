@@ -44,6 +44,7 @@ mod tests {
             research: None,
             implementation: None,
             init: None,
+            judge: None,
         }
     }
 
@@ -85,6 +86,7 @@ mod tests {
             research: None,
             implementation: None,
             init: None,
+            judge: None,
         };
 
         assert_eq!(resolve_backend_name(&config, AgentRole::Research), None);

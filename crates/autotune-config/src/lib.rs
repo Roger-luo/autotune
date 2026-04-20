@@ -111,7 +111,8 @@ fn default_test_timeout() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeasureConfig {
     pub name: String,
-    pub command: Vec<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
     #[serde(default = "default_measure_timeout")]
     pub timeout: u64,
     pub adaptor: AdaptorConfig,
@@ -119,6 +120,22 @@ pub struct MeasureConfig {
 
 fn default_measure_timeout() -> u64 {
     600
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreRangeConfig {
+    pub min: i32,
+    pub max: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RubricConfig {
+    pub id: String,
+    pub title: String,
+    pub instruction: String,
+    pub score_range: ScoreRangeConfig,
+    #[serde(default)]
+    pub guidance: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +147,12 @@ pub enum AdaptorConfig {
     Criterion { measure_name: String },
     #[serde(rename = "script")]
     Script { command: Vec<String> },
+    #[serde(rename = "judge")]
+    Judge {
+        persona: String,
+        #[serde(default)]
+        rubrics: Vec<RubricConfig>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +218,7 @@ pub struct ThresholdCondition {
     pub threshold: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     #[serde(default)]
     pub backend: Option<String>,
@@ -215,22 +238,8 @@ pub struct AgentConfig {
     pub implementation: Option<AgentRoleConfig>,
     #[serde(default)]
     pub init: Option<AgentRoleConfig>,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            backend: None,
-            model: None,
-            max_turns: None,
-            reasoning_effort: None,
-            max_fix_attempts: None,
-            max_fresh_spawns: None,
-            research: None,
-            implementation: None,
-            init: None,
-        }
-    }
+    #[serde(default)]
+    pub judge: Option<AgentRoleConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +324,7 @@ impl AutotuneConfig {
             ("research", &self.agent.research),
             ("implementation", &self.agent.implementation),
             ("init", &self.agent.init),
+            ("judge", &self.agent.judge),
         ] {
             if let Some(role) = role {
                 let effective = role.overlay(&agent_defaults);
@@ -340,19 +350,51 @@ impl AutotuneConfig {
             });
         }
 
-        // Each measure command non-empty
+        // Each measure command non-empty (with adaptor-type-specific rules)
         for b in &self.measure {
-            if b.command.is_empty() {
-                return Err(ConfigError::Validation {
-                    message: format!("measure '{}' has empty command", b.name),
-                });
-            }
-            if let AdaptorConfig::Script { command } = &b.adaptor
-                && command.is_empty()
-            {
-                return Err(ConfigError::Validation {
-                    message: format!("measure '{}' has empty script adaptor command", b.name),
-                });
+            match &b.adaptor {
+                AdaptorConfig::Judge { rubrics, .. } => {
+                    if rubrics.is_empty() {
+                        return Err(ConfigError::Validation {
+                            message: format!(
+                                "measure '{}' judge adaptor must have at least one rubric",
+                                b.name
+                            ),
+                        });
+                    }
+                    if let Some(cmd) = &b.command
+                        && cmd.is_empty()
+                    {
+                        return Err(ConfigError::Validation {
+                            message: format!("measure '{}' has empty command", b.name),
+                        });
+                    }
+                }
+                _ => {
+                    match &b.command {
+                        None => {
+                            return Err(ConfigError::Validation {
+                                message: format!("measure '{}' requires a command", b.name),
+                            });
+                        }
+                        Some(cmd) if cmd.is_empty() => {
+                            return Err(ConfigError::Validation {
+                                message: format!("measure '{}' has empty command", b.name),
+                            });
+                        }
+                        _ => {}
+                    }
+                    if let AdaptorConfig::Script { command } = &b.adaptor
+                        && command.is_empty()
+                    {
+                        return Err(ConfigError::Validation {
+                            message: format!(
+                                "measure '{}' has empty script adaptor command",
+                                b.name
+                            ),
+                        });
+                    }
+                }
             }
         }
 
@@ -492,6 +534,7 @@ impl AutotuneConfig {
                 ]
             }
             AdaptorConfig::Script { .. } => vec![],
+            AdaptorConfig::Judge { rubrics, .. } => rubrics.iter().map(|r| r.id.clone()).collect(),
         }
     }
 
@@ -707,7 +750,7 @@ max_fresh_spawns = 2
     fn regex_measure(name: &str, metric_name: &str) -> MeasureConfig {
         MeasureConfig {
             name: name.to_string(),
-            command: vec!["echo".to_string()],
+            command: Some(vec!["echo".to_string()]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -772,7 +815,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
     fn validate_rejects_empty_measure_command() {
         let measure = MeasureConfig {
             name: "m".to_string(),
-            command: vec![],
+            command: Some(vec![]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex { patterns: vec![] },
         };
@@ -793,7 +836,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
     fn validate_rejects_empty_script_adaptor_command() {
         let measure = MeasureConfig {
             name: "m".to_string(),
-            command: vec!["echo".to_string()],
+            command: Some(vec!["echo".to_string()]),
             timeout: 30,
             adaptor: AdaptorConfig::Script { command: vec![] },
         };
@@ -945,6 +988,181 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             max_fresh_spawns: Some(5),
         };
         assert_eq!(role.effective_max_fresh_spawns(), 5);
+    }
+
+    #[test]
+    fn judge_adaptor_parses_from_toml() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "critique"
+[measure.adaptor]
+type = "judge"
+persona = "A strict reviewer"
+[[measure.adaptor.rubrics]]
+id = "correctness"
+title = "Correctness"
+instruction = "Score correctness 1-5."
+score_range = { min = 1, max = 5 }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "correctness", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let AdaptorConfig::Judge { persona, rubrics } = &config.measure[0].adaptor else {
+            panic!("expected Judge adaptor");
+        };
+        assert_eq!(persona, "A strict reviewer");
+        assert_eq!(rubrics.len(), 1);
+        assert_eq!(rubrics[0].id, "correctness");
+        assert_eq!(rubrics[0].score_range.min, 1);
+        assert_eq!(rubrics[0].score_range.max, 5);
+        assert!(config.measure[0].command.is_none());
+    }
+
+    #[test]
+    fn judge_adaptor_with_command_parses() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "critique"
+command = ["sh", "-c", "cat src/lib.rs"]
+[measure.adaptor]
+type = "judge"
+persona = "A reviewer"
+[[measure.adaptor.rubrics]]
+id = "quality"
+title = "Quality"
+instruction = "Score 1-3."
+score_range = { min = 1, max = 3 }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "quality", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let expected: &[String] = &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "cat src/lib.rs".to_string(),
+        ];
+        assert_eq!(config.measure[0].command.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn judge_adaptor_with_no_rubrics_fails_validation() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "critique"
+[measure.adaptor]
+type = "judge"
+persona = "A reviewer"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "anything", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("rubric"), "error: {err}");
+    }
+
+    #[test]
+    fn judge_adaptor_empty_command_fails_validation() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "critique"
+command = []
+[measure.adaptor]
+type = "judge"
+persona = "A reviewer"
+[[measure.adaptor.rubrics]]
+id = "q"
+title = "Q"
+instruction = "Score 1-5."
+score_range = { min = 1, max = 5 }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "q", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn non_judge_measure_without_command_fails_validation() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "m"
+adaptor = { type = "regex", patterns = [{ name = "val", pattern = "([0-9]+)" }] }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("command"), "error: {err}");
+    }
+
+    #[test]
+    fn judge_adaptor_metric_names_returns_rubric_ids() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "critique"
+[measure.adaptor]
+type = "judge"
+persona = "A reviewer"
+[[measure.adaptor.rubrics]]
+id = "r1"
+title = "R1"
+instruction = "Score."
+score_range = { min = 1, max = 5 }
+[[measure.adaptor.rubrics]]
+id = "r2"
+title = "R2"
+instruction = "Score."
+score_range = { min = 1, max = 5 }
+[score]
+type = "weighted_sum"
+primary_metrics = [
+  { name = "r1", direction = "Maximize" },
+  { name = "r2", direction = "Maximize" },
+]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let names = config.adaptor_metric_names(&config.measure[0].adaptor);
+        assert!(names.contains(&"r1".to_string()));
+        assert!(names.contains(&"r2".to_string()));
     }
 
     #[test]

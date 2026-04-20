@@ -144,6 +144,10 @@ pub fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn Metr
             command.clone(),
             working_dir.to_path_buf(),
         )),
+        AdaptorConfig::Judge { .. } => {
+            // Judge adaptor is handled at a higher level; this path should not be reached.
+            panic!("build_adaptor called for Judge adaptor — use the judge pipeline instead");
+        }
     }
 }
 
@@ -151,8 +155,9 @@ fn run_command_with_timeout(
     config: &MeasureConfig,
     working_dir: &Path,
 ) -> Result<Output, MeasureError> {
-    let program = &config.command[0];
-    let args = &config.command[1..];
+    let command = config.command.as_deref().unwrap_or(&[]);
+    let program = &command[0];
+    let args = &command[1..];
 
     let mut command = Command::new(program);
     command
@@ -453,7 +458,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     fn run_measure_returns_error_on_command_failure() {
         let config = MeasureConfig {
             name: "fail-test".to_string(),
-            command: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+            command: Some(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "exit 1".to_string(),
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex { patterns: vec![] },
         };
@@ -469,11 +478,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     fn run_measure_extracts_metrics_on_success() {
         let config = MeasureConfig {
             name: "score-test".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "echo 'score: 99.5'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -491,7 +500,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     fn run_measure_with_output_returns_timeout_error() {
         let config = MeasureConfig {
             name: "timeout-test".to_string(),
-            command: vec!["sh".to_string(), "-c".to_string(), "sleep 1".to_string()],
+            command: Some(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "sleep 1".to_string(),
+            ]),
             timeout: 0,
             adaptor: AdaptorConfig::Regex { patterns: vec![] },
         };
@@ -509,11 +522,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     fn run_measure_with_output_maps_extraction_failures() {
         let config = MeasureConfig {
             name: "extract-fail-test".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "echo 'not a matching metric'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -536,11 +549,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     fn run_measure_with_output_returns_report_with_stdout() {
         let config = MeasureConfig {
             name: "output-test".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "echo 'val: 7'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -564,11 +577,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     fn run_all_measures_with_output_returns_per_measure_reports() {
         let m1 = MeasureConfig {
             name: "alpha".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "echo 'x: 10'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -579,11 +592,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
         };
         let m2 = MeasureConfig {
             name: "beta".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "echo 'y: 20'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -605,11 +618,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     fn run_all_measures_merges_metrics() {
         let m1 = MeasureConfig {
             name: "first".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "echo 'a: 1'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -620,11 +633,11 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
         };
         let m2 = MeasureConfig {
             name: "second".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "echo 'b: 2'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {

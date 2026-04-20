@@ -145,7 +145,10 @@ fn parse_measure_with_regex_adaptor() {
     match &frags[0] {
         AgentFragment::Measure(m) => {
             assert_eq!(m.name, "coverage");
-            assert_eq!(m.command, vec!["cargo", "llvm-cov"]);
+            assert_eq!(
+                m.command.as_deref(),
+                Some(["cargo".to_string(), "llvm-cov".to_string()].as_slice())
+            );
             assert_eq!(m.timeout, 600);
             match &m.adaptor {
                 AdaptorConfig::Regex { patterns } => {

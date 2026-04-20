@@ -8,11 +8,11 @@ use std::time::Instant;
 fn make_regex_measure(name: &str, command_output: &str, metric_name: &str) -> MeasureConfig {
     MeasureConfig {
         name: name.to_string(),
-        command: vec![
+        command: Some(vec![
             "sh".to_string(),
             "-c".to_string(),
             format!("echo '{}'", command_output),
-        ],
+        ]),
         timeout: 30,
         adaptor: AdaptorConfig::Regex {
             patterns: vec![RegexPattern {
@@ -47,7 +47,11 @@ fn multiple_tasks_merge_metrics() {
 fn task_command_failure() {
     let config = MeasureConfig {
         name: "bad".to_string(),
-        command: vec!["sh".to_string(), "-c".to_string(), "exit 1".to_string()],
+        command: Some(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "exit 1".to_string(),
+        ]),
         timeout: 30,
         adaptor: AdaptorConfig::Regex { patterns: vec![] },
     };
@@ -60,11 +64,11 @@ fn task_command_failure() {
 fn script_adaptor_task_extraction() {
     let config = MeasureConfig {
         name: "scripted".to_string(),
-        command: vec![
+        command: Some(vec![
             "sh".to_string(),
             "-c".to_string(),
             "echo raw output".to_string(),
-        ],
+        ]),
         timeout: 30,
         adaptor: AdaptorConfig::Script {
             command: vec![
@@ -83,7 +87,11 @@ fn script_adaptor_task_extraction() {
 fn task_command_times_out() {
     let config = MeasureConfig {
         name: "slow".to_string(),
-        command: vec!["sh".to_string(), "-c".to_string(), "sleep 2".to_string()],
+        command: Some(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "sleep 2".to_string(),
+        ]),
         timeout: 1,
         adaptor: AdaptorConfig::Regex { patterns: vec![] },
     };
@@ -115,11 +123,11 @@ echo '{"cwd_metric": 7.0}'
 
     let config = MeasureConfig {
         name: "scripted".to_string(),
-        command: vec![
+        command: Some(vec![
             "sh".to_string(),
             "-c".to_string(),
             "echo raw output".to_string(),
-        ],
+        ]),
         timeout: 30,
         adaptor: AdaptorConfig::Script {
             command: vec![
@@ -138,11 +146,11 @@ echo '{"cwd_metric": 7.0}'
 fn task_does_not_false_timeout_when_stdout_is_verbose() {
     let config = MeasureConfig {
         name: "verbose".to_string(),
-        command: vec![
+        command: Some(vec![
             "sh".to_string(),
             "-c".to_string(),
             "i=0; while [ \"$i\" -lt 20000 ]; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n'; i=$((i + 1)); done; echo 42.5".to_string(),
-        ],
+        ]),
         timeout: 1,
         adaptor: AdaptorConfig::Regex {
             patterns: vec![RegexPattern {
@@ -162,11 +170,11 @@ fn task_timeout_kills_background_descendants() {
     let pid_file = tempdir.path().join("bg.pid");
     let config = MeasureConfig {
         name: "timeout-tree".to_string(),
-        command: vec![
+        command: Some(vec![
             "sh".to_string(),
             "-c".to_string(),
             format!("sleep 30 & echo $! > {}; wait", shell_quote_path(&pid_file)),
-        ],
+        ]),
         timeout: 1,
         adaptor: AdaptorConfig::Regex { patterns: vec![] },
     };

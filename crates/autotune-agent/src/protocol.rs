@@ -214,7 +214,7 @@ pub enum AgentFragment {
     /// A proposed `[score]` section.
     Score(ScoreConfig),
     /// A proposed `[agent]` section.
-    Agent(AgentSectionConfig),
+    Agent(Box<AgentSectionConfig>),
 }
 
 /// Parse an agent response into zero or more fragments.
@@ -265,7 +265,7 @@ pub fn parse_agent_response(response: &str) -> Result<Vec<AgentFragment>, AgentE
                 Ok(AgentFragment::Score(parse_score(r)?))
             })?,
             "agent" => parse_fragment_strict(outer, "agent", |r| {
-                Ok(AgentFragment::Agent(parse_agent(r)?))
+                Ok(AgentFragment::Agent(Box::new(parse_agent(r)?)))
             })?,
             _ => unreachable!(),
         };
@@ -470,14 +470,14 @@ fn parse_test(reader: &mut Reader<&[u8]>) -> Result<TestConfig, AgentError> {
 
 fn parse_measure(reader: &mut Reader<&[u8]>) -> Result<MeasureConfig, AgentError> {
     let mut name = String::new();
-    let mut command: Vec<String> = Vec::new();
+    let mut command: Option<Vec<String>> = None;
     let mut timeout: Option<u64> = None;
     let mut adaptor: Option<AdaptorConfig> = None;
 
     walk_children(reader, "measure", |tag, reader| {
         match tag {
             "name" => name = read_text(reader, "name")?,
-            "command" => command = parse_command(reader, "command")?,
+            "command" => command = Some(parse_command(reader, "command")?),
             "timeout" => timeout = Some(parse_u64(&read_text(reader, "timeout")?)?),
             "adaptor" => adaptor = Some(parse_adaptor(reader)?),
             other => skip_element(reader, other)?,
@@ -684,6 +684,7 @@ fn parse_agent(reader: &mut Reader<&[u8]>) -> Result<AgentSectionConfig, AgentEr
         research,
         implementation,
         init,
+        judge: None,
     })
 }
 

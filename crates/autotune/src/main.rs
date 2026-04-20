@@ -324,7 +324,7 @@ fn build_agent_from_global(
 }
 
 enum InitFlowOutcome {
-    Config(AutotuneConfig),
+    Config(Box<AutotuneConfig>),
     Cancelled,
 }
 
@@ -351,7 +351,7 @@ fn run_agent_assisted_init(repo_root: &Path) -> Result<InitFlowOutcome> {
         &terminal_input,
         Some(&validator),
     ) {
-        Ok(result) => Ok(InitFlowOutcome::Config(result.config)),
+        Ok(result) => Ok(InitFlowOutcome::Config(Box::new(result.config))),
         Err(autotune_init::InitError::UserAborted) => Ok(InitFlowOutcome::Cancelled),
         Err(e) => Err(e).context("agent-assisted init failed"),
     }
@@ -864,7 +864,7 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
         println!("[autotune] no .autotune.toml found — starting agent-assisted init");
 
         let config = match run_agent_assisted_init(&repo_root)? {
-            InitFlowOutcome::Config(config) => config,
+            InitFlowOutcome::Config(config) => *config,
             InitFlowOutcome::Cancelled => {
                 println!("\n[autotune] init cancelled");
                 return Ok(());
@@ -874,11 +874,11 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
         config
     };
 
-    if let Some(name) = name_override {
-        if config.task.name != name {
-            config.task.name = name;
-            should_write = true;
-        }
+    if let Some(name) = name_override
+        && config.task.name != name
+    {
+        config.task.name = name;
+        should_write = true;
     }
 
     if should_write {
@@ -998,7 +998,11 @@ fn build_research_agent_prompt(
     p.push_str("\n# Measures run by the CLI to score each approach\n\n");
     p.push_str("(The CLI runs these, NOT you. Do not try to re-run them.)\n\n");
     for m in &config.measure {
-        writeln!(p, "- {}: `{}`", m.name, m.command.join(" ")).ok();
+        if let Some(cmd) = &m.command {
+            writeln!(p, "- {}: `{}`", m.name, cmd.join(" ")).ok();
+        } else {
+            writeln!(p, "- {}:", m.name).ok();
+        }
         match &m.adaptor {
             autotune_config::AdaptorConfig::Regex { patterns } => {
                 for pat in patterns {
@@ -1015,6 +1019,17 @@ fn build_research_agent_prompt(
                     command.join(" ")
                 )
                 .ok();
+            }
+            autotune_config::AdaptorConfig::Judge { persona, rubrics } => {
+                writeln!(p, "  - judge adaptor (persona: {persona})").ok();
+                for r in rubrics {
+                    writeln!(
+                        p,
+                        "  - rubric `{}`: {} (score {}-{})",
+                        r.id, r.title, r.score_range.min, r.score_range.max
+                    )
+                    .ok();
+                }
             }
         }
     }
@@ -1118,11 +1133,14 @@ fn validate_measure_config(
     let mut all_metrics = std::collections::HashMap::new();
 
     for measure in measures {
-        let program = measure
+        let command = measure
             .command
+            .as_deref()
+            .ok_or_else(|| format!("measure '{}' requires a command", measure.name))?;
+        let program = command
             .first()
             .ok_or_else(|| format!("measure '{}' has empty command", measure.name))?;
-        let args = &measure.command[1..];
+        let args = &command[1..];
 
         let output = Command::new(program)
             .args(args)
@@ -1263,7 +1281,7 @@ mod test_support {
     }
 
     pub fn set_init_override_config(config: AutotuneConfig) {
-        overrides().lock().unwrap().init_outcome = Some(InitFlowOutcome::Config(config));
+        overrides().lock().unwrap().init_outcome = Some(InitFlowOutcome::Config(Box::new(config)));
     }
 
     pub fn set_init_override_cancelled() {
@@ -1661,7 +1679,7 @@ fn sorted_metrics(metrics: &std::collections::HashMap<String, f64>) -> Vec<(&str
         .iter()
         .map(|(name, value)| (name.as_str(), *value))
         .collect();
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_by_key(|(left, _)| *left);
     entries
 }
 
@@ -1754,7 +1772,7 @@ mod tests {
             measure: vec![
                 autotune_config::MeasureConfig {
                     name: "coverage".to_string(),
-                    command: vec!["cargo".to_string(), "llvm-cov".to_string()],
+                    command: Some(vec!["cargo".to_string(), "llvm-cov".to_string()]),
                     timeout: 600,
                     adaptor: autotune_config::AdaptorConfig::Regex {
                         patterns: vec![
@@ -1771,7 +1789,7 @@ mod tests {
                 },
                 autotune_config::MeasureConfig {
                     name: "criterion".to_string(),
-                    command: vec!["cargo".to_string(), "bench".to_string()],
+                    command: Some(vec!["cargo".to_string(), "bench".to_string()]),
                     timeout: 600,
                     adaptor: autotune_config::AdaptorConfig::Criterion {
                         measure_name: "throughput".to_string(),
@@ -1779,7 +1797,7 @@ mod tests {
                 },
                 autotune_config::MeasureConfig {
                     name: "scripted".to_string(),
-                    command: vec!["./bench.sh".to_string()],
+                    command: Some(vec!["./bench.sh".to_string()]),
                     timeout: 600,
                     adaptor: autotune_config::AdaptorConfig::Script {
                         command: vec!["python3".to_string(), "extract.py".to_string()],
@@ -1914,7 +1932,11 @@ mod tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) {
-        let output = Command::new("git").args(args).current_dir(repo).output().unwrap();
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -1928,7 +1950,10 @@ mod tests {
         run_git(repo.path(), &["init"]);
         run_git(repo.path(), &["checkout", "-B", "main"]);
         run_git(repo.path(), &["config", "user.name", "Autotune Tests"]);
-        run_git(repo.path(), &["config", "user.email", "autotune-tests@example.com"]);
+        run_git(
+            repo.path(),
+            &["config", "user.email", "autotune-tests@example.com"],
+        );
         std::fs::write(repo.path().join("README.md"), "seed\n").unwrap();
         run_git(repo.path(), &["add", "README.md"]);
         run_git(repo.path(), &["commit", "-m", "initial"]);
@@ -1942,11 +1967,11 @@ mod tests {
         config.test.clear();
         config.measure = vec![autotune_config::MeasureConfig {
             name: "coverage".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "printf 'line_coverage: 72\\nruntime_ms: 100\\n'".to_string(),
-            ],
+            ]),
             timeout: 30,
             adaptor: autotune_config::AdaptorConfig::Regex {
                 patterns: vec![
@@ -2011,6 +2036,7 @@ mod tests {
                     max_fix_attempts: None,
                     max_fresh_spawns: None,
                 }),
+                judge: None,
             }),
         };
 
@@ -2057,6 +2083,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                 }),
                 implementation: None,
                 init: None,
+                judge: None,
             }),
         };
 
@@ -2156,6 +2183,7 @@ reasoning_effort = "low"
                     max_fix_attempts: None,
                     max_fresh_spawns: None,
                 }),
+                judge: None,
             }),
         };
 
@@ -2213,6 +2241,7 @@ reasoning_effort = "low"
                     max_fresh_spawns: None,
                 }),
                 init: None,
+                judge: None,
             }),
         };
 
@@ -2503,11 +2532,11 @@ reasoning_effort = "low"
         let workdir = tempdir().unwrap();
         let measures = vec![autotune_config::MeasureConfig {
             name: "echo-metric".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "printf 'metric: 41.5\\n'".to_string(),
-            ],
+            ]),
             timeout: 600,
             adaptor: autotune_config::AdaptorConfig::Regex {
                 patterns: vec![autotune_config::RegexPattern {
@@ -2527,11 +2556,11 @@ reasoning_effort = "low"
         let workdir = tempdir().unwrap();
         let measures = vec![autotune_config::MeasureConfig {
             name: "broken".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "printf 'out\\n'; printf 'err\\n' 1>&2; exit 7".to_string(),
-            ],
+            ]),
             timeout: 600,
             adaptor: autotune_config::AdaptorConfig::Regex {
                 patterns: vec![autotune_config::RegexPattern {
@@ -2553,11 +2582,11 @@ reasoning_effort = "low"
         let workdir = tempdir().unwrap();
         let measures = vec![autotune_config::MeasureConfig {
             name: "missing-metric".to_string(),
-            command: vec![
+            command: Some(vec![
                 "sh".to_string(),
                 "-c".to_string(),
                 "printf 'no metrics here\\n'; printf 'debug\\n' 1>&2".to_string(),
-            ],
+            ]),
             timeout: 600,
             adaptor: autotune_config::AdaptorConfig::Regex {
                 patterns: vec![autotune_config::RegexPattern {
@@ -2940,11 +2969,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         write_task_fixture(repo.path(), "export-task", Phase::Scoring);
 
         let output_path = repo.path().join("export.json");
-        cmd_export(
-            "export-task".to_string(),
-            output_path.display().to_string(),
-        )
-        .unwrap();
+        cmd_export("export-task".to_string(), output_path.display().to_string()).unwrap();
 
         let export: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(output_path).unwrap()).unwrap();
@@ -2962,9 +2987,9 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
 
         let err = cmd_step("step-task".to_string(), Phase::Planning).unwrap_err();
 
-        assert!(err
-            .to_string()
-            .contains("task 'step-task' is in phase Scoring, but this command requires phase Planning"));
+        assert!(err.to_string().contains(
+            "task 'step-task' is in phase Scoring, but this command requires phase Planning"
+        ));
     }
 
     #[test]
@@ -2989,8 +3014,10 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         })
         .unwrap();
 
-        let doc: toml_edit::DocumentMut =
-            std::fs::read_to_string(user_config).unwrap().parse().unwrap();
+        let doc: toml_edit::DocumentMut = std::fs::read_to_string(user_config)
+            .unwrap()
+            .parse()
+            .unwrap();
         assert!(doc["agent"]["research"].get("model").is_none());
     }
 

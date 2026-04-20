@@ -27,8 +27,7 @@ const MAX_TURNS: usize = 50;
 /// Called after the user approves the assembled config. Typically runs the
 /// measure commands and tries metric extraction. Returns extracted metrics
 /// on success, or a detailed error string (including measure output) on failure.
-pub type ConfigValidator<'a> =
-    dyn Fn(&AutotuneConfig) -> Result<HashMap<String, f64>, String> + 'a;
+pub type ConfigValidator<'a> = dyn Fn(&AutotuneConfig) -> Result<HashMap<String, f64>, String> + 'a;
 
 /// Accumulated config sections during the init conversation.
 #[derive(Clone, Default)]
@@ -161,8 +160,32 @@ fn validate_test(test: &TestConfig) -> FragmentOutcome {
 }
 
 fn validate_measure(measure: &MeasureConfig, acc: &ConfigAccumulator) -> FragmentOutcome {
-    if measure.command.is_empty() {
-        return FragmentOutcome::Rejected(format!("measure '{}' has empty command", measure.name));
+    match &measure.adaptor {
+        autotune_config::AdaptorConfig::Judge { .. } => {
+            if let Some(cmd) = &measure.command
+                && cmd.is_empty()
+            {
+                return FragmentOutcome::Rejected(format!(
+                    "measure '{}' has empty command",
+                    measure.name
+                ));
+            }
+        }
+        _ => match &measure.command {
+            None => {
+                return FragmentOutcome::Rejected(format!(
+                    "measure '{}' requires a command",
+                    measure.name
+                ));
+            }
+            Some(cmd) if cmd.is_empty() => {
+                return FragmentOutcome::Rejected(format!(
+                    "measure '{}' has empty command",
+                    measure.name
+                ));
+            }
+            _ => {}
+        },
     }
     let new_names = adaptor_metric_names(&measure.adaptor);
     let existing_names: std::collections::HashSet<String> = acc
@@ -244,6 +267,9 @@ fn adaptor_metric_names(adaptor: &autotune_config::AdaptorConfig) -> Vec<String>
             ]
         }
         autotune_config::AdaptorConfig::Script { .. } => vec![],
+        autotune_config::AdaptorConfig::Judge { rubrics, .. } => {
+            rubrics.iter().map(|r| r.id.clone()).collect()
+        }
     }
 }
 
@@ -726,7 +752,7 @@ fn run_init_inner(
                     let msg = "agent config accepted".to_string();
                     println!("[autotune] {msg}");
                     ack_lines.push(msg);
-                    acc.agent = Some(agent_cfg);
+                    acc.agent = Some(*agent_cfg);
                 }
             }
         }
@@ -859,7 +885,7 @@ mod tests {
     fn regex_measure(name: &str, metric_name: &str) -> MeasureConfig {
         MeasureConfig {
             name: name.to_string(),
-            command: vec!["sh".to_string()],
+            command: Some(vec!["sh".to_string()]),
             timeout: 600,
             adaptor: AdaptorConfig::Regex {
                 patterns: vec![RegexPattern {
@@ -1109,7 +1135,7 @@ mod tests {
     fn validate_measure_rejects_empty_command() {
         let measure = MeasureConfig {
             name: "m".to_string(),
-            command: vec![],
+            command: Some(vec![]),
             timeout: 600,
             adaptor: AdaptorConfig::Script { command: vec![] },
         };
