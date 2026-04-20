@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 autotune-config = { path = "../autotune-config" }
 autotune-adaptor = { path = "../autotune-adaptor" }
+autotune-judge = { path = "../autotune-judge" }
+autotune-agent = { path = "../autotune-agent" }
 serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]

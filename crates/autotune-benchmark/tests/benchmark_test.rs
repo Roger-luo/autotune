@@ -38,7 +38,7 @@ fn multiple_tasks_merge_metrics() {
         make_regex_measure("bench2", "256.0", "mem"),
     ];
 
-    let metrics = run_all_measures(&configs, std::path::Path::new(".")).unwrap();
+    let metrics = run_all_measures(&configs, std::path::Path::new("."), "test", 1, None).unwrap();
     assert_eq!(metrics["time"], 100.5);
     assert_eq!(metrics["mem"], 256.0);
 }

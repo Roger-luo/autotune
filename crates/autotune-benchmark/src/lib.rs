@@ -5,6 +5,10 @@ use autotune_adaptor::{MetricAdaptor, Metrics};
 // Re-export for consumers that need to work with build_adaptor
 pub use autotune_adaptor::MeasureOutput;
 use autotune_config::{AdaptorConfig, MeasureConfig};
+use autotune_judge::{
+    Rubric, ScoreRange, Subject, SubjectContext, SubjectContextKind, parse_batch_response,
+    render_batch_prompt,
+};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -50,6 +54,119 @@ pub struct MeasureReport {
     pub stdout: String,
     pub stderr: String,
     pub metrics: Metrics,
+}
+
+/// Carries the judge agent and its config into the measuring phase.
+pub struct JudgeContext<'a> {
+    pub agent: &'a dyn autotune_agent::Agent,
+    pub agent_config: autotune_agent::AgentConfig,
+}
+
+/// Run a judge measure: optionally run a command, build a subject, call the
+/// batch judge, and return one metric per rubric ID.
+pub fn run_judge_measure(
+    config: &MeasureConfig,
+    working_dir: &Path,
+    approach_name: &str,
+    iteration: u32,
+    ctx: &JudgeContext,
+) -> Result<MeasureReport, MeasureError> {
+    let AdaptorConfig::Judge {
+        persona,
+        rubrics: rubric_configs,
+    } = &config.adaptor
+    else {
+        panic!("run_judge_measure called on non-judge measure");
+    };
+
+    let (cmd_stdout, cmd_stderr) = if config.command.is_some() {
+        let output = run_command_with_timeout(config, working_dir)?;
+        if !output.status.success() {
+            return Err(MeasureError::CommandFailed {
+                name: config.name.clone(),
+                code: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            });
+        }
+        (
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+
+    let mut context = vec![
+        SubjectContext {
+            kind: SubjectContextKind::Note,
+            label: "iteration".to_string(),
+            body: iteration.to_string(),
+        },
+        SubjectContext {
+            kind: SubjectContextKind::Note,
+            label: "approach".to_string(),
+            body: approach_name.to_string(),
+        },
+    ];
+    if !cmd_stdout.is_empty() || !cmd_stderr.is_empty() {
+        context.push(SubjectContext {
+            kind: SubjectContextKind::SourceSnippet,
+            label: "command_output".to_string(),
+            body: format!("{cmd_stdout}\n{cmd_stderr}"),
+        });
+    }
+
+    let subject = Subject::new(&config.name, approach_name).with_context(context);
+
+    let rubrics: Vec<Rubric> = rubric_configs
+        .iter()
+        .map(|r| Rubric {
+            id: r.id.clone(),
+            title: r.title.clone(),
+            persona: persona.clone(),
+            score_range: ScoreRange {
+                min: r.score_range.min,
+                max: r.score_range.max,
+            },
+            instruction: r.instruction.clone(),
+            guidance: r.guidance.clone(),
+        })
+        .collect();
+
+    let prompt = render_batch_prompt(persona, &subject, &rubrics);
+
+    let mut agent_cfg = ctx.agent_config.clone();
+    agent_cfg.prompt = prompt;
+
+    let response = ctx
+        .agent
+        .spawn(&agent_cfg)
+        .map_err(|e| MeasureError::Extraction {
+            name: config.name.clone(),
+            source: autotune_adaptor::AdaptorError::Io {
+                source: std::io::Error::other(format!("judge agent call failed: {e}")),
+            },
+        })?;
+
+    let assessments =
+        parse_batch_response(&rubrics, &response.text).map_err(|e| MeasureError::Extraction {
+            name: config.name.clone(),
+            source: autotune_adaptor::AdaptorError::Io {
+                source: std::io::Error::other(format!("batch response parse failed: {e}")),
+            },
+        })?;
+
+    let metrics: Metrics = assessments
+        .iter()
+        .map(|a| (a.rubric_id.clone(), a.score as f64))
+        .collect();
+
+    Ok(MeasureReport {
+        name: config.name.clone(),
+        stdout: cmd_stdout,
+        stderr: cmd_stderr,
+        metrics,
+    })
 }
 
 /// Run a single measure command and extract metrics.
@@ -101,8 +218,12 @@ pub fn run_measure_with_output(
 pub fn run_all_measures(
     configs: &[MeasureConfig],
     working_dir: &Path,
+    approach_name: &str,
+    iteration: u32,
+    judge_ctx: Option<&JudgeContext>,
 ) -> Result<Metrics, MeasureError> {
-    run_all_measures_with_output(configs, working_dir).map(|(metrics, _)| metrics)
+    run_all_measures_with_output(configs, working_dir, approach_name, iteration, judge_ctx)
+        .map(|(metrics, _)| metrics)
 }
 
 /// Run all configured measures, returning the merged metrics and the per-measure
@@ -110,12 +231,28 @@ pub fn run_all_measures(
 pub fn run_all_measures_with_output(
     configs: &[MeasureConfig],
     working_dir: &Path,
+    approach_name: &str,
+    iteration: u32,
+    judge_ctx: Option<&JudgeContext>,
 ) -> Result<(Metrics, Vec<MeasureReport>), MeasureError> {
     let mut all_metrics = HashMap::new();
     let mut reports = Vec::with_capacity(configs.len());
 
     for config in configs {
-        let report = run_measure_with_output(config, working_dir)?;
+        let report = match &config.adaptor {
+            AdaptorConfig::Judge { .. } => {
+                let ctx = judge_ctx.ok_or_else(|| MeasureError::Extraction {
+                    name: config.name.clone(),
+                    source: autotune_adaptor::AdaptorError::Io {
+                        source: std::io::Error::other(
+                            "judge adaptor requires a JudgeContext but none was provided",
+                        ),
+                    },
+                })?;
+                run_judge_measure(config, working_dir, approach_name, iteration, ctx)?
+            }
+            _ => run_measure_with_output(config, working_dir)?,
+        };
         all_metrics.extend(report.metrics.clone());
         reports.push(report);
     }
@@ -609,7 +746,8 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
             },
         };
         let tmp = tempfile::tempdir().unwrap();
-        let (_metrics, reports) = run_all_measures_with_output(&[m1, m2], tmp.path()).unwrap();
+        let (_metrics, reports) =
+            run_all_measures_with_output(&[m1, m2], tmp.path(), "test", 1, None).unwrap();
         assert_eq!(reports.len(), 2);
         assert_eq!(reports[0].name, "alpha");
         assert!(reports[0].stdout.contains("x: 10"));
@@ -650,8 +788,131 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
             },
         };
         let tmp = tempfile::tempdir().unwrap();
-        let metrics = run_all_measures(&[m1, m2], tmp.path()).unwrap();
+        let metrics = run_all_measures(&[m1, m2], tmp.path(), "test", 1, None).unwrap();
         assert_eq!(*metrics.get("metric-a").unwrap(), 1.0);
         assert_eq!(*metrics.get("metric-b").unwrap(), 2.0);
+    }
+
+    // ── judge tests ──────────────────────────────────────────────────────────
+
+    struct FakeAgent {
+        response: String,
+    }
+
+    impl autotune_agent::Agent for FakeAgent {
+        fn backend_name(&self) -> &str {
+            "fake"
+        }
+
+        fn spawn(
+            &self,
+            _config: &autotune_agent::AgentConfig,
+        ) -> Result<autotune_agent::AgentResponse, autotune_agent::AgentError> {
+            Ok(autotune_agent::AgentResponse {
+                text: self.response.clone(),
+                session_id: "fake-session".to_string(),
+            })
+        }
+
+        fn send(
+            &self,
+            _session: &autotune_agent::AgentSession,
+            _message: &str,
+        ) -> Result<autotune_agent::AgentResponse, autotune_agent::AgentError> {
+            unimplemented!()
+        }
+
+        fn handover_command(&self, _session: &autotune_agent::AgentSession) -> String {
+            unimplemented!()
+        }
+    }
+
+    fn judge_measure_config(name: &str, rubric_ids: &[&str]) -> MeasureConfig {
+        use autotune_config::{RubricConfig, ScoreRangeConfig};
+        MeasureConfig {
+            name: name.to_string(),
+            command: None,
+            timeout: 30,
+            adaptor: AdaptorConfig::Judge {
+                persona: "A reviewer".to_string(),
+                rubrics: rubric_ids
+                    .iter()
+                    .map(|id| RubricConfig {
+                        id: id.to_string(),
+                        title: id.to_string(),
+                        instruction: "Score 1-5.".to_string(),
+                        score_range: ScoreRangeConfig { min: 1, max: 5 },
+                        guidance: None,
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    fn fake_agent_config() -> autotune_agent::AgentConfig {
+        autotune_agent::AgentConfig {
+            prompt: String::new(),
+            allowed_tools: vec![],
+            working_directory: std::path::PathBuf::from("."),
+            model: None,
+            max_turns: Some(1),
+            reasoning_effort: None,
+        }
+    }
+
+    #[test]
+    fn run_judge_measure_returns_metrics_per_rubric() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = judge_measure_config("critique", &["r1", "r2"]);
+        let agent = FakeAgent {
+            response: "r1\nscore: 4\nreason: Good.\n\nr2\nscore: 3\nreason: Acceptable."
+                .to_string(),
+        };
+        let ctx = JudgeContext {
+            agent: &agent,
+            agent_config: fake_agent_config(),
+        };
+        let report = run_judge_measure(&config, tmp.path(), "approach-a", 1, &ctx).unwrap();
+        assert_eq!(*report.metrics.get("r1").unwrap(), 4.0);
+        assert_eq!(*report.metrics.get("r2").unwrap(), 3.0);
+        assert_eq!(report.name, "critique");
+    }
+
+    #[test]
+    fn run_judge_measure_with_command_captures_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = judge_measure_config("critique", &["r1"]);
+        config.command = Some(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo 'source code here'".to_string(),
+        ]);
+        let agent = FakeAgent {
+            response: "r1\nscore: 5\nreason: Excellent.".to_string(),
+        };
+        let ctx = JudgeContext {
+            agent: &agent,
+            agent_config: fake_agent_config(),
+        };
+        let report = run_judge_measure(&config, tmp.path(), "my-approach", 2, &ctx).unwrap();
+        assert_eq!(*report.metrics.get("r1").unwrap(), 5.0);
+        assert!(report.stdout.contains("source code here"));
+    }
+
+    #[test]
+    fn run_all_measures_with_judge_ctx_dispatches_judge_measure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let configs = vec![judge_measure_config("j", &["score"])];
+        let agent = FakeAgent {
+            response: "score\nscore: 5\nreason: Perfect.".to_string(),
+        };
+        let ctx = JudgeContext {
+            agent: &agent,
+            agent_config: fake_agent_config(),
+        };
+        let (metrics, reports) =
+            run_all_measures_with_output(&configs, tmp.path(), "approach", 1, Some(&ctx)).unwrap();
+        assert_eq!(*metrics.get("score").unwrap(), 5.0);
+        assert_eq!(reports.len(), 1);
     }
 }
