@@ -45,3 +45,4 @@ pub use crate::model::{
 };
 pub use crate::review::{ReviewInput, ReviewPrompter, TerminalReviewPrompter};
 pub use crate::store::{ExampleStore, JsonlExampleStore, NoStore};
+pub use crate::prompt::render_batch_prompt;
