@@ -58,6 +58,7 @@ pub fn run_single_phase(
     store: &TaskStore,
     state: &mut TaskState,
     approver: Option<&dyn ToolApprover>,
+    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
 ) -> Result<bool> {
     let research_session = research_session_from_state(state);
 
@@ -84,7 +85,7 @@ pub fn run_single_phase(
             run_fixing(config, agent, store, state)?;
         }
         Phase::Measuring => {
-            run_measuring(config, store, state)?;
+            run_measuring(config, store, state, judge_ctx)?;
         }
         Phase::Scoring => {
             run_scoring(scorer, store, state)?;
@@ -112,6 +113,7 @@ pub fn run_task(
     store: &TaskStore,
     shutdown: &ShutdownFlag,
     approver: Option<&dyn ToolApprover>,
+    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
 ) -> Result<()> {
     let mut state = store.load_state().context("failed to load task state")?;
 
@@ -123,7 +125,7 @@ pub fn run_task(
         }
 
         match run_single_phase(
-            config, agent, scorer, repo_root, store, &mut state, approver,
+            config, agent, scorer, repo_root, store, &mut state, approver, judge_ctx,
         ) {
             Ok(true) => break,
             Ok(false) => continue,
@@ -938,7 +940,12 @@ fn build_implementation_agent(
     build_agent_for_backend(&backend)
 }
 
-fn run_measuring(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
+fn run_measuring(
+    config: &AutotuneConfig,
+    store: &TaskStore,
+    state: &mut TaskState,
+    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
+) -> Result<()> {
     let approach = state
         .current_approach
         .as_ref()
@@ -948,9 +955,18 @@ fn run_measuring(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskSta
         state.current_iteration, approach.name
     );
 
-    let (metrics, reports) =
-        autotune_benchmark::run_all_measures_with_output(&config.measure, &approach.worktree_path)
-            .context("measuring failed")?;
+    let approach_name = approach.name.clone();
+    let iteration = state.current_iteration as u32;
+    let worktree_path = approach.worktree_path.clone();
+
+    let (metrics, reports) = autotune_benchmark::run_all_measures_with_output(
+        &config.measure,
+        &worktree_path,
+        &approach_name,
+        iteration,
+        judge_ctx,
+    )
+    .context("measuring failed")?;
 
     // Persist raw stdout/stderr per measure so the research agent can fetch
     // extra detail on demand (only the metric values feed scoring).
@@ -1805,7 +1821,7 @@ mod tests {
         let mut state =
             make_state_with_approach(Phase::Measuring, 2, worktree.path().to_path_buf());
 
-        run_measuring(&config, &store, &mut state).unwrap();
+        run_measuring(&config, &store, &mut state, None).unwrap();
 
         assert_eq!(state.current_phase, Phase::Scoring);
         let metrics = state

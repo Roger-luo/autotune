@@ -213,7 +213,7 @@ fn test_single_iteration_kept() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -267,7 +267,7 @@ fn test_multiple_iterations_with_discards() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -337,7 +337,7 @@ fn test_no_commit_records_crash_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -380,7 +380,7 @@ fn test_failure_discards_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
@@ -422,7 +422,7 @@ fn test_shutdown_flag_stops_task() {
     // Set shutdown before running — should exit immediately
     let shutdown = AtomicBool::new(true);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .expect("run_task failed");
 
     // No iterations should have run
@@ -462,7 +462,7 @@ fn test_state_persisted_at_each_phase() {
 
     // Planning → Implementing
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Implementing);
@@ -473,7 +473,7 @@ fn test_state_persisted_at_each_phase() {
 
     // Implementing → Testing
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Testing);
@@ -489,14 +489,14 @@ fn test_state_persisted_at_each_phase() {
 
     // Testing → Measuring
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Measuring);
 
     // Measuring → Scoring
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Scoring);
@@ -512,21 +512,21 @@ fn test_state_persisted_at_each_phase() {
 
     // Scoring → Integrating (measure=42.0 < baseline=100.0, kept)
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Integrating);
 
     // Integrating → Recorded
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Recorded);
 
     // Recorded → Done (max_iterations=1)
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None,
+        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Done);
@@ -552,7 +552,7 @@ fn test_iteration_artifacts_saved() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .unwrap();
 
     // metrics.json should exist for the kept iteration
@@ -588,7 +588,7 @@ fn test_mock_agent_tracks_calls() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .unwrap();
 
     // 2 planning calls (send). Only 1st iteration produces an improvement (42 vs 100),
@@ -699,7 +699,7 @@ fn test_config_loads_and_measures_run() {
     assert_eq!(config.task.name, "test-task");
     assert_eq!(config.measure.len(), 1);
 
-    let metrics = run_all_measures(&config.measure, dir).expect("measures failed");
+    let metrics = run_all_measures(&config.measure, dir, "test", 1, None).expect("measures failed");
     assert!(metrics.contains_key("metric_value"));
     assert!((metrics["metric_value"] - 42.0).abs() < f64::EPSILON);
 }
@@ -742,7 +742,7 @@ fn test_implementation_prompt_contains_instructions() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .unwrap();
 
     // run_task starts at Planning — the research agent was already spawned
@@ -820,7 +820,7 @@ fn test_research_planning_prompt_contains_context() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None)
+    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
         .unwrap();
 
     // The planning prompt is sent via send() — check the first message.

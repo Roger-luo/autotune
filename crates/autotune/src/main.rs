@@ -587,8 +587,14 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     // Take baseline measurements
     println!("[autotune] collecting baseline metrics...");
     let (baseline_metrics, baseline_reports) =
-        autotune_benchmark::run_all_measures_with_output(&config.measure, &repo_root)
-            .context("baseline measures failed")?;
+        autotune_benchmark::run_all_measures_with_output(
+            &config.measure,
+            &repo_root,
+            "baseline",
+            0,
+            None,
+        )
+        .context("baseline measures failed")?;
     println!("[autotune] baseline metrics: {:?}", baseline_metrics);
 
     // Persist raw baseline stdout/stderr per measure so the research agent
@@ -696,6 +702,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         &store,
         &shutdown,
         Some(&tool_approver),
+        None,
     )?;
 
     // Print handover info
@@ -779,6 +786,7 @@ fn cmd_resume(
         &store,
         &shutdown,
         Some(&tool_approver),
+        None,
     )?;
 
     // Print handover info
@@ -1588,6 +1596,7 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
         &store,
         &mut state,
         Some(&tool_approver),
+        None,
     )?;
 
     println!(
