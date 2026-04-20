@@ -273,6 +273,24 @@ fn build_agent(config: &AutotuneConfig, role: AgentRole) -> Result<Box<dyn Agent
             );
         }
 
+        // Judge-agent mock: when building a Judge-role mock, load responses
+        // from AUTOTUNE_MOCK_JUDGE_SCRIPT. Each `---`-separated entry is a
+        // verbatim batch response the mock will return for a judge spawn call.
+        if role == AgentRole::Judge {
+            let mut judge_builder = autotune_mock::MockAgent::builder();
+            if let Ok(path) = std::env::var("AUTOTUNE_MOCK_JUDGE_SCRIPT")
+                && let Ok(content) = std::fs::read_to_string(&path)
+            {
+                for entry in content.split("\n---\n") {
+                    let entry = entry.trim_end_matches('\n');
+                    if !entry.is_empty() {
+                        judge_builder = judge_builder.research_response(entry);
+                    }
+                }
+            }
+            return Ok(Box::new(judge_builder.build()));
+        }
+
         // Implementer-script support: each entry is a shell command run by
         // the mock implementer on its next turn (spawn or fix-turn send).
         // Empty entries simulate unproductive turns — they trigger the
@@ -595,6 +613,20 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let agent = build_agent(&config, AgentRole::Research)?;
     let scorer = build_scorer(&config);
 
+    // Build judge agent early so it's available for the baseline measurement.
+    let judge_agent = if has_judge_measure(&config) {
+        Some(build_agent(&config, AgentRole::Judge)?)
+    } else {
+        None
+    };
+    let judge_agent_cfg = judge_agent_session_config(&config, &repo_root);
+    let judge_ctx = judge_agent
+        .as_ref()
+        .map(|a| autotune_benchmark::JudgeContext {
+            agent: a.as_ref(),
+            agent_config: judge_agent_cfg,
+        });
+
     // Run sanity tests
     if !config.test.is_empty() {
         println!("[autotune] running sanity tests...");
@@ -618,7 +650,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         &repo_root,
         "baseline",
         0,
-        None,
+        judge_ctx.as_ref(),
     )
     .context("baseline measures failed")?;
     println!("[autotune] baseline metrics: {:?}", baseline_metrics);
@@ -709,20 +741,6 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     );
     debug_assert_eq!(initial_state.advancing_branch, advancing_branch);
     store.save_state(&initial_state)?;
-
-    // Build judge agent if any measure uses the judge adaptor.
-    let judge_agent = if has_judge_measure(&config) {
-        Some(build_agent(&config, AgentRole::Judge)?)
-    } else {
-        None
-    };
-    let judge_agent_cfg = judge_agent_session_config(&config, &repo_root);
-    let judge_ctx = judge_agent
-        .as_ref()
-        .map(|a| autotune_benchmark::JudgeContext {
-            agent: a.as_ref(),
-            agent_config: judge_agent_cfg,
-        });
 
     // Set up Ctrl+C handler
     let shutdown = Arc::new(AtomicBool::new(false));

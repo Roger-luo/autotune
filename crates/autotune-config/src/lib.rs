@@ -1208,7 +1208,10 @@ primary_metrics = [{ name = "q", direction = "Maximize" }]
 "#;
         let config: AutotuneConfig = toml::from_str(toml).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("min") && err.to_string().contains("max"), "error: {err}");
+        assert!(
+            err.to_string().contains("min") && err.to_string().contains("max"),
+            "error: {err}"
+        );
     }
 
     #[test]
@@ -1240,7 +1243,10 @@ primary_metrics = [{ name = "q", direction = "Maximize" }]
 "#;
         let config: AutotuneConfig = toml::from_str(toml).unwrap();
         let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("duplicate") && err.to_string().contains("q"), "error: {err}");
+        assert!(
+            err.to_string().contains("duplicate") && err.to_string().contains("q"),
+            "error: {err}"
+        );
     }
 
     #[test]

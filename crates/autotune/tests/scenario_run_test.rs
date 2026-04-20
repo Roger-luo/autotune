@@ -728,3 +728,122 @@ fn scenario_run_fix_retry_discards_when_budget_exhausted() {
         "discard reason should mention fix attempt(s).\nledger:\n{ledger}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Judge adaptor scenario
+// ---------------------------------------------------------------------------
+
+/// A judge adaptor measure produces rubric metrics that appear in the ledger.
+#[test]
+fn scenario_run_judge_adaptor_produces_rubric_metrics_in_ledger() {
+    const JUDGE_CONFIG: &str = r#"
+[task]
+name = "judge-task"
+description = "judge adaptor scenario"
+canonical_branch = "main"
+max_iterations = "1"
+
+[agent]
+backend = "claude"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "critique"
+[measure.adaptor]
+type = "judge"
+persona = "A strict reviewer"
+[[measure.adaptor.rubrics]]
+id = "quality"
+title = "Quality"
+instruction = "Score quality 1-5."
+score_range = { min = 1, max = 5 }
+[[measure.adaptor.rubrics]]
+id = "correctness"
+title = "Correctness"
+instruction = "Score correctness 1-5."
+score_range = { min = 1, max = 5 }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [
+  { name = "quality",     direction = "Maximize", weight = 1.0 },
+  { name = "correctness", direction = "Maximize", weight = 1.0 },
+]
+"#;
+
+    let project = Project::empty()
+        .file(".autotune.toml", JUDGE_CONFIG)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    // Research script: one plan driving a single iteration.
+    let research_script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>judge-test-approach</approach>\
+               <hypothesis>test hypothesis for judge measure</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    // Judge script: batch response with quality and correctness scores.
+    let judge_script_path = project.path().join(".mock-judge-script");
+    std::fs::write(
+        &judge_script_path,
+        "quality\nscore: 4\nreason: Good quality overall.\n\ncorrectness\nscore: 5\nreason: Fully correct.",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &research_script)
+        .env("AUTOTUNE_MOCK_JUDGE_SCRIPT", &judge_script_path)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected clean exit.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let ledger_path = project
+        .path()
+        .join(".autotune/tasks/judge-task/ledger.json");
+    assert!(ledger_path.exists(), "ledger should be written");
+    let ledger = std::fs::read_to_string(&ledger_path).unwrap();
+
+    assert!(
+        ledger.contains("\"quality\""),
+        "ledger should contain quality metric.\nledger:\n{ledger}"
+    );
+    assert!(
+        ledger.contains("\"correctness\""),
+        "ledger should contain correctness metric.\nledger:\n{ledger}"
+    );
+    assert!(
+        ledger.contains("4.0") || ledger.contains('4'),
+        "ledger should record quality score 4.\nledger:\n{ledger}"
+    );
+    assert!(
+        ledger.contains("5.0") || ledger.contains('5'),
+        "ledger should record correctness score 5.\nledger:\n{ledger}"
+    );
+}

@@ -157,7 +157,9 @@ name = "autotune-benchmark"
 version = "0.1.0"
 dependencies = [
  "autotune-adaptor",
+ "autotune-agent",
  "autotune-config",
+ "autotune-judge",
  "nix 0.29.0",
  "serde_json",
  "tempfile",

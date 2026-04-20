@@ -219,8 +219,13 @@ impl Agent for MockAgent {
         let wd = &config.working_directory;
         let is_worktree = wd.join(".git").is_file();
 
-        if idx == 0 && !is_worktree {
-            // Priority order for the research-agent's initial spawn response:
+        // Route to the research path when:
+        // - Any non-worktree spawn if `research_responses` are configured
+        //   (e.g. a dedicated judge-agent mock that always uses that queue), OR
+        // - The very first non-worktree spawn (legacy: first call = research init).
+        let use_research_path = !is_worktree && (!self.research_responses.is_empty() || idx == 0);
+        if use_research_path {
+            // Priority order for the response:
             // 1. Programmable `research_response()` queue (lets tests inject
             //    `<request-tool>` fragments, malformed XML, etc. verbatim).
             // 2. Legacy `init_response()` queue (used by the init flow).

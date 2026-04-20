@@ -543,7 +543,10 @@ mod tests {
     fn normalize_prompt_replaces_blank_prompts() {
         assert_eq!(CodexAgent::normalize_prompt(""), "Continue.");
         assert_eq!(CodexAgent::normalize_prompt("  \n\t "), "Continue.");
-        assert_eq!(CodexAgent::normalize_prompt("keep original"), "keep original");
+        assert_eq!(
+            CodexAgent::normalize_prompt("keep original"),
+            "keep original"
+        );
     }
 
     #[test]
@@ -617,7 +620,10 @@ mod tests {
             CodexAgent::delta_text(&serde_json::json!({ "text": "fallback" })),
             Some("fallback".to_string())
         );
-        assert_eq!(CodexAgent::delta_text(&serde_json::json!({ "delta": 3 })), None);
+        assert_eq!(
+            CodexAgent::delta_text(&serde_json::json!({ "delta": 3 })),
+            None
+        );
     }
 
     #[test]
@@ -709,7 +715,9 @@ mod tests {
         assert_eq!(resumed.allowed_tools.len(), 2);
 
         let fresh = CodexAgent::with_command(PathBuf::from("codex"));
-        fresh.hydrate_session(&session("thread-2"), &original).unwrap();
+        fresh
+            .hydrate_session(&session("thread-2"), &original)
+            .unwrap();
         let hydrated = fresh.config_for_session("thread-2", "resumed").unwrap();
         assert_eq!(hydrated.prompt, "resumed");
         assert_eq!(hydrated.allowed_tools.len(), 1);
@@ -750,7 +758,8 @@ mod tests {
             seen_for_handler.lock().unwrap().push(event);
         });
 
-        let response = CodexAgent::parse_jsonl(std::io::Cursor::new(jsonl), Some(&handler)).unwrap();
+        let response =
+            CodexAgent::parse_jsonl(std::io::Cursor::new(jsonl), Some(&handler)).unwrap();
 
         assert_eq!(response.session_id, "thread-123");
         assert_eq!(response.text, "ignored");

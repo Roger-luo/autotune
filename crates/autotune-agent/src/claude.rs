@@ -638,7 +638,10 @@ mod tests {
         let args = ClaudeAgent::build_args(
             &config_with_tools(vec![
                 ToolPermission::Allow("Read".to_string()),
-                ToolPermission::AllowScoped("Edit".to_string(), "/tmp/worktree/**/*.rs".to_string()),
+                ToolPermission::AllowScoped(
+                    "Edit".to_string(),
+                    "/tmp/worktree/**/*.rs".to_string(),
+                ),
                 ToolPermission::Deny("Bash".to_string()),
             ]),
             Some("sess-123"),
@@ -692,7 +695,9 @@ mod tests {
     #[test]
     fn summarize_tool_input_prefers_paths_then_pattern_then_command() {
         assert_eq!(
-            ClaudeAgent::summarize_tool_input(Some(&serde_json::json!({ "file_path": "/tmp/a.rs" }))),
+            ClaudeAgent::summarize_tool_input(Some(
+                &serde_json::json!({ "file_path": "/tmp/a.rs" })
+            )),
             "/tmp/a.rs"
         );
         assert_eq!(
@@ -700,7 +705,9 @@ mod tests {
             "pattern: needle"
         );
         assert_eq!(
-            ClaudeAgent::summarize_tool_input(Some(&serde_json::json!({ "command": "cargo test" }))),
+            ClaudeAgent::summarize_tool_input(Some(
+                &serde_json::json!({ "command": "cargo test" })
+            )),
             "cargo test"
         );
         assert_eq!(ClaudeAgent::summarize_tool_input(None), "");
@@ -728,7 +735,9 @@ mod tests {
         assert_eq!(resumed.allowed_tools.len(), 2);
 
         let fresh = ClaudeAgent::with_command(PathBuf::from("claude"));
-        fresh.hydrate_session(&session("sess-2"), &original).unwrap();
+        fresh
+            .hydrate_session(&session("sess-2"), &original)
+            .unwrap();
         let hydrated = fresh.config_for_session("sess-2", "resumed").unwrap();
         assert_eq!(hydrated.prompt, "resumed");
         assert_eq!(hydrated.allowed_tools.len(), 1);
