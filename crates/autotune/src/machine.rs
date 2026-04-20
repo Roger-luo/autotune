@@ -20,6 +20,14 @@ use autotune_state::{
 
 pub type ShutdownFlag = AtomicBool;
 
+/// Bundles optional per-run context that doesn't fit the core state machine
+/// parameters — the tool approver for human-in-the-loop confirmations, and
+/// the judge context for LLM-based measure adaptors.
+pub struct RunContext<'a> {
+    pub approver: Option<&'a dyn autotune_plan::ToolApprover>,
+    pub judge_ctx: Option<&'a autotune_benchmark::JudgeContext<'a>>,
+}
+
 #[derive(Debug)]
 enum PhaseFailure {
     ExitCleanly,
@@ -57,9 +65,10 @@ pub fn run_single_phase(
     repo_root: &Path,
     store: &TaskStore,
     state: &mut TaskState,
-    approver: Option<&dyn ToolApprover>,
-    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
+    ctx: &RunContext,
 ) -> Result<bool> {
+    let approver = ctx.approver;
+    let judge_ctx = ctx.judge_ctx;
     let research_session = research_session_from_state(state);
 
     autotune_agent::trace::record(
@@ -112,8 +121,7 @@ pub fn run_task(
     repo_root: &Path,
     store: &TaskStore,
     shutdown: &ShutdownFlag,
-    approver: Option<&dyn ToolApprover>,
-    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
+    ctx: &RunContext,
 ) -> Result<()> {
     let mut state = store.load_state().context("failed to load task state")?;
 
@@ -124,9 +132,7 @@ pub fn run_task(
             return Ok(());
         }
 
-        match run_single_phase(
-            config, agent, scorer, repo_root, store, &mut state, approver, judge_ctx,
-        ) {
+        match run_single_phase(config, agent, scorer, repo_root, store, &mut state, ctx) {
             Ok(true) => break,
             Ok(false) => continue,
             Err(e) => {

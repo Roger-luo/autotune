@@ -229,6 +229,12 @@ fn apply_global_agent_defaults(config: &mut AutotuneConfig, global: &GlobalConfi
         &project_defaults,
         &global_defaults,
     );
+    merge_role(
+        &mut config.agent.judge,
+        &global_agent.judge,
+        &project_defaults,
+        &global_defaults,
+    );
 }
 
 fn global_backend_name(global_config: &GlobalConfig, role: AgentRole) -> Option<&str> {
@@ -287,6 +293,27 @@ fn build_agent(config: &AutotuneConfig, role: AgentRole) -> Result<Box<dyn Agent
 
     let backend = resolve_backend_name(&config.agent, role);
     build_agent_for_backend(backend.unwrap_or("claude"))
+}
+
+fn has_judge_measure(config: &AutotuneConfig) -> bool {
+    config
+        .measure
+        .iter()
+        .any(|m| matches!(m.adaptor, autotune_config::AdaptorConfig::Judge { .. }))
+}
+
+fn judge_agent_session_config(
+    config: &AutotuneConfig,
+    repo_root: &Path,
+) -> autotune_agent::AgentConfig {
+    autotune_agent::AgentConfig {
+        prompt: String::new(),
+        allowed_tools: vec![],
+        working_directory: repo_root.to_path_buf(),
+        model: config.agent.judge.as_ref().and_then(|j| j.model.clone()),
+        max_turns: Some(1),
+        reasoning_effort: None,
+    }
 }
 
 fn research_agent_session_config(
@@ -586,15 +613,14 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Take baseline measurements
     println!("[autotune] collecting baseline metrics...");
-    let (baseline_metrics, baseline_reports) =
-        autotune_benchmark::run_all_measures_with_output(
-            &config.measure,
-            &repo_root,
-            "baseline",
-            0,
-            None,
-        )
-        .context("baseline measures failed")?;
+    let (baseline_metrics, baseline_reports) = autotune_benchmark::run_all_measures_with_output(
+        &config.measure,
+        &repo_root,
+        "baseline",
+        0,
+        None,
+    )
+    .context("baseline measures failed")?;
     println!("[autotune] baseline metrics: {:?}", baseline_metrics);
 
     // Persist raw baseline stdout/stderr per measure so the research agent
@@ -684,6 +710,20 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     debug_assert_eq!(initial_state.advancing_branch, advancing_branch);
     store.save_state(&initial_state)?;
 
+    // Build judge agent if any measure uses the judge adaptor.
+    let judge_agent = if has_judge_measure(&config) {
+        Some(build_agent(&config, AgentRole::Judge)?)
+    } else {
+        None
+    };
+    let judge_agent_cfg = judge_agent_session_config(&config, &repo_root);
+    let judge_ctx = judge_agent
+        .as_ref()
+        .map(|a| autotune_benchmark::JudgeContext {
+            agent: a.as_ref(),
+            agent_config: judge_agent_cfg,
+        });
+
     // Set up Ctrl+C handler
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
@@ -701,8 +741,10 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         &repo_root,
         &store,
         &shutdown,
-        Some(&tool_approver),
-        None,
+        &autotune::machine::RunContext {
+            approver: Some(&tool_approver),
+            judge_ctx: judge_ctx.as_ref(),
+        },
     )?;
 
     // Print handover info
@@ -777,6 +819,20 @@ fn cmd_resume(
 
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
 
+    // Build judge agent if any measure uses the judge adaptor.
+    let judge_agent = if has_judge_measure(&config) {
+        Some(build_agent(&config, AgentRole::Judge)?)
+    } else {
+        None
+    };
+    let judge_agent_cfg = judge_agent_session_config(&config, &repo_root);
+    let judge_ctx = judge_agent
+        .as_ref()
+        .map(|a| autotune_benchmark::JudgeContext {
+            agent: a.as_ref(),
+            agent_config: judge_agent_cfg,
+        });
+
     // Run state machine
     machine::run_task(
         &config,
@@ -785,8 +841,10 @@ fn cmd_resume(
         &repo_root,
         &store,
         &shutdown,
-        Some(&tool_approver),
-        None,
+        &autotune::machine::RunContext {
+            approver: Some(&tool_approver),
+            judge_ctx: judge_ctx.as_ref(),
+        },
     )?;
 
     // Print handover info
@@ -1588,6 +1646,20 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
     let scorer = build_scorer(&config);
 
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
+
+    let judge_agent = if has_judge_measure(&config) {
+        Some(build_agent(&config, AgentRole::Judge)?)
+    } else {
+        None
+    };
+    let judge_agent_cfg = judge_agent_session_config(&config, &repo_root);
+    let judge_ctx = judge_agent
+        .as_ref()
+        .map(|a| autotune_benchmark::JudgeContext {
+            agent: a.as_ref(),
+            agent_config: judge_agent_cfg,
+        });
+
     machine::run_single_phase(
         &config,
         agent.as_ref(),
@@ -1595,8 +1667,10 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
         &repo_root,
         &store,
         &mut state,
-        Some(&tool_approver),
-        None,
+        &autotune::machine::RunContext {
+            approver: Some(&tool_approver),
+            judge_ctx: judge_ctx.as_ref(),
+        },
     )?;
 
     println!(

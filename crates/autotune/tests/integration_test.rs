@@ -213,8 +213,19 @@ fn test_single_iteration_kept() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .expect("run_task failed");
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     assert_eq!(ledger.len(), 2);
@@ -267,8 +278,19 @@ fn test_multiple_iterations_with_discards() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .expect("run_task failed");
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     // baseline + 3 iterations = 4 entries
@@ -337,8 +359,19 @@ fn test_no_commit_records_crash_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .expect("run_task failed");
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     // baseline + crash + kept = 3 entries, but max_iterations=2 counts non-baseline iterations
@@ -380,8 +413,19 @@ fn test_failure_discards_and_continues() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .expect("run_task failed");
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .expect("run_task failed");
 
     let ledger = store.load_ledger().unwrap();
     assert_eq!(ledger.len(), 2, "expected baseline + 1 discarded");
@@ -422,8 +466,19 @@ fn test_shutdown_flag_stops_task() {
     // Set shutdown before running — should exit immediately
     let shutdown = AtomicBool::new(true);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .expect("run_task failed");
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .expect("run_task failed");
 
     // No iterations should have run
     let ledger = store.load_ledger().unwrap();
@@ -462,7 +517,16 @@ fn test_state_persisted_at_each_phase() {
 
     // Planning → Implementing
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &mut state,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Implementing);
@@ -473,7 +537,16 @@ fn test_state_persisted_at_each_phase() {
 
     // Implementing → Testing
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &mut state,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Testing);
@@ -489,14 +562,32 @@ fn test_state_persisted_at_each_phase() {
 
     // Testing → Measuring
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &mut state,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Measuring);
 
     // Measuring → Scoring
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &mut state,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Scoring);
@@ -512,21 +603,48 @@ fn test_state_persisted_at_each_phase() {
 
     // Scoring → Integrating (measure=42.0 < baseline=100.0, kept)
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &mut state,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Integrating);
 
     // Integrating → Recorded
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &mut state,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Recorded);
 
     // Recorded → Done (max_iterations=1)
     autotune::machine::run_single_phase(
-        &config, &agent, &scorer, repo_root, &store, &mut state, None, None,
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &mut state,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
     )
     .unwrap();
     assert_eq!(state.current_phase, Phase::Done);
@@ -552,8 +670,19 @@ fn test_iteration_artifacts_saved() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .unwrap();
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .unwrap();
 
     // metrics.json should exist for the kept iteration
     let metrics_path = store.iteration_dir(1, "opt-1").join("metrics.json");
@@ -588,8 +717,19 @@ fn test_mock_agent_tracks_calls() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .unwrap();
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .unwrap();
 
     // 2 planning calls (send). Only 1st iteration produces an improvement (42 vs 100),
     // 2nd compares 42 vs best=42 → discard → no implementation spawn for discarded.
@@ -742,8 +882,19 @@ fn test_implementation_prompt_contains_instructions() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .unwrap();
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .unwrap();
 
     // run_task starts at Planning — the research agent was already spawned
     // in cmd_run, so the first spawn here is the implementation agent.
@@ -820,8 +971,19 @@ fn test_research_planning_prompt_contains_context() {
     let scorer = build_test_scorer();
     let shutdown = AtomicBool::new(false);
 
-    autotune::machine::run_task(&config, &agent, &scorer, repo_root, &store, &shutdown, None, None)
-        .unwrap();
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .unwrap();
 
     // The planning prompt is sent via send() — check the first message.
     let messages = agent.send_messages();

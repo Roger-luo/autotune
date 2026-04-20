@@ -7,6 +7,7 @@ pub enum AgentRole {
     Research,
     Implementation,
     Init,
+    Judge,
 }
 
 pub fn resolve_backend_name(config: &AgentConfig, role: AgentRole) -> Option<&str> {
@@ -14,6 +15,7 @@ pub fn resolve_backend_name(config: &AgentConfig, role: AgentRole) -> Option<&st
         AgentRole::Research => config.research.as_ref(),
         AgentRole::Implementation => config.implementation.as_ref(),
         AgentRole::Init => config.init.as_ref(),
+        AgentRole::Judge => config.judge.as_ref(),
     };
 
     role_config
