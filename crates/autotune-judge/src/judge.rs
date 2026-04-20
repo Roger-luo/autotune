@@ -226,3 +226,188 @@ impl JudgeBackend for MockJudgeBackend {
         )
     }
 }
+
+/// Parse a batched response from a judge agent into a `Vec<Assessment>`.
+///
+/// Blocks may appear in any order. Returns an error if any rubric is missing,
+/// any rubric ID is unrecognised, any score is out of range, or any block is
+/// malformed.
+pub fn parse_batch_response(rubrics: &[Rubric], text: &str) -> Result<Vec<Assessment>, JudgeError> {
+    use std::collections::HashMap;
+
+    let rubric_map: HashMap<&str, &Rubric> = rubrics.iter().map(|r| (r.id.as_str(), r)).collect();
+
+    let mut results: HashMap<String, Assessment> = HashMap::new();
+
+    for block in text.trim().split("\n\n") {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+        let mut lines = block.lines();
+        let id = lines
+            .next()
+            .ok_or_else(|| JudgeError::BackendParse {
+                message: "empty block in batch response".into(),
+            })?
+            .trim();
+
+        let rubric = rubric_map.get(id).ok_or_else(|| JudgeError::BackendParse {
+            message: format!("unknown rubric id '{id}' in batch response"),
+        })?;
+
+        let score_line = lines.next().ok_or_else(|| JudgeError::BackendParse {
+            message: format!("block for '{id}' missing score line"),
+        })?;
+        let reason_line = lines.next().ok_or_else(|| JudgeError::BackendParse {
+            message: format!("block for '{id}' missing reason line"),
+        })?;
+
+        let score_value = score_line
+            .strip_prefix("score:")
+            .ok_or_else(|| JudgeError::BackendParse {
+                message: format!(
+                    "block for '{id}': expected 'score:' on second line, got: {score_line}"
+                ),
+            })?
+            .trim();
+        let score: i32 = score_value.parse().map_err(|_| JudgeError::BackendParse {
+            message: format!("block for '{id}': score '{score_value}' is not an integer"),
+        })?;
+
+        if !rubric.score_range.contains(score) {
+            return Err(JudgeError::BackendParse {
+                message: format!(
+                    "block for '{id}': score {score} outside range [{}, {}]",
+                    rubric.score_range.min, rubric.score_range.max
+                ),
+            });
+        }
+
+        let reason = reason_line
+            .strip_prefix("reason:")
+            .ok_or_else(|| JudgeError::BackendParse {
+                message: format!(
+                    "block for '{id}': expected 'reason:' on third line, got: {reason_line}"
+                ),
+            })?
+            .trim()
+            .to_string();
+
+        if reason.is_empty() {
+            return Err(JudgeError::BackendParse {
+                message: format!("block for '{id}': reason must be non-empty"),
+            });
+        }
+
+        if results.contains_key(id) {
+            return Err(JudgeError::BackendParse {
+                message: format!("duplicate block for rubric '{id}' in batch response"),
+            });
+        }
+
+        results.insert(
+            id.to_string(),
+            Assessment::new(id, score, reason, "batch", None, None)?,
+        );
+    }
+
+    for rubric in rubrics {
+        if !results.contains_key(rubric.id.as_str()) {
+            return Err(JudgeError::BackendParse {
+                message: format!("batch response missing block for rubric '{}'", rubric.id),
+            });
+        }
+    }
+
+    Ok(rubrics
+        .iter()
+        .map(|r| results.remove(r.id.as_str()).unwrap())
+        .collect())
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use crate::model::{Rubric, ScoreRange};
+
+    fn rubric(id: &str, min: i32, max: i32) -> Rubric {
+        Rubric {
+            id: id.to_string(),
+            title: id.to_string(),
+            persona: String::new(),
+            score_range: ScoreRange { min, max },
+            instruction: String::new(),
+            guidance: None,
+        }
+    }
+
+    #[test]
+    fn parse_batch_happy_path() {
+        let rubrics = vec![rubric("r1", 1, 5), rubric("r2", 1, 3)];
+        let text = "r1\nscore: 4\nreason: Good but one edge case missing.\n\nr2\nscore: 2\nreason: Needs improvement.";
+        let assessments = parse_batch_response(&rubrics, text).unwrap();
+        assert_eq!(assessments.len(), 2);
+        let r1 = assessments.iter().find(|a| a.rubric_id == "r1").unwrap();
+        assert_eq!(r1.score, 4);
+        assert_eq!(r1.reason, "Good but one edge case missing.");
+        let r2 = assessments.iter().find(|a| a.rubric_id == "r2").unwrap();
+        assert_eq!(r2.score, 2);
+    }
+
+    #[test]
+    fn parse_batch_order_independent() {
+        let rubrics = vec![rubric("r1", 1, 5), rubric("r2", 1, 5)];
+        let text = "r2\nscore: 3\nreason: Average.\n\nr1\nscore: 5\nreason: Perfect.";
+        let assessments = parse_batch_response(&rubrics, text).unwrap();
+        assert_eq!(assessments.len(), 2);
+        assert_eq!(
+            assessments
+                .iter()
+                .find(|a| a.rubric_id == "r1")
+                .unwrap()
+                .score,
+            5
+        );
+        assert_eq!(
+            assessments
+                .iter()
+                .find(|a| a.rubric_id == "r2")
+                .unwrap()
+                .score,
+            3
+        );
+    }
+
+    #[test]
+    fn parse_batch_missing_rubric_errors() {
+        let rubrics = vec![rubric("r1", 1, 5), rubric("r2", 1, 5)];
+        let text = "r1\nscore: 4\nreason: Good.";
+        let err = parse_batch_response(&rubrics, text).unwrap_err();
+        assert!(err.to_string().contains("r2"), "error: {err}");
+    }
+
+    #[test]
+    fn parse_batch_unknown_rubric_id_errors() {
+        let rubrics = vec![rubric("r1", 1, 5)];
+        let text = "r1\nscore: 4\nreason: Good.\n\nunknown\nscore: 3\nreason: Extra.";
+        let err = parse_batch_response(&rubrics, text).unwrap_err();
+        assert!(err.to_string().contains("unknown"), "error: {err}");
+    }
+
+    #[test]
+    fn parse_batch_out_of_range_score_errors() {
+        let rubrics = vec![rubric("r1", 1, 5)];
+        let text = "r1\nscore: 9\nreason: Way too high.";
+        let err = parse_batch_response(&rubrics, text).unwrap_err();
+        assert!(err.to_string().contains("9"), "error: {err}");
+    }
+
+    #[test]
+    fn parse_batch_malformed_block_errors() {
+        let rubrics = vec![rubric("r1", 1, 5)];
+        let text = "r1\nnot-score: 4\nreason: Bad.";
+        let err = parse_batch_response(&rubrics, text).unwrap_err();
+        assert!(err.to_string().contains("score:"), "error: {err}");
+    }
+}

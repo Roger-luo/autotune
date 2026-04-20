@@ -38,11 +38,12 @@ pub mod store;
 pub use crate::error::JudgeError;
 pub use crate::judge::{
     AgentJudge, AgentJudgeBackend, BackendRequest, BackendResponse, Judge, JudgeBackend,
+    MockJudgeBackend, parse_batch_response,
 };
 pub use crate::model::{
     Assessment, Review, Rubric, ScoreRange, StoredExample, Subject, SubjectContext,
     SubjectContextKind,
 };
+pub use crate::prompt::render_batch_prompt;
 pub use crate::review::{ReviewInput, ReviewPrompter, TerminalReviewPrompter};
 pub use crate::store::{ExampleStore, JsonlExampleStore, NoStore};
-pub use crate::prompt::render_batch_prompt;
