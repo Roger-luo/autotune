@@ -14,8 +14,18 @@
 #![cfg(feature = "mock")]
 
 use assert_cmd::Command;
+use autotune::machine::{self, RunContext};
+use autotune::resume;
+use autotune_mock::{MOCK_RESEARCH_SESSION_ID, MockAgent};
+use autotune_score::weighted_sum::{
+    Direction as ScoreDirection, PrimaryMetricDef, WeightedSumScorer,
+};
+use autotune_state::{IterationRecord, IterationStatus, Phase, TaskState, TaskStore};
+use chrono::Utc;
 use scenario::{Project, Scenario, Terminal};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +98,34 @@ fn autotune_bin() -> String {
     env!("CARGO_BIN_EXE_autotune").to_string()
 }
 
+fn seed_resume_task(project: &Project, state: TaskState) {
+    let task_dir = project.path().join(".autotune/tasks/scenario-task");
+    let store = TaskStore::new(&task_dir).unwrap();
+    store.save_config_snapshot(CONFIG_TOML).unwrap();
+    store
+        .append_ledger(&IterationRecord {
+            iteration: 0,
+            approach: "baseline".to_string(),
+            status: IterationStatus::Baseline,
+            hypothesis: None,
+            metrics: HashMap::from([("metric_value".to_string(), 42.0)]),
+            rank: 0.0,
+            score: None,
+            reason: None,
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            timestamp: Utc::now(),
+        })
+        .unwrap();
+    store.save_state(&state).unwrap();
+
+    std::process::Command::new("git")
+        .args(["branch", "autotune/scenario-task-main"])
+        .current_dir(project.path())
+        .output()
+        .expect("failed to seed advancing branch");
+}
+
 // ---------------------------------------------------------------------------
 // XML response type coverage
 // ---------------------------------------------------------------------------
@@ -137,6 +175,77 @@ fn scenario_run_plain_plan_completes_iteration() {
     assert!(
         text.contains("touch-src"),
         "ledger should record the planned approach.\nledger:\n{text}"
+    );
+}
+
+#[test]
+fn scenario_resume_repairs_testing_without_approach() {
+    let project = scenario_project();
+    seed_resume_task(
+        &project,
+        TaskState {
+            task_name: "scenario-task".to_string(),
+            canonical_branch: "main".to_string(),
+            advancing_branch: "autotune/scenario-task-main".to_string(),
+            research_session_id: MOCK_RESEARCH_SESSION_ID.to_string(),
+            research_backend: "mock".to_string(),
+            current_iteration: 1,
+            current_phase: Phase::Testing,
+            current_approach: None,
+        },
+    );
+
+    let store = TaskStore::open(&project.path().join(".autotune/tasks/scenario-task")).unwrap();
+    let repaired = resume::prepare_resume(&store, project.path()).unwrap();
+    assert_eq!(repaired.current_phase, Phase::Planning);
+
+    let config: autotune_config::AutotuneConfig = toml::from_str(CONFIG_TOML).unwrap();
+    let agent = MockAgent::builder()
+        .research_response(
+            "<plan>\
+               <approach>resume-repaired</approach>\
+               <hypothesis>resume should recover from malformed persisted state</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        )
+        .build();
+    let scorer = WeightedSumScorer::new(
+        vec![PrimaryMetricDef {
+            name: "metric_value".to_string(),
+            direction: ScoreDirection::Minimize,
+            weight: 1.0,
+        }],
+        vec![],
+    );
+    let shutdown = AtomicBool::new(false);
+
+    machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        project.path(),
+        &store,
+        &shutdown,
+        &RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .unwrap();
+
+    let final_state = store.load_state().unwrap();
+    assert_eq!(final_state.current_phase, Phase::Done);
+    assert!(final_state.current_approach.is_none());
+
+    let ledger = std::fs::read_to_string(
+        project
+            .path()
+            .join(".autotune/tasks/scenario-task/ledger.json"),
+    )
+    .unwrap();
+    assert!(
+        ledger.contains("resume-repaired"),
+        "resume should complete a repaired iteration.\nledger:\n{ledger}"
     );
 }
 
