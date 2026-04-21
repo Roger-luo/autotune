@@ -30,8 +30,9 @@
 //! | `approval.prompt`     | `{tool, scope, reason}`                            |
 //! | `approval.answer`     | `{tool, decision}`                                 |
 //! | `init.start`          | `{config_exists, repo_root}`                       |
-//! | `init.user_input`     | `{prompt, value}`                                  |
+//! | `init.user_input`     | `{prompt, value, options?}`                        |
 //! | `init.fragment`       | `{kind, outcome, name?, error?}`                   |
+//! | `init.config_preview` | `{toml}`                                           |
 //! | `init.approval`       | `{approved}`                                       |
 //! | `init.validation`     | `{outcome, metrics? | error?}`                     |
 //!
@@ -53,9 +54,7 @@ static WRITER: OnceLock<Option<Mutex<BufWriter<File>>>> = OnceLock::new();
 /// Error returned when `init()` cannot set up the trace file.
 #[derive(Debug, thiserror::Error)]
 pub enum TraceInitError {
-    #[error(
-        "trace file already exists: {path:?} — delete it or choose a different path"
-    )]
+    #[error("trace file already exists: {path:?} — delete it or choose a different path")]
     AlreadyExists { path: OsString },
     #[error("failed to create trace file {path:?}: {source}")]
     Create {
@@ -93,9 +92,14 @@ fn open_trace_file(path: &std::ffi::OsStr) -> Result<(), TraceInitError> {
         .open(path)
         .map_err(|e| {
             if e.kind() == io::ErrorKind::AlreadyExists {
-                TraceInitError::AlreadyExists { path: path.to_owned() }
+                TraceInitError::AlreadyExists {
+                    path: path.to_owned(),
+                }
             } else {
-                TraceInitError::Create { path: path.to_owned(), source: e }
+                TraceInitError::Create {
+                    path: path.to_owned(),
+                    source: e,
+                }
             }
         })?;
 
@@ -215,8 +219,8 @@ mod tests {
         let path = dir.path().join("existing.jsonl");
         std::fs::write(&path, b"old content\n").unwrap();
 
-        let err = open_trace_file(path.as_os_str())
-            .expect_err("should fail when file already exists");
+        let err =
+            open_trace_file(path.as_os_str()).expect_err("should fail when file already exists");
 
         assert!(
             matches!(err, TraceInitError::AlreadyExists { .. }),
@@ -232,8 +236,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent").join("trace.jsonl");
 
-        let err = open_trace_file(path.as_os_str())
-            .expect_err("should fail for missing parent dir");
+        let err =
+            open_trace_file(path.as_os_str()).expect_err("should fail for missing parent dir");
 
         assert!(
             matches!(err, TraceInitError::Create { .. }),

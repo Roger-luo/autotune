@@ -127,7 +127,15 @@ Use sparingly. The user replies naturally to whatever you write.
 ```
 - `<adaptor>`: how to extract metrics from the command output.
   - `<type>regex</type>` + one or more `<pattern>` children, each with `<name>` and `<regex>` (the regex must have one capture group; wrap in CDATA).
-  - `<type>criterion</type>` + `<measure-name>`: parses Criterion's `estimates.json` for the named benchmark. **Prefer this over regex whenever the project uses Criterion.** The adaptor reads `target/criterion/{{measure-name}}/new/estimates.json` and produces three metrics: `mean`, `median`, `std_dev` (all in nanoseconds for time benchmarks). `<measure-name>` is the Criterion benchmark group path, e.g. `sort/random` if Criterion stores results under `target/criterion/sort/random/`. To discover available names, explore `benches/` source files for `criterion_group!` / `Criterion::default()` calls, or list `target/criterion/` if it already exists. The measure `<command>` should be `cargo bench --bench <bench-name>` (or plain `cargo bench` to run all). **Direction for time metrics is always `Minimize`.** Full example:
+  - `<type>criterion</type>` + one or more `<benchmark>` children: reads Criterion's `estimates.json` files after the bench run finishes. **Prefer this over regex whenever the project uses Criterion.** Each `<benchmark>` has:
+    - `<name>`: the metric name autotune will track (e.g. `sort_mean_ns`)
+    - `<group>`: the Criterion benchmark group path (e.g. `sort/random`) — must match the directory under `target/criterion/`; the adaptor reads `target/criterion/<group>/new/estimates.json`
+    - `<stat>` (optional, default `mean`): one of `mean`, `median`, `std_dev`
+    - **Direction for time metrics is always `Minimize`.**
+    - To discover group names: use `Grep` to search `benches/` files for `criterion_group!`, `b.iter`, or `c.bench_function` calls, or list `target/criterion/` if it already exists. The group path in `target/criterion/` mirrors the group name passed to `criterion_group!` or `Criterion::default().bench_function("group/name", ...)`.
+    - One `<measure>` block can hold many `<benchmark>` entries — there is no need to create a separate measure per benchmark.
+
+    Full example:
     ```xml
     <measure>
       <name>sort_bench</name>
@@ -140,7 +148,15 @@ Use sparingly. The user replies naturally to whatever you write.
       <timeout>300</timeout>
       <adaptor>
         <type>criterion</type>
-        <measure-name>sort/random</measure-name>
+        <benchmark>
+          <name>sort_random_mean_ns</name>
+          <group>sort/random</group>
+          <stat>mean</stat>
+        </benchmark>
+        <benchmark>
+          <name>sort_sorted_mean_ns</name>
+          <group>sort/sorted</group>
+        </benchmark>
       </adaptor>
     </measure>
     ```

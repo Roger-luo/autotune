@@ -194,6 +194,14 @@ fn validate_test(test: &TestConfig) -> FragmentOutcome {
 }
 
 fn validate_measure(measure: &MeasureConfig, acc: &ConfigAccumulator) -> FragmentOutcome {
+    // Reject duplicate measure names before any other check.
+    if acc.measures.iter().any(|m| m.name == measure.name) {
+        return FragmentOutcome::Rejected(format!(
+            "a measure named '{}' already exists; re-emit with a different name or omit the duplicate",
+            measure.name
+        ));
+    }
+
     match &measure.adaptor {
         AdaptorConfig::Judge { .. } => {
             if acc.pending_judge.is_some() {
@@ -245,11 +253,30 @@ fn validate_measure(measure: &MeasureConfig, acc: &ConfigAccumulator) -> Fragmen
 }
 
 fn validate_score(score: &ScoreConfig, acc: &ConfigAccumulator) -> FragmentOutcome {
-    let metric_names: std::collections::HashSet<String> = acc
+    let declared_names: std::collections::HashSet<String> = acc
         .measures
         .iter()
         .flat_map(|b| adaptor_metric_names(&b.adaptor))
         .collect();
+
+    // Script adaptors produce metrics whose names are only known at runtime.
+    // When any script adaptor is present, skip the static name check — the
+    // agent is responsible for matching what the script actually prints.
+    let has_script_adaptor = acc
+        .measures
+        .iter()
+        .any(|m| matches!(m.adaptor, AdaptorConfig::Script { .. }));
+
+    let check_name = |name: &str| -> Option<FragmentOutcome> {
+        if has_script_adaptor || declared_names.contains(name) {
+            None
+        } else {
+            Some(FragmentOutcome::Rejected(format!(
+                "metric '{}' not produced by any measure adaptor",
+                name
+            )))
+        }
+    };
 
     match score {
         ScoreConfig::WeightedSum {
@@ -257,29 +284,20 @@ fn validate_score(score: &ScoreConfig, acc: &ConfigAccumulator) -> FragmentOutco
             guardrail_metrics,
         } => {
             for pm in primary_metrics {
-                if !metric_names.contains(&pm.name) {
-                    return FragmentOutcome::Rejected(format!(
-                        "primary metric '{}' not produced by any measure adaptor",
-                        pm.name
-                    ));
+                if let Some(err) = check_name(&pm.name) {
+                    return err;
                 }
             }
             for gm in guardrail_metrics {
-                if !metric_names.contains(&gm.name) {
-                    return FragmentOutcome::Rejected(format!(
-                        "guardrail metric '{}' not produced by any measure adaptor",
-                        gm.name
-                    ));
+                if let Some(err) = check_name(&gm.name) {
+                    return err;
                 }
             }
         }
         ScoreConfig::Threshold { conditions } => {
             for c in conditions {
-                if !metric_names.contains(&c.metric) {
-                    return FragmentOutcome::Rejected(format!(
-                        "threshold metric '{}' not produced by any measure adaptor",
-                        c.metric
-                    ));
+                if let Some(err) = check_name(&c.metric) {
+                    return err;
                 }
             }
         }
@@ -757,6 +775,10 @@ fn run_init_inner(
                         }
                         // Empty enter → re-prompt like a REPL
                     };
+                    autotune_agent::trace::record(
+                        "init.user_input",
+                        serde_json::json!({"prompt": text, "value": input}),
+                    );
                     user_reply = Some(input);
                 }
                 AgentFragment::Question {
@@ -776,6 +798,10 @@ fn run_init_inner(
                             .prompt_select(&text, &options, allow_free_response)
                             .map_err(map_io)?
                     };
+                    autotune_agent::trace::record(
+                        "init.user_input",
+                        serde_json::json!({"prompt": text, "value": input, "options": options.iter().map(|o| &o.key).collect::<Vec<_>>()}),
+                    );
                     user_reply = Some(input);
                 }
                 AgentFragment::Task(task) => match validate_task(&task) {
@@ -982,6 +1008,10 @@ fn run_init_inner(
         // If the config is now complete, move to approval/validation flow.
         if acc.is_complete() && rejection_lines.is_empty() {
             let preview = acc.assemble_preview();
+            autotune_agent::trace::record(
+                "init.config_preview",
+                serde_json::json!({"toml": preview}),
+            );
             let display = format!("All required sections collected. Proposed config:\n\n{preview}");
             let approved = user_input.prompt_approve(&display).map_err(map_io)?;
             autotune_agent::trace::record(

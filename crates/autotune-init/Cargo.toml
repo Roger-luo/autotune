@@ -12,6 +12,7 @@ toml = "1"
 crossterm = "0.29"
 ctrlc = "3"
 dialoguer = "0.12"
+rustyline = "14"
 globset = "0.4"
 
 [dev-dependencies]

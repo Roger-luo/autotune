@@ -194,9 +194,12 @@ fn scenario_init_creates_trace_file_with_init_start() {
     assert!(trace_path.exists(), "trace file should be created");
 
     let content = std::fs::read_to_string(&trace_path).unwrap();
-    let first_line = content.lines().next().expect("trace file should not be empty");
-    let record: serde_json::Value = serde_json::from_str(first_line)
-        .expect("first trace line should be valid JSON");
+    let first_line = content
+        .lines()
+        .next()
+        .expect("trace file should not be empty");
+    let record: serde_json::Value =
+        serde_json::from_str(first_line).expect("first trace line should be valid JSON");
     assert_eq!(
         record["category"], "init.start",
         "first trace record should be init.start, got: {record}"
@@ -230,7 +233,10 @@ fn scenario_init_errors_when_trace_file_already_exists() {
         "error message should mention the conflict: {stderr}"
     );
     // Pre-existing content must be untouched.
-    assert_eq!(std::fs::read_to_string(&trace_path).unwrap(), "old content\n");
+    assert_eq!(
+        std::fs::read_to_string(&trace_path).unwrap(),
+        "old content\n"
+    );
 }
 
 #[test]
@@ -548,15 +554,17 @@ fn scenario_pty_free_text_input() {
     session.expect("What metric").unwrap();
     session.expect("Type your own answer").unwrap();
 
-    // Navigate to "Type your own answer..." (last option)
-    for _ in 0..5 {
+    // Navigate to "Type your own answer..." (index 4, last of 5 items).
+    // The first question has 4 real options + 1 free-text sentinel = 5 items
+    // (indices 0–4). Down×4 lands on index 4; Down×5 would wrap back to 0.
+    for _ in 0..4 {
         session.send(b"\x1b[B").unwrap(); // Down
     }
-    // Press Enter to activate text input
+    // Press Enter to activate free-text input
     session.send(b"\r").unwrap();
 
-    // Type a custom answer
-    std::thread::sleep(Duration::from_millis(100));
+    // Wait for the dialoguer::Input prompt then type a custom answer.
+    session.expect("Type your answer").unwrap();
     session.send_line("memory usage").unwrap();
 
     // Wait for second question
