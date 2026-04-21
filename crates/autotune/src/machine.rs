@@ -1301,9 +1301,8 @@ fn record_crash(state: &mut TaskState, store: &TaskStore) -> Result<()> {
         autotune_git::repo_root(store.root()).unwrap_or_else(|_| store.root().to_path_buf());
     let _ = autotune_git::remove_worktree(&repo_root, &approach.worktree_path);
 
-    state.current_iteration += 1;
     state.current_approach = None;
-    state.current_phase = Phase::Planning;
+    state.current_phase = Phase::Recorded;
     store.save_state(state)?;
     Ok(())
 }
@@ -1337,7 +1336,6 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
         autotune_git::repo_root(store.root()).unwrap_or_else(|_| store.root().to_path_buf());
     let _ = autotune_git::remove_worktree(&repo_root, &approach.worktree_path);
 
-    state.current_iteration += 1;
     state.current_approach = None;
     state.current_phase = Phase::Recorded;
     store.save_state(state)?;
@@ -1793,7 +1791,7 @@ mod tests {
 
         assert_eq!(state.current_phase, Phase::Recorded);
         assert!(state.current_approach.is_none());
-        assert_eq!(state.current_iteration, 5);
+        assert_eq!(state.current_iteration, 4);
         let ledger = store.load_ledger().unwrap();
         assert_eq!(ledger.len(), 1);
         assert_eq!(ledger[0].status, IterationStatus::Discarded);
@@ -1926,7 +1924,7 @@ mod tests {
 
         assert_eq!(state.current_phase, Phase::Recorded);
         assert!(state.current_approach.is_none());
-        assert_eq!(state.current_iteration, 7);
+        assert_eq!(state.current_iteration, 6);
         let saved_metrics: HashMap<String, f64> = serde_json::from_str(
             &std::fs::read_to_string(store.iteration_dir(6, "test-approach").join("metrics.json"))
                 .unwrap(),
@@ -2027,7 +2025,7 @@ mod tests {
 
         assert_eq!(state.current_phase, Phase::Recorded);
         assert!(state.current_approach.is_none());
-        assert_eq!(state.current_iteration, 6);
+        assert_eq!(state.current_iteration, 5);
         let ledger = store.load_ledger().unwrap();
         assert_eq!(ledger[0].status, IterationStatus::Discarded);
         assert_eq!(
@@ -2049,8 +2047,8 @@ mod tests {
 
         record_crash(&mut state, &store).unwrap();
 
-        assert_eq!(state.current_phase, Phase::Planning);
-        assert_eq!(state.current_iteration, 8);
+        assert_eq!(state.current_phase, Phase::Recorded);
+        assert_eq!(state.current_iteration, 7);
         assert!(state.current_approach.is_none());
         let ledger = store.load_ledger().unwrap();
         assert_eq!(ledger[0].status, IterationStatus::Crash);
@@ -2077,7 +2075,7 @@ mod tests {
         record_discard(&mut state, &store, "regressed badly").unwrap();
 
         assert_eq!(state.current_phase, Phase::Recorded);
-        assert_eq!(state.current_iteration, 10);
+        assert_eq!(state.current_iteration, 9);
         assert!(state.current_approach.is_none());
         let ledger = store.load_ledger().unwrap();
         assert_eq!(ledger[0].status, IterationStatus::Discarded);
