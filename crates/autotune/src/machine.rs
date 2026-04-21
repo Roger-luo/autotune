@@ -376,7 +376,7 @@ fn run_planning(
     );
     println!(
         "[autotune] created worktree at {} on branch '{}'",
-        worktree_path.display(),
+        worktree_path.strip_prefix(&repo_root).unwrap_or(&worktree_path).display(),
         branch_name
     );
 

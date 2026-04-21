@@ -54,6 +54,15 @@ fn main() -> Result<()> {
     }
 }
 
+/// Display `path` relative to `root` if it is inside `root`; otherwise show
+/// the full path. Never panics — falls back to the full path on any error.
+fn rel(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
 fn find_repo_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("failed to get current directory")?;
     autotune_git::repo_root(&cwd).context("not in a git repository")
@@ -62,7 +71,7 @@ fn find_repo_root() -> Result<PathBuf> {
 fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
     let config_path = repo_root.join(".autotune.toml");
     AutotuneConfig::load(&config_path)
-        .with_context(|| format!("failed to load config from {}", config_path.display()))
+        .with_context(|| format!("failed to load config from {}", rel(&config_path, repo_root)))
 }
 
 fn global_user_config_path() -> Result<PathBuf> {
@@ -132,7 +141,7 @@ fn prepare_run_task_dir(repo_root: &Path, config: &mut AutotuneConfig) -> Result
         if !task_dir.join("state.json").exists() {
             println!(
                 "[autotune] removing incomplete task state at {}",
-                task_dir.display()
+                rel(&task_dir, repo_root)
             );
             std::fs::remove_dir_all(&task_dir)
                 .context("failed to remove incomplete task directory")?;
@@ -690,7 +699,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         research_model.as_deref().unwrap_or("default"),
     );
     let research_prompt =
-        build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files);
+        build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files, &repo_root);
 
     let mut research_config = research_agent_session_config(&config, &repo_root);
     research_config.prompt = research_prompt;
@@ -788,7 +797,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     );
     println!("{status_line}");
     println!("{handover_line}");
-    println!("[autotune] results at: {}", task_dir.display());
+    println!("[autotune] results at: {}", rel(&task_dir, &repo_root));
 
     Ok(())
 }
@@ -804,7 +813,7 @@ fn cmd_resume(
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
     let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
+        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
 
     // Load frozen config from snapshot
     let config_snapshot = store
@@ -1017,6 +1026,7 @@ fn build_research_agent_prompt(
     config: &autotune_config::AutotuneConfig,
     baseline_metrics: &std::collections::HashMap<String, f64>,
     baseline_output_files: &[std::path::PathBuf],
+    repo_root: &Path,
 ) -> String {
     use std::fmt::Write as _;
 
@@ -1204,7 +1214,7 @@ fn build_research_agent_prompt(
              commands — read the captured output instead.\n\n",
         );
         for path in baseline_output_files {
-            writeln!(p, "- `{}`", path.display()).ok();
+            writeln!(p, "- `{}`", rel(path, repo_root)).ok();
         }
     }
 
@@ -1780,7 +1790,7 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
     let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
+        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
 
     // Load frozen config from snapshot
     let config_snapshot = store
@@ -1860,7 +1870,7 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
     let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
+        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
 
     let state = store.load_state().context("failed to load state")?;
     let ledger = store.load_ledger().context("failed to load ledger")?;
@@ -1898,7 +1908,7 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
     let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
+        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
 
     let state = store.load_state().context("failed to load task state")?;
     let advancing_branch = &state.advancing_branch;
@@ -1922,7 +1932,7 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
             {
                 eprintln!(
                     "[autotune] warning: could not remove worktree at {}: {}",
-                    wt_path.display(),
+                    rel(&wt_path, &repo_root),
                     e
                 );
             }
@@ -2719,7 +2729,7 @@ reasoning_effort = "low"
         ];
 
         let prompt =
-            build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files);
+            build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files, Path::new(""));
 
         assert!(prompt.contains("- Name: coverage-task"));
         assert!(prompt.contains("- Description: Improve line coverage"));
@@ -2767,7 +2777,7 @@ reasoning_effort = "low"
             }],
         };
 
-        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[]);
+        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[], Path::new(""));
 
         assert!(prompt.contains("- (none configured)"));
         assert!(!prompt.contains("Denied globs"));
@@ -2780,7 +2790,7 @@ reasoning_effort = "low"
 
     #[test]
     fn build_research_agent_prompt_forbids_test_edits_by_default() {
-        let prompt = build_research_agent_prompt(&sample_config(), &HashMap::new(), &[]);
+        let prompt = build_research_agent_prompt(&sample_config(), &HashMap::new(), &[], Path::new(""));
 
         assert!(prompt.contains("must not modify test files"));
         assert!(!prompt.contains("may modify test files"));
@@ -2791,7 +2801,7 @@ reasoning_effort = "low"
         let mut config = sample_config();
         config.test[0].allow_test_edits = true;
 
-        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[]);
+        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[], Path::new(""));
 
         assert!(prompt.contains("may modify test files"));
         assert!(!prompt.contains("must not modify test files"));
@@ -3240,10 +3250,12 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
 
         let err = load_config(repo.path()).unwrap_err();
 
-        assert!(err.to_string().contains(&format!(
-            "failed to load config from {}",
-            repo.path().join(".autotune.toml").display()
-        )));
+        // The error shows the relative path (.autotune.toml) since config is inside the project root.
+        assert!(
+            err.to_string()
+                .contains("failed to load config from .autotune.toml"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
