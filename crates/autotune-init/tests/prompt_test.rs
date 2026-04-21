@@ -34,3 +34,24 @@ fn prompt_mentions_multi_fragment_and_stop_criteria() {
     assert!(prompt.contains("multiple fragments"));
     assert!(prompt.contains("stop criteria"));
 }
+
+#[test]
+fn prompt_documents_judge_adaptor() {
+    let prompt = build_init_prompt(Path::new("/repo"));
+    assert!(
+        prompt.contains("judge"),
+        "prompt should mention judge adaptor"
+    );
+    assert!(
+        prompt.contains("<rubric>"),
+        "prompt should document <rubric> fragment"
+    );
+    assert!(
+        prompt.contains("rubrics-done"),
+        "prompt should document rubrics-done"
+    );
+    assert!(
+        prompt.contains("<persona>"),
+        "prompt should document persona field"
+    );
+}

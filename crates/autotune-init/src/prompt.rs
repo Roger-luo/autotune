@@ -129,6 +129,7 @@ Use sparingly. The user replies naturally to whatever you write.
   - `<type>regex</type>` + one or more `<pattern>` children, each with `<name>` and `<regex>` (the regex must have one capture group; wrap in CDATA).
   - `<type>criterion</type>` + `<measure-name>` to parse `cargo bench` / criterion output.
   - `<type>script</type>` + `<command><segment>...</segment>...</command>` to pipe measure output through an external script that prints `metric_name=value` lines.
+  - `<type>judge</type>` + `<persona>` for an LLM-based rubric evaluator. The measure `<command>` is optional (stdout/stderr become judge context when present). Do NOT put rubrics in the `<adaptor>` — propose them via `<rubric>` fragments after the measure is accepted (see "Judge Rubric Design" below).
 
 #### `<score>` — required
 ```xml
@@ -162,6 +163,34 @@ Use sparingly. The user replies naturally to whatever you write.
 </agent>
 ```
 
+#### `<rubric>` — propose one rubric for the pending judge measure
+
+Only emit after a `<measure>` with `<adaptor><type>judge</type>` has been accepted. Propose one rubric at a time. The CLI shows it to the user and collects Accept / Reject / Modify. Wait for CLI feedback before proposing the next rubric.
+
+```xml
+<rubric>
+  <id>correctness</id>
+  <title>Correctness</title>
+  <instruction><![CDATA[Does the implementation produce correct results for all valid inputs, including edge cases?]]></instruction>
+  <score-range><min>1</min><max>5</max></score-range>
+</rubric>
+```
+
+- `<id>`: short snake_case identifier — becomes the metric name in scoring (required).
+- `<title>`: human-readable label (required).
+- `<instruction>`: what the evaluator assesses — be specific and measurable (required, use CDATA).
+- `<score-range>`: integer min and max (required; min must be less than max).
+
+#### `<rubrics-done></rubrics-done>` — finalize the pending judge measure
+
+After the user is satisfied with the proposed rubrics, emit:
+
+```xml
+<rubrics-done></rubrics-done>
+```
+
+The CLI assembles the judge measure from all approved rubrics and adds it to the config. Emit `<score>` immediately after, using only the approved rubric IDs (the CLI reports which were accepted and which were rejected).
+
 ## How the conversation flows
 
 1. The user has already stated their goal (see "User Goal" below). Explore the codebase with your read tools.
@@ -170,6 +199,19 @@ Use sparingly. The user replies naturally to whatever you write.
 4. Emit fragments in any order you like. Prefer emitting the whole config in one turn once you have all the information.
 5. When the CLI reports a validation error, fix it and re-emit just the affected fragment(s).
 6. After all required sections (`<task>`, `<paths>`, at least one `<measure>`, `<score>`) are accepted, the CLI will show a preview and ask the user for approval.
+7. **If the user wants LLM judge evaluation, follow this 5-step rubric interview:**
+   1. **Interview** — Emit a `<question>` asking which quality dimensions matter for their codebase (allow free response). Examples: correctness, performance, readability, safety, API ergonomics.
+   2. **Emit judge measure header** — Emit `<measure>` with `<adaptor><type>judge</type><persona>...</persona></adaptor>` and an appropriate `<name>`. Use the user's goal to craft the persona. Do NOT include rubrics here.
+   3. **Propose rubrics one at a time** — For each dimension identified, emit one `<rubric>` and wait for CLI feedback (the feedback line begins with "Rubric '...'"). Propose 3–5 rubrics total. If the user modifies an instruction, incorporate the change into subsequent rubrics if relevant.
+   4. **Check satisfaction** — After proposing all rubrics, emit a `<question>`:
+      ```xml
+      <question>
+        <text>Are these rubrics sufficient or would you like to add more dimensions?</text>
+        <option><key>finalize</key><label>These look good, finalize</label></option>
+        <option><key>more</key><label>Add more dimensions</label></option>
+      </question>
+      ```
+   5. **Finalize** — If the user chooses finalize, emit `<rubrics-done></rubrics-done>` followed immediately by `<score>` listing only the approved rubric IDs (use only IDs reported as "accepted" or "modified" in the CLI feedback — skip rejected ones).
 
 ## Critical rules
 
