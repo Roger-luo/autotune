@@ -424,6 +424,38 @@ pub fn rebase_abort(dir: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Delete a local branch (force delete — equivalent to `git branch -D`).
+pub fn delete_branch(dir: &Path, branch_name: &str) -> Result<(), GitError> {
+    git(
+        dir,
+        &[
+            OsStr::new("branch"),
+            OsStr::new("-D"),
+            OsStr::new(branch_name),
+        ],
+    )?;
+    Ok(())
+}
+
+/// List all local branches whose ref starts with `refs/heads/<prefix>`.
+pub fn list_branches_with_prefix(dir: &Path, prefix: &str) -> Result<Vec<String>, GitError> {
+    let pattern = format!("refs/heads/{prefix}*");
+    let output = git(
+        dir,
+        &[
+            OsStr::new("for-each-ref"),
+            OsStr::new("--format=%(refname:short)"),
+            OsStr::new(&pattern),
+        ],
+    )?;
+    Ok(output
+        .stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(String::from)
+        .collect())
+}
+
 /// Fast-forward `branch` to the current HEAD. Fails if not a fast-forward.
 pub fn merge_ff_only(dir: &Path, branch: &str) -> Result<(), GitError> {
     git(
@@ -792,6 +824,35 @@ mod tests {
         assert_eq!(
             sha_after, feature_sha,
             "main should point to the feature commit"
+        );
+    }
+
+    #[test]
+    fn delete_branch_removes_local_branch() {
+        let dir = make_repo();
+        create_branch(dir.path(), "to-delete").unwrap();
+        assert!(branch_exists(dir.path(), "to-delete").unwrap());
+        delete_branch(dir.path(), "to-delete").unwrap();
+        assert!(!branch_exists(dir.path(), "to-delete").unwrap());
+    }
+
+    #[test]
+    fn list_branches_with_prefix_returns_matching_branches() {
+        let dir = make_repo();
+        create_branch(dir.path(), "autotune/my-task/approach-a").unwrap();
+        create_branch(dir.path(), "autotune/my-task/approach-b").unwrap();
+        create_branch(dir.path(), "autotune/other-task/approach-c").unwrap();
+
+        let branches =
+            list_branches_with_prefix(dir.path(), "autotune/my-task/").unwrap();
+        let mut branches = branches;
+        branches.sort();
+        assert_eq!(
+            branches,
+            vec![
+                "autotune/my-task/approach-a".to_string(),
+                "autotune/my-task/approach-b".to_string(),
+            ]
         );
     }
 }

@@ -46,6 +46,7 @@ fn main() -> Result<()> {
         Commands::Measure { task } => cmd_step(task, Phase::Measuring),
         Commands::Record { task } => cmd_step(task, Phase::Scoring),
         Commands::Apply { task } => cmd_step(task, Phase::Integrating),
+        Commands::Ff { task } => cmd_ff(task),
         Commands::Config(sub) => cmd_config(sub),
         Commands::Export { task, output } => cmd_export(task, output),
     }
@@ -1739,6 +1740,93 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     Ok(())
 }
 
+fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
+    let repo_root = find_repo_root()?;
+
+    let task_name = match task_name_override {
+        Some(name) => name,
+        None => {
+            let config = load_config(&repo_root)?;
+            config.task.name
+        }
+    };
+
+    let autotune_dir = repo_root.join(".autotune");
+    let task_dir = autotune_dir.join("tasks").join(&task_name);
+
+    let store = TaskStore::open(&task_dir)
+        .with_context(|| format!("task '{}' not found at {}", task_name, task_dir.display()))?;
+
+    let state = store.load_state().context("failed to load task state")?;
+    let advancing_branch = &state.advancing_branch;
+    let canonical_branch = &state.canonical_branch;
+
+    if !autotune_git::branch_exists(&repo_root, advancing_branch)
+        .context("failed to check advancing branch")?
+    {
+        bail!(
+            "advancing branch '{}' does not exist",
+            advancing_branch
+        );
+    }
+
+    // Remove all task worktrees so we can check out and delete their branches.
+    let worktree_parent = task_dir.join("worktrees");
+    if worktree_parent.exists() {
+        for entry in std::fs::read_dir(&worktree_parent)
+            .context("failed to read task worktrees directory")?
+        {
+            let wt_path = entry?.path();
+            if wt_path.is_dir() {
+                if let Err(e) = autotune_git::remove_worktree(&repo_root, &wt_path) {
+                    eprintln!(
+                        "[autotune] warning: could not remove worktree at {}: {}",
+                        wt_path.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    // FF merge advancing branch into canonical.
+    autotune_git::checkout(&repo_root, canonical_branch)
+        .with_context(|| format!("failed to checkout '{canonical_branch}'"))?;
+    autotune_git::merge_ff_only(&repo_root, advancing_branch).with_context(|| {
+        format!(
+            "fast-forward '{advancing_branch}' into '{canonical_branch}' failed — histories may have diverged"
+        )
+    })?;
+    println!(
+        "[autotune] fast-forwarded '{advancing_branch}' → '{canonical_branch}'"
+    );
+
+    // Delete all worktree branches (autotune/<task>/<slug>).
+    let branch_prefix = format!("autotune/{task_name}/");
+    let worktree_branches =
+        autotune_git::list_branches_with_prefix(&repo_root, &branch_prefix)
+            .context("failed to list worktree branches")?;
+    for branch in &worktree_branches {
+        if let Err(e) = autotune_git::delete_branch(&repo_root, branch) {
+            eprintln!("[autotune] warning: could not delete branch '{branch}': {e}");
+        } else {
+            println!("[autotune] deleted branch '{branch}'");
+        }
+    }
+
+    // Delete the advancing branch.
+    if let Err(e) = autotune_git::delete_branch(&repo_root, advancing_branch) {
+        eprintln!(
+            "[autotune] warning: could not delete advancing branch '{advancing_branch}': {e}"
+        );
+    } else {
+        println!("[autotune] deleted advancing branch '{advancing_branch}'");
+    }
+
+    println!("[autotune] task '{task_name}' integrated and cleaned up");
+    Ok(())
+}
+
 fn build_report_json(
     task_name: &str,
     state: &TaskState,
@@ -3194,5 +3282,65 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         let name = next_available_task_name(repo.path(), "demo").unwrap();
 
         assert_eq!(name, "demo-4");
+    }
+
+    #[test]
+    fn cmd_ff_merges_advancing_branch_and_cleans_up() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+
+        write_project_config(repo.path(), "my-task");
+
+        // Create the advancing branch with one commit ahead of main.
+        run_git(repo.path(), &["checkout", "-b", "autotune/my-task-main"]);
+        std::fs::write(repo.path().join("change.txt"), "improvement\n").unwrap();
+        run_git(repo.path(), &["add", "change.txt"]);
+        run_git(repo.path(), &["commit", "-m", "autotune improvement"]);
+        let advancing_sha = {
+            let out = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        // Create a couple of worktree branches (no actual worktrees needed).
+        run_git(repo.path(), &["branch", "autotune/my-task/approach-a"]);
+        run_git(repo.path(), &["branch", "autotune/my-task/approach-b"]);
+
+        run_git(repo.path(), &["checkout", "main"]);
+
+        // Write task fixture with the advancing branch.
+        let mut state = sample_state();
+        state.task_name = "my-task".to_string();
+        state.canonical_branch = "main".to_string();
+        state.advancing_branch = "autotune/my-task-main".to_string();
+        state.current_approach = None;
+        let mut config = sample_config();
+        config.task.name = "my-task".to_string();
+        config.task.canonical_branch = "main".to_string();
+        let store =
+            TaskStore::new(&repo.path().join(".autotune/tasks/my-task")).unwrap();
+        store.save_state(&state).unwrap();
+        store
+            .save_config_snapshot(&toml::to_string_pretty(&config).unwrap())
+            .unwrap();
+
+        cmd_ff(Some("my-task".to_string())).unwrap();
+
+        // main should now point to the advancing commit.
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+        assert_eq!(head_sha, advancing_sha, "main should point to the advancing commit");
+
+        // Advancing branch and worktree branches should be deleted.
+        assert!(!autotune_git::branch_exists(repo.path(), "autotune/my-task-main").unwrap());
+        assert!(!autotune_git::branch_exists(repo.path(), "autotune/my-task/approach-a").unwrap());
+        assert!(!autotune_git::branch_exists(repo.path(), "autotune/my-task/approach-b").unwrap());
     }
 }

@@ -86,6 +86,12 @@ pub enum Commands {
         #[arg(long)]
         task: String,
     },
+    /// Fast-forward canonical branch to the advancing branch, then clean up
+    Ff {
+        /// Task name (defaults to the task name in .autotune.toml)
+        #[arg(long)]
+        task: Option<String>,
+    },
     /// Manage global user config
     #[command(subcommand)]
     Config(ConfigCommands),
