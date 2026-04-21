@@ -56,10 +56,19 @@ pub struct MeasureReport {
     pub metrics: Metrics,
 }
 
+/// Factory that creates a streaming handler for one judge invocation.
+/// Receives a status string; returns an event handler and a finish closure.
+pub type JudgeStreamFactory =
+    dyn Fn(&str) -> (autotune_agent::EventHandler, Box<dyn FnOnce()>) + Send + Sync;
+
 /// Carries the judge agent and its config into the measuring phase.
 pub struct JudgeContext<'a> {
     pub agent: &'a dyn autotune_agent::Agent,
     pub agent_config: autotune_agent::AgentConfig,
+    /// Optional factory called once per judge invocation. Receives a status
+    /// string and returns an event handler plus a finish closure to call after
+    /// the agent returns (clears ephemeral status lines, flushes buffered text).
+    pub make_stream: Option<Box<JudgeStreamFactory>>,
 }
 
 /// Run a judge measure: optionally run a command, build a subject, call the
@@ -138,15 +147,39 @@ pub fn run_judge_measure(
     let mut agent_cfg = ctx.agent_config.clone();
     agent_cfg.prompt = prompt;
 
+    let model = ctx.agent_config.model.as_deref().unwrap_or("default");
+    println!(
+        "[autotune] judge '{}': model={}",
+        config.name, model
+    );
+
+    let (maybe_handler, maybe_finish) = if let Some(ref factory) = ctx.make_stream {
+        let status = format!("judge '{}' evaluating...", config.name);
+        let (h, f) = factory(&status);
+        (Some(h), Some(f))
+    } else {
+        (None, None)
+    };
+
+    let config_with_events = autotune_agent::AgentConfigWithEvents::new(agent_cfg);
+    let config_with_events = match maybe_handler {
+        Some(handler) => config_with_events.with_event_handler(handler),
+        None => config_with_events,
+    };
+
     let response = ctx
         .agent
-        .spawn(&agent_cfg)
+        .spawn_streaming(config_with_events)
         .map_err(|e| MeasureError::Extraction {
             name: config.name.clone(),
             source: autotune_adaptor::AdaptorError::Io {
                 source: std::io::Error::other(format!("judge agent call failed: {e}")),
             },
         })?;
+
+    if let Some(finish) = maybe_finish {
+        finish();
+    }
 
     let assessments =
         parse_batch_response(&rubrics, &response.text).map_err(|e| MeasureError::Extraction {
@@ -884,6 +917,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
         let ctx = JudgeContext {
             agent: &agent,
             agent_config: fake_agent_config(),
+            make_stream: None,
         };
         let report = run_judge_measure(&config, tmp.path(), "approach-a", 1, &ctx).unwrap();
         assert_eq!(*report.metrics.get("r1").unwrap(), 4.0);
@@ -906,6 +940,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
         let ctx = JudgeContext {
             agent: &agent,
             agent_config: fake_agent_config(),
+            make_stream: None,
         };
         let report = run_judge_measure(&config, tmp.path(), "my-approach", 2, &ctx).unwrap();
         assert_eq!(*report.metrics.get("r1").unwrap(), 5.0);
@@ -922,6 +957,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
         let ctx = JudgeContext {
             agent: &agent,
             agent_config: fake_agent_config(),
+            make_stream: None,
         };
         let (metrics, reports) =
             run_all_measures_with_output(&configs, tmp.path(), "approach", 1, Some(&ctx)).unwrap();

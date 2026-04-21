@@ -138,18 +138,13 @@ pub struct RubricConfig {
     pub guidance: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CriterionStat {
+    #[default]
     Mean,
     Median,
     StdDev,
-}
-
-impl Default for CriterionStat {
-    fn default() -> Self {
-        Self::Mean
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -53,6 +53,11 @@ impl Stream {
         Self::new(status, SuppressMode::None)
     }
 
+    /// Stream for the judge agent. Buffers markdown; no protocol payload to suppress.
+    pub fn judge(status: &str) -> Self {
+        Self::new(status, SuppressMode::None)
+    }
+
     fn new(status: &str, suppress: SuppressMode) -> Self {
         // Show the ephemeral dim status line immediately.
         let mut stderr = std::io::stderr();

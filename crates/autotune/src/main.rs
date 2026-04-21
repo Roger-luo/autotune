@@ -389,7 +389,8 @@ fn run_agent_assisted_init(repo_root: &Path) -> Result<InitFlowOutcome> {
             validate_measure_config(&config.measure, &validator_root)
         };
 
-    let terminal_input = autotune_init::TerminalInput;
+    let history_file = repo_root.join(".autotune").join("init_history");
+    let terminal_input = autotune_init::TerminalInput::with_history(history_file);
     match autotune_init::run_init(
         &*agent,
         &global_config,
@@ -626,6 +627,12 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         .map(|a| autotune_benchmark::JudgeContext {
             agent: a.as_ref(),
             agent_config: judge_agent_cfg,
+            make_stream: Some(Box::new(|status: &str| {
+                let stream = autotune::stream_ui::Stream::judge(status);
+                let handler = stream.handler();
+                let finish: Box<dyn FnOnce()> = Box::new(move || stream.finish());
+                (handler, finish)
+            })),
         });
 
     // Run sanity tests
@@ -850,6 +857,12 @@ fn cmd_resume(
         .map(|a| autotune_benchmark::JudgeContext {
             agent: a.as_ref(),
             agent_config: judge_agent_cfg,
+            make_stream: Some(Box::new(|status: &str| {
+                let stream = autotune::stream_ui::Stream::judge(status);
+                let handler = stream.handler();
+                let finish: Box<dyn FnOnce()> = Box::new(move || stream.finish());
+                (handler, finish)
+            })),
         });
 
     // Run state machine
@@ -1690,6 +1703,12 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
         .map(|a| autotune_benchmark::JudgeContext {
             agent: a.as_ref(),
             agent_config: judge_agent_cfg,
+            make_stream: Some(Box::new(|status: &str| {
+                let stream = autotune::stream_ui::Stream::judge(status);
+                let handler = stream.handler();
+                let finish: Box<dyn FnOnce()> = Box::new(move || stream.finish());
+                (handler, finish)
+            })),
         });
 
     machine::run_single_phase(

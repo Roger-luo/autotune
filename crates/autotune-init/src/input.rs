@@ -1,5 +1,6 @@
 use autotune_agent::protocol::QuestionOption;
 use std::io::{self, IsTerminal, Write};
+use std::path::PathBuf;
 
 /// Format a question option for display: "label — description" or just "label".
 fn format_option(opt: &QuestionOption) -> String {
@@ -65,9 +66,24 @@ pub trait UserInput {
 /// Interactive terminal input.
 /// Uses dialoguer arrow-key selection when stdin is a TTY.
 /// Falls back to line-based input when stdin is piped.
-pub struct TerminalInput;
+///
+/// When `history_file` is set, `prompt_text` saves and restores history across
+/// sessions using rustyline (arrow-key navigation + Ctrl-R reverse search).
+pub struct TerminalInput {
+    history_file: Option<PathBuf>,
+}
 
 impl TerminalInput {
+    pub fn new() -> Self {
+        TerminalInput { history_file: None }
+    }
+
+    pub fn with_history(history_file: PathBuf) -> Self {
+        TerminalInput {
+            history_file: Some(history_file),
+        }
+    }
+
     fn read_line() -> Result<String, io::Error> {
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
@@ -93,16 +109,46 @@ impl TerminalInput {
     }
 }
 
+impl Default for TerminalInput {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UserInput for TerminalInput {
     fn prompt_text(&self, message: &str) -> Result<String, io::Error> {
         println!("\n{}", message);
         if io::stdin().is_terminal() {
             let _terminal_guard = autotune_agent::terminal::Guard::new();
-            dialoguer::Input::<String>::new()
-                .with_prompt(">")
-                .allow_empty(true)
-                .interact_text()
-                .map_err(io::Error::other)
+            if let Some(ref history_file) = self.history_file {
+                let mut editor = rustyline::DefaultEditor::new()
+                    .map_err(io::Error::other)?;
+                let _ = editor.load_history(history_file);
+                match editor.readline("> ") {
+                    Ok(line) => {
+                        let text = line.trim().to_string();
+                        if !text.is_empty() {
+                            let _ = editor.add_history_entry(&text);
+                            if let Some(parent) = history_file.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            let _ = editor.save_history(history_file);
+                        }
+                        Ok(text)
+                    }
+                    Err(rustyline::error::ReadlineError::Eof)
+                    | Err(rustyline::error::ReadlineError::Interrupted) => {
+                        Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"))
+                    }
+                    Err(e) => Err(io::Error::other(e)),
+                }
+            } else {
+                dialoguer::Input::<String>::new()
+                    .with_prompt(">")
+                    .allow_empty(true)
+                    .interact_text()
+                    .map_err(io::Error::from)
+            }
         } else {
             print!("> ");
             io::stdout().flush()?;
@@ -126,14 +172,14 @@ impl UserInput for TerminalInput {
                 .items(&items)
                 .default(0)
                 .interact()
-                .map_err(io::Error::other)?;
+                .map_err(io::Error::from)?;
 
             match resolve_select_outcome(selection, options, allow_free_response) {
                 SelectOutcome::PromptForText => {
                     let text = dialoguer::Input::<String>::new()
                         .with_prompt("Type your answer")
                         .interact_text()
-                        .map_err(io::Error::other)?;
+                        .map_err(io::Error::from)?;
                     Ok(text)
                 }
                 SelectOutcome::SelectedKey(key) => Ok(key),
@@ -164,7 +210,7 @@ impl UserInput for TerminalInput {
                 .with_prompt("Approve this config?")
                 .default(true)
                 .interact()
-                .map_err(io::Error::other)?;
+                .map_err(io::Error::from)?;
             Ok(confirmed)
         } else {
             // Piped: read yes/no from stdin
