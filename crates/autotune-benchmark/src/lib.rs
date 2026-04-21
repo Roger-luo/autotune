@@ -12,7 +12,7 @@ use autotune_judge::{
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -335,6 +335,10 @@ fn run_command_with_timeout(
     config: &MeasureConfig,
     working_dir: &Path,
 ) -> Result<Output, MeasureError> {
+    use std::collections::VecDeque;
+    use std::io::{IsTerminal, Write};
+    use std::sync::{Arc, Mutex};
+
     let command = config.command.as_deref().ok_or_else(|| MeasureError::Io {
         name: config.name.clone(),
         source: std::io::Error::other("measure command is required but not set"),
@@ -359,17 +363,84 @@ fn run_command_with_timeout(
         name: config.name.clone(),
         source,
     })?;
-    let stdout_handle = spawn_stdout_reader(child.stdout.take());
-    let stderr_handle = spawn_stderr_reader(child.stderr.take());
 
-    match wait_for_child(config, &mut child) {
+    let is_tty = std::io::stderr().is_terminal();
+
+    // Shared tail: last 3 lines + how many we've drawn.
+    struct Tail {
+        lines: VecDeque<String>,
+        rendered: usize,
+    }
+    let tail: Arc<Mutex<Tail>> = Arc::new(Mutex::new(Tail {
+        lines: VecDeque::new(),
+        rendered: 0,
+    }));
+
+    let redraw = {
+        let tail = tail.clone();
+        move || {
+            if !is_tty {
+                return;
+            }
+            let mut t = tail.lock().unwrap();
+            let mut stderr = std::io::stderr();
+            if t.rendered > 0 {
+                let _ = write!(stderr, "\x1b[{}A\x1b[J", t.rendered);
+            }
+            t.rendered = t.lines.len();
+            for line in &t.lines {
+                let trimmed = if line.len() > 120 { &line[..120] } else { line };
+                let _ = writeln!(stderr, "  \x1b[2m{trimmed}\x1b[0m");
+            }
+            let _ = stderr.flush();
+        }
+    };
+    let redraw2 = redraw.clone();
+
+    let stdout_tail = tail.clone();
+    let stdout_handle = spawn_line_reader(child.stdout.take(), move |line| {
+        {
+            let mut t = stdout_tail.lock().unwrap();
+            t.lines.push_back(line.to_owned());
+            if t.lines.len() > 3 {
+                t.lines.pop_front();
+            }
+        }
+        redraw();
+    });
+
+    let stderr_tail = tail.clone();
+    let stderr_handle = spawn_line_reader(child.stderr.take(), move |line| {
+        {
+            let mut t = stderr_tail.lock().unwrap();
+            t.lines.push_back(line.to_owned());
+            if t.lines.len() > 3 {
+                t.lines.pop_front();
+            }
+        }
+        redraw2();
+    });
+
+    let result = match wait_for_child(config, &mut child) {
         Ok(status) => collect_output(config, status, stdout_handle, stderr_handle),
         Err(err) => {
             let _ = join_reader(config, stdout_handle);
             let _ = join_reader(config, stderr_handle);
             Err(err)
         }
+    };
+
+    // Erase the tail lines.
+    if is_tty {
+        let rendered = tail.lock().unwrap().rendered;
+        if rendered > 0 {
+            let mut stderr = std::io::stderr();
+            let _ = write!(stderr, "\x1b[{}A\x1b[J", rendered);
+            let _ = stderr.flush();
+        }
     }
+
+    result
 }
 
 fn wait_for_child(config: &MeasureConfig, child: &mut Child) -> Result<ExitStatus, MeasureError> {
@@ -413,26 +484,26 @@ fn collect_output(
     })
 }
 
-fn spawn_stdout_reader(
-    stdout: Option<ChildStdout>,
-) -> Option<JoinHandle<std::io::Result<Vec<u8>>>> {
-    stdout.map(spawn_pipe_reader)
-}
-
-fn spawn_stderr_reader(
-    stderr: Option<ChildStderr>,
-) -> Option<JoinHandle<std::io::Result<Vec<u8>>>> {
-    stderr.map(spawn_pipe_reader)
-}
-
-fn spawn_pipe_reader<R>(mut reader: R) -> JoinHandle<std::io::Result<Vec<u8>>>
+fn spawn_line_reader<R, F>(
+    reader: Option<R>,
+    on_line: F,
+) -> Option<JoinHandle<std::io::Result<Vec<u8>>>>
 where
     R: Read + Send + 'static,
+    F: Fn(&str) + Send + 'static,
 {
-    thread::spawn(move || {
-        let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)?;
-        Ok(buffer)
+    use std::io::BufRead;
+    reader.map(|r| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let br = std::io::BufReader::new(r);
+            for line in br.lines().map_while(Result::ok) {
+                buf.extend_from_slice(line.as_bytes());
+                buf.push(b'\n');
+                on_line(&line);
+            }
+            Ok(buf)
+        })
     })
 }
 

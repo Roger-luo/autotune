@@ -1238,12 +1238,124 @@ fn build_research_agent_prompt(
     p
 }
 
+/// Run a command, streaming its combined stdout+stderr to the terminal as a
+/// rolling 3-line dim status tail (only when stderr is a TTY).
+///
+/// Returns `(stdout_bytes, stderr_bytes, exit_status)`.
+fn run_with_live_tail(
+    program: &str,
+    args: &[String],
+    working_dir: &Path,
+) -> Result<(Vec<u8>, Vec<u8>, std::process::ExitStatus), std::io::Error> {
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, IsTerminal, Write};
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex};
+
+    let is_tty = std::io::stderr().is_terminal();
+
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(working_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let child_stdout = child.stdout.take().expect("piped stdout");
+    let child_stderr = child.stderr.take().expect("piped stderr");
+
+    // Shared state: collected bytes + rolling tail of last 3 lines.
+    let stdout_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_buf: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+    // How many dim lines we last rendered (so we can erase them).
+    let rendered_lines: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+
+    let draw_tail = {
+        let tail = tail.clone();
+        let rendered_lines = rendered_lines.clone();
+        move || {
+            if !is_tty {
+                return;
+            }
+            let tail = tail.lock().unwrap();
+            let mut prev = rendered_lines.lock().unwrap();
+            let mut stderr = std::io::stderr();
+            // Erase previously rendered lines.
+            if *prev > 0 {
+                let _ = write!(stderr, "\x1b[{}A\x1b[J", prev);
+            }
+            *prev = tail.len();
+            for line in tail.iter() {
+                let trimmed = if line.len() > 120 { &line[..120] } else { line };
+                let _ = writeln!(stderr, "  \x1b[2m{trimmed}\x1b[0m");
+            }
+            let _ = stderr.flush();
+        }
+    };
+
+    let draw_tail2 = draw_tail.clone();
+
+    let stdout_buf2 = stdout_buf.clone();
+    let tail2 = tail.clone();
+    let stdout_thread = std::thread::spawn(move || {
+        let reader = BufReader::new(child_stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            stdout_buf2.lock().unwrap().extend_from_slice(line.as_bytes());
+            stdout_buf2.lock().unwrap().push(b'\n');
+            {
+                let mut t = tail2.lock().unwrap();
+                t.push_back(line);
+                if t.len() > 3 {
+                    t.pop_front();
+                }
+            }
+            draw_tail();
+        }
+    });
+
+    let stderr_buf2 = stderr_buf.clone();
+    let tail3 = tail.clone();
+    let stderr_thread = std::thread::spawn(move || {
+        let reader = BufReader::new(child_stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            stderr_buf2.lock().unwrap().extend_from_slice(line.as_bytes());
+            stderr_buf2.lock().unwrap().push(b'\n');
+            {
+                let mut t = tail3.lock().unwrap();
+                t.push_back(line);
+                if t.len() > 3 {
+                    t.pop_front();
+                }
+            }
+            draw_tail2();
+        }
+    });
+
+    let status = child.wait()?;
+    stdout_thread.join().ok();
+    stderr_thread.join().ok();
+
+    // Clear the tail lines.
+    if is_tty {
+        let prev = *rendered_lines.lock().unwrap();
+        if prev > 0 {
+            let mut stderr = std::io::stderr();
+            let _ = write!(stderr, "\x1b[{}A\x1b[J", prev);
+            let _ = stderr.flush();
+        }
+    }
+
+    let out = Arc::try_unwrap(stdout_buf).unwrap().into_inner().unwrap();
+    let err = Arc::try_unwrap(stderr_buf).unwrap().into_inner().unwrap();
+    Ok((out, err, status))
+}
+
 fn validate_measure_config(
     measures: &[autotune_config::MeasureConfig],
     working_dir: &Path,
 ) -> Result<std::collections::HashMap<String, f64>, String> {
     use autotune_benchmark::MeasureOutput;
-    use std::process::{Command, Stdio};
 
     let mut all_metrics = std::collections::HashMap::new();
 
@@ -1268,22 +1380,17 @@ fn validate_measure_config(
             .ok_or_else(|| format!("measure '{}' has empty command", measure.name))?;
         let args = &command[1..];
 
-        let output = Command::new(program)
-            .args(args)
-            .current_dir(working_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("failed to run measure '{}': {}", measure.name, e))?;
+        let (stdout_bytes, stderr_bytes, status) =
+            run_with_live_tail(program, args, working_dir)
+                .map_err(|e| format!("failed to run measure '{}': {}", measure.name, e))?;
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if !output.status.success() {
+        if !status.success() {
             return Err(format!(
                 "measure '{}' command failed (exit code {})\n\nstdout:\n{}\n\nstderr:\n{}",
                 measure.name,
-                output.status.code().unwrap_or(-1),
+                status.code().unwrap_or(-1),
                 stdout,
                 stderr,
             ));
