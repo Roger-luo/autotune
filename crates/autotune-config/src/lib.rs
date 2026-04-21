@@ -483,9 +483,8 @@ impl AutotuneConfig {
             } => {
                 if primary_metrics.is_empty() {
                     return Err(ConfigError::Validation {
-                        message:
-                            "weighted_sum score must contain at least one primary metric"
-                                .to_string(),
+                        message: "weighted_sum score must contain at least one primary metric"
+                            .to_string(),
                     });
                 }
                 for pm in primary_metrics {
@@ -512,8 +511,7 @@ impl AutotuneConfig {
             ScoreConfig::Threshold { conditions } => {
                 if conditions.is_empty() {
                     return Err(ConfigError::Validation {
-                        message: "threshold score must contain at least one condition"
-                            .to_string(),
+                        message: "threshold score must contain at least one condition".to_string(),
                     });
                 }
                 for c in conditions {

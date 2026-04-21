@@ -28,7 +28,10 @@ impl CriterionAdaptor {
     }
 
     fn estimates_path(&self, group: &str) -> PathBuf {
-        self.criterion_dir.join(group).join("new").join("estimates.json")
+        self.criterion_dir
+            .join(group)
+            .join("new")
+            .join("estimates.json")
     }
 }
 
@@ -72,7 +75,10 @@ mod tests {
     use crate::MeasureOutput;
 
     fn dummy_output() -> MeasureOutput {
-        MeasureOutput { stdout: String::new(), stderr: String::new() }
+        MeasureOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+        }
     }
 
     fn write_estimates(dir: &std::path::Path, group: &str, mean: f64, median: f64, std_dev: f64) {

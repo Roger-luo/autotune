@@ -148,10 +148,7 @@ pub fn run_judge_measure(
     agent_cfg.prompt = prompt;
 
     let model = ctx.agent_config.model.as_deref().unwrap_or("default");
-    println!(
-        "[autotune] judge '{}': model={}",
-        config.name, model
-    );
+    println!("[autotune] judge '{}': model={}", config.name, model);
 
     let (maybe_handler, maybe_finish) = if let Some(ref factory) = ctx.make_stream {
         let status = format!("judge '{}' evaluating...", config.name);
@@ -167,15 +164,15 @@ pub fn run_judge_measure(
         None => config_with_events,
     };
 
-    let response = ctx
-        .agent
-        .spawn_streaming(config_with_events)
-        .map_err(|e| MeasureError::Extraction {
-            name: config.name.clone(),
-            source: autotune_adaptor::AdaptorError::Io {
-                source: std::io::Error::other(format!("judge agent call failed: {e}")),
-            },
-        })?;
+    let response =
+        ctx.agent
+            .spawn_streaming(config_with_events)
+            .map_err(|e| MeasureError::Extraction {
+                name: config.name.clone(),
+                source: autotune_adaptor::AdaptorError::Io {
+                    source: std::io::Error::other(format!("judge agent call failed: {e}")),
+                },
+            })?;
 
     if let Some(finish) = maybe_finish {
         finish();

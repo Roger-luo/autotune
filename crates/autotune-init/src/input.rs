@@ -121,8 +121,7 @@ impl UserInput for TerminalInput {
         if io::stdin().is_terminal() {
             let _terminal_guard = autotune_agent::terminal::Guard::new();
             if let Some(ref history_file) = self.history_file {
-                let mut editor = rustyline::DefaultEditor::new()
-                    .map_err(io::Error::other)?;
+                let mut editor = rustyline::DefaultEditor::new().map_err(io::Error::other)?;
                 let _ = editor.load_history(history_file);
                 match editor.readline("> ") {
                     Ok(line) => {

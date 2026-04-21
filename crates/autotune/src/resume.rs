@@ -54,7 +54,7 @@ pub fn prepare_resume(store: &TaskStore, repo_root: &Path) -> Result<TaskState> 
                     // No commit — clean up worktree and restart planning
                     reset_to_planning(
                         &mut state,
-                        "[resume] implementation incomplete, cleaning up and returning to Planning"
+                        "[resume] implementation incomplete, cleaning up and returning to Planning",
                     );
                     let _ = autotune_git::remove_worktree(repo_root, &worktree_path);
                 }

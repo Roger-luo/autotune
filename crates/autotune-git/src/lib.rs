@@ -843,8 +843,7 @@ mod tests {
         create_branch(dir.path(), "autotune/my-task/approach-b").unwrap();
         create_branch(dir.path(), "autotune/other-task/approach-c").unwrap();
 
-        let branches =
-            list_branches_with_prefix(dir.path(), "autotune/my-task/").unwrap();
+        let branches = list_branches_with_prefix(dir.path(), "autotune/my-task/").unwrap();
         let mut branches = branches;
         branches.sort();
         assert_eq!(

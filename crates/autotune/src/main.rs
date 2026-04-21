@@ -1119,7 +1119,12 @@ fn build_research_agent_prompt(
             }
             autotune_config::AdaptorConfig::Criterion { benchmarks } => {
                 for b in benchmarks {
-                    writeln!(p, "  - extracts criterion `{}` metric from group `{}`", b.name, b.group).ok();
+                    writeln!(
+                        p,
+                        "  - extracts criterion `{}` metric from group `{}`",
+                        b.name, b.group
+                    )
+                    .ok();
                 }
             }
             autotune_config::AdaptorConfig::Script { command } => {
@@ -1795,10 +1800,7 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
     if !autotune_git::branch_exists(&repo_root, advancing_branch)
         .context("failed to check advancing branch")?
     {
-        bail!(
-            "advancing branch '{}' does not exist",
-            advancing_branch
-        );
+        bail!("advancing branch '{}' does not exist", advancing_branch);
     }
 
     // Remove all task worktrees so we can check out and delete their branches.
@@ -1828,15 +1830,12 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
             "fast-forward '{advancing_branch}' into '{canonical_branch}' failed — histories may have diverged"
         )
     })?;
-    println!(
-        "[autotune] fast-forwarded '{advancing_branch}' → '{canonical_branch}'"
-    );
+    println!("[autotune] fast-forwarded '{advancing_branch}' → '{canonical_branch}'");
 
     // Delete all worktree branches (autotune/<task>/<slug>).
     let branch_prefix = format!("autotune/{task_name}/");
-    let worktree_branches =
-        autotune_git::list_branches_with_prefix(&repo_root, &branch_prefix)
-            .context("failed to list worktree branches")?;
+    let worktree_branches = autotune_git::list_branches_with_prefix(&repo_root, &branch_prefix)
+        .context("failed to list worktree branches")?;
     for branch in &worktree_branches {
         if let Err(e) = autotune_git::delete_branch(&repo_root, branch) {
             eprintln!("[autotune] warning: could not delete branch '{branch}': {e}");
@@ -2628,7 +2627,9 @@ reasoning_effort = "low"
         assert!(prompt.contains("- unit: `cargo test -p autotune`"));
         assert!(prompt.contains("- coverage: `cargo llvm-cov`"));
         assert!(prompt.contains("extracts `line_coverage` via regex"));
-        assert!(prompt.contains("extracts criterion `throughput_mean` metric from group `throughput`"));
+        assert!(
+            prompt.contains("extracts criterion `throughput_mean` metric from group `throughput`")
+        );
         assert!(prompt.contains("extracts metrics via script: `python3 extract.py`"));
         assert!(prompt.contains("Score is a weighted sum"));
         assert!(prompt.contains("- line_coverage (Maximize, weight=1.5)"));
@@ -3355,8 +3356,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         let mut config = sample_config();
         config.task.name = "my-task".to_string();
         config.task.canonical_branch = "main".to_string();
-        let store =
-            TaskStore::new(&repo.path().join(".autotune/tasks/my-task")).unwrap();
+        let store = TaskStore::new(&repo.path().join(".autotune/tasks/my-task")).unwrap();
         store.save_state(&state).unwrap();
         store
             .save_config_snapshot(&toml::to_string_pretty(&config).unwrap())
@@ -3371,7 +3371,10 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             .output()
             .unwrap();
         let head_sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
-        assert_eq!(head_sha, advancing_sha, "main should point to the advancing commit");
+        assert_eq!(
+            head_sha, advancing_sha,
+            "main should point to the advancing commit"
+        );
 
         // Advancing branch and worktree branches should be deleted.
         assert!(!autotune_git::branch_exists(repo.path(), "autotune/my-task-main").unwrap());
