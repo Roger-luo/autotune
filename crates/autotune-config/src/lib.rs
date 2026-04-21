@@ -464,6 +464,13 @@ impl AutotuneConfig {
                 primary_metrics,
                 guardrail_metrics,
             } => {
+                if primary_metrics.is_empty() {
+                    return Err(ConfigError::Validation {
+                        message:
+                            "weighted_sum score must contain at least one primary metric"
+                                .to_string(),
+                    });
+                }
                 for pm in primary_metrics {
                     if !metric_names.contains(&pm.name) {
                         return Err(ConfigError::Validation {
@@ -486,6 +493,12 @@ impl AutotuneConfig {
                 }
             }
             ScoreConfig::Threshold { conditions } => {
+                if conditions.is_empty() {
+                    return Err(ConfigError::Validation {
+                        message: "threshold score must contain at least one condition"
+                            .to_string(),
+                    });
+                }
                 for c in conditions {
                     if !metric_names.contains(&c.metric) {
                         return Err(ConfigError::Validation {
@@ -973,6 +986,25 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
     }
 
     #[test]
+    fn validate_rejects_empty_weighted_sum_primary_metrics() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![regex_measure("m", "val")],
+            ScoreConfig::WeightedSum {
+                primary_metrics: vec![],
+                guardrail_metrics: vec![],
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("at least one primary metric"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
     fn validate_rejects_guardrail_metric_not_in_adaptor() {
         let config = make_config_direct(
             default_task_with_stop(),
@@ -994,6 +1026,22 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
         );
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("missing-guard"), "error: {err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_threshold_conditions() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![regex_measure("m", "val")],
+            ScoreConfig::Threshold { conditions: vec![] },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string().contains("at least one condition"),
+            "error: {err}"
+        );
     }
 
     #[test]
