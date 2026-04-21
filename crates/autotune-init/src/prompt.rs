@@ -134,8 +134,9 @@ Use sparingly. The user replies naturally to whatever you write.
     - **Direction for time metrics is always `Minimize`.**
     - To discover group names: use `Grep` to search `benches/` files for `criterion_group!`, `b.iter`, or `c.bench_function` calls, or list `target/criterion/` if it already exists. The group path in `target/criterion/` mirrors the group name passed to `criterion_group!` or `Criterion::default().bench_function("group/name", ...)`.
     - One `<measure>` block can hold many `<benchmark>` entries — there is no need to create a separate measure per benchmark.
+    - **Always add a Criterion filter after `--` in the command** so only the benchmarks you care about run. Criterion accepts a regex as the first argument after `--`; use the top-level group name(s) joined with `|`. For example, if you are tracking `sort/random` and `sort/sorted`, add `-- sort` (matches both). Without this filter, every benchmark in the binary runs on every iteration, wasting time on unrelated suites.
 
-    Full example:
+    Full example (two groups in one binary, filtered to run only those two):
     ```xml
     <measure>
       <name>sort_bench</name>
@@ -144,6 +145,8 @@ Use sparingly. The user replies naturally to whatever you write.
         <segment>bench</segment>
         <segment>--bench</segment>
         <segment>sort</segment>
+        <segment>--</segment>
+        <segment>sort/random|sort/sorted</segment>
       </command>
       <timeout>300</timeout>
       <adaptor>
