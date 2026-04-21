@@ -754,6 +754,9 @@ fn run_init_inner(
                     ack_lines.push(msg);
                     acc.agent = Some(*agent_cfg);
                 }
+                // Rubric/RubricsDone fragments are handled by the judge interview
+                // flow (Task 2); the init flow ignores them for now.
+                AgentFragment::Rubric(_) | AgentFragment::RubricsDone => {}
             }
         }
 

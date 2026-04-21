@@ -106,7 +106,17 @@ pub struct ToolRequest {
 /// a test case) — not a real top-level request — and is skipped by
 /// [`parse_tool_requests`].
 const WRAPPER_TAGS: &[&str] = &[
-    "plan", "message", "question", "task", "paths", "test", "measure", "score", "agent",
+    "plan",
+    "message",
+    "question",
+    "task",
+    "paths",
+    "test",
+    "measure",
+    "score",
+    "agent",
+    "rubric",
+    "rubrics-done",
 ];
 
 /// Parse any `<request-tool>` top-level fragments in an agent response.
@@ -191,6 +201,16 @@ fn parse_tool_request(reader: &mut Reader<&[u8]>) -> Result<ToolRequest, AgentEr
     })
 }
 
+/// A rubric proposed by the agent during the judge measure interview.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RubricProposal {
+    pub id: String,
+    pub title: String,
+    pub instruction: String,
+    pub score_min: i32,
+    pub score_max: i32,
+}
+
 /// One top-level fragment emitted by the agent during a single turn.
 /// A turn may produce zero or more of these.
 #[derive(Debug, Clone)]
@@ -215,6 +235,10 @@ pub enum AgentFragment {
     Score(ScoreConfig),
     /// A proposed `[agent]` section.
     Agent(Box<AgentSectionConfig>),
+    /// A proposed rubric for the pending judge measure, shown to the user for approval.
+    Rubric(RubricProposal),
+    /// Signals the agent has finished proposing rubrics for the current judge measure.
+    RubricsDone,
 }
 
 /// Parse an agent response into zero or more fragments.
@@ -230,7 +254,16 @@ pub enum AgentFragment {
 /// Unknown tags and unmatched text are silently skipped.
 pub fn parse_agent_response(response: &str) -> Result<Vec<AgentFragment>, AgentError> {
     const KNOWN: &[&str] = &[
-        "message", "question", "task", "paths", "test", "measure", "score", "agent",
+        "message",
+        "question",
+        "task",
+        "paths",
+        "test",
+        "measure",
+        "score",
+        "agent",
+        "rubric",
+        "rubrics-done",
     ];
 
     // Collect all matches for every known tag, then sort by document position.
@@ -266,6 +299,13 @@ pub fn parse_agent_response(response: &str) -> Result<Vec<AgentFragment>, AgentE
             })?,
             "agent" => parse_fragment_strict(outer, "agent", |r| {
                 Ok(AgentFragment::Agent(Box::new(parse_agent(r)?)))
+            })?,
+            "rubric" => parse_fragment_strict(outer, "rubric", |r| {
+                Ok(AgentFragment::Rubric(parse_rubric(r)?))
+            })?,
+            "rubrics-done" => parse_fragment_strict(outer, "rubrics-done", |r| {
+                walk_children(r, "rubrics-done", |_, _| Ok(()))?;
+                Ok(AgentFragment::RubricsDone)
             })?,
             _ => unreachable!(),
         };
@@ -502,6 +542,7 @@ fn parse_adaptor(reader: &mut Reader<&[u8]>) -> Result<AdaptorConfig, AgentError
     let mut patterns: Vec<RegexPattern> = Vec::new();
     let mut measure_name: Option<String> = None;
     let mut script_command: Vec<String> = Vec::new();
+    let mut persona: Option<String> = None;
 
     walk_children(reader, "adaptor", |tag, reader| {
         match tag {
@@ -509,6 +550,7 @@ fn parse_adaptor(reader: &mut Reader<&[u8]>) -> Result<AdaptorConfig, AgentError
             "pattern" => patterns.push(parse_pattern(reader)?),
             "measure-name" => measure_name = Some(read_text(reader, "measure-name")?),
             "command" => script_command = parse_command(reader, "command")?,
+            "persona" => persona = Some(read_text(reader, "persona")?),
             other => skip_element(reader, other)?,
         }
         Ok(())
@@ -529,6 +571,15 @@ fn parse_adaptor(reader: &mut Reader<&[u8]>) -> Result<AdaptorConfig, AgentError
         "script" => Ok(AdaptorConfig::Script {
             command: script_command,
         }),
+        "judge" => {
+            let persona = persona.ok_or_else(|| AgentError::ParseFailed {
+                message: "adaptor type=judge requires <persona>".to_string(),
+            })?;
+            Ok(AdaptorConfig::Judge {
+                persona,
+                rubrics: vec![],
+            })
+        }
         other => Err(AgentError::ParseFailed {
             message: format!("unknown adaptor type '{other}'"),
         }),
@@ -551,6 +602,55 @@ fn parse_pattern(reader: &mut Reader<&[u8]>) -> Result<RegexPattern, AgentError>
     Ok(RegexPattern {
         name,
         pattern: regex,
+    })
+}
+
+fn parse_rubric(reader: &mut Reader<&[u8]>) -> Result<RubricProposal, AgentError> {
+    let mut id = String::new();
+    let mut title = String::new();
+    let mut instruction = String::new();
+    let mut score_min = 1i32;
+    let mut score_max = 5i32;
+
+    walk_children(reader, "rubric", |tag, reader| {
+        match tag {
+            "id" => id = read_text(reader, "id")?,
+            "title" => title = read_text(reader, "title")?,
+            "instruction" => instruction = read_text(reader, "instruction")?,
+            "score-range" => {
+                walk_children(reader, "score-range", |child, reader| {
+                    match child {
+                        "min" => score_min = parse_i32(&read_text(reader, "min")?)?,
+                        "max" => score_max = parse_i32(&read_text(reader, "max")?)?,
+                        other => skip_element(reader, other)?,
+                    }
+                    Ok(())
+                })?;
+            }
+            other => skip_element(reader, other)?,
+        }
+        Ok(())
+    })?;
+
+    if id.is_empty() {
+        return Err(AgentError::ParseFailed {
+            message: "<rubric> missing <id>".to_string(),
+        });
+    }
+    if score_min >= score_max {
+        return Err(AgentError::ParseFailed {
+            message: format!(
+                "rubric '{id}': score-range min ({score_min}) must be less than max ({score_max})"
+            ),
+        });
+    }
+
+    Ok(RubricProposal {
+        id,
+        title,
+        instruction,
+        score_min,
+        score_max,
     })
 }
 
@@ -916,6 +1016,14 @@ fn parse_f64(s: &str) -> Result<f64, AgentError> {
         .parse::<f64>()
         .map_err(|e| AgentError::ParseFailed {
             message: format!("invalid number '{s}': {e}"),
+        })
+}
+
+fn parse_i32(s: &str) -> Result<i32, AgentError> {
+    s.trim()
+        .parse::<i32>()
+        .map_err(|e| AgentError::ParseFailed {
+            message: format!("invalid integer '{s}': {e}"),
         })
 }
 
@@ -1455,5 +1563,76 @@ mod tests {
             matches!(frags[1], AgentFragment::Message(_)),
             "second fragment should be Message"
         );
+    }
+
+    #[test]
+    fn parse_rubric_fragment() {
+        let xml = r#"<rubric>
+        <id>correctness</id>
+        <title>Correctness</title>
+        <instruction><![CDATA[Does the code produce correct results?]]></instruction>
+        <score-range><min>1</min><max>5</max></score-range>
+    </rubric>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 1);
+        match &frags[0] {
+            AgentFragment::Rubric(r) => {
+                assert_eq!(r.id, "correctness");
+                assert_eq!(r.title, "Correctness");
+                assert_eq!(r.instruction, "Does the code produce correct results?");
+                assert_eq!(r.score_min, 1);
+                assert_eq!(r.score_max, 5);
+            }
+            _ => panic!("expected Rubric"),
+        }
+    }
+
+    #[test]
+    fn parse_rubric_missing_id_errors() {
+        let xml = r#"<rubric><title>T</title><instruction>I</instruction><score-range><min>1</min><max>5</max></score-range></rubric>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("missing <id>"), "error: {err}");
+    }
+
+    #[test]
+    fn parse_rubric_invalid_score_range_errors() {
+        let xml = r#"<rubric><id>x</id><title>T</title><instruction>I</instruction><score-range><min>5</min><max>1</max></score-range></rubric>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("score-range"), "error: {err}");
+    }
+
+    #[test]
+    fn parse_rubrics_done_fragment() {
+        let xml = r#"<rubrics-done></rubrics-done>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        assert_eq!(frags.len(), 1);
+        assert!(matches!(frags[0], AgentFragment::RubricsDone));
+    }
+
+    #[test]
+    fn parse_judge_adaptor() {
+        let xml = r#"<measure><name>quality</name><adaptor><type>judge</type><persona><![CDATA[A senior engineer]]></persona></adaptor></measure>"#;
+        let frags = parse_agent_response(xml).unwrap();
+        match &frags[0] {
+            AgentFragment::Measure(m) => {
+                assert_eq!(m.name, "quality");
+                assert!(m.command.is_none());
+                match &m.adaptor {
+                    autotune_config::AdaptorConfig::Judge { persona, rubrics } => {
+                        assert_eq!(persona, "A senior engineer");
+                        assert!(rubrics.is_empty());
+                    }
+                    _ => panic!("expected Judge adaptor"),
+                }
+            }
+            _ => panic!("expected Measure"),
+        }
+    }
+
+    #[test]
+    fn parse_judge_adaptor_missing_persona_errors() {
+        let xml = r#"<measure><name>q</name><adaptor><type>judge</type></adaptor></measure>"#;
+        let err = parse_agent_response(xml).unwrap_err();
+        assert!(err.to_string().contains("persona"), "error: {err}");
     }
 }
