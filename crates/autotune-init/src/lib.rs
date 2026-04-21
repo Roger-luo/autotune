@@ -881,10 +881,8 @@ fn run_init_inner(
                                     ));
                                 }
                                 RubricOutcome::Rejected => {
-                                    ack_lines.push(format!(
-                                        "Rubric '{}': rejected by user.",
-                                        rubric.id
-                                    ));
+                                    ack_lines
+                                        .push(format!("Rubric '{}': rejected by user.", rubric.id));
                                 }
                                 RubricOutcome::Modified(new_instruction) => {
                                     let pending = acc.pending_judge.as_mut().unwrap();

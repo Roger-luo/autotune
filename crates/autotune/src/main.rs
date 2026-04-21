@@ -1217,6 +1217,17 @@ fn validate_measure_config(
     let mut all_metrics = std::collections::HashMap::new();
 
     for measure in measures {
+        // Judge measures are evaluated by an LLM agent, not a command — skip them
+        // during the trial run. There is nothing to execute and build_adaptor panics
+        // for the Judge variant. Rubric IDs are inserted with a 0.0 placeholder so
+        // downstream score config sees the expected metric names.
+        if let autotune_config::AdaptorConfig::Judge { rubrics, .. } = &measure.adaptor {
+            for rubric in rubrics {
+                all_metrics.insert(rubric.id.clone(), 0.0);
+            }
+            continue;
+        }
+
         let command = measure
             .command
             .as_deref()

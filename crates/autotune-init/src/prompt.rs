@@ -202,8 +202,8 @@ The CLI assembles the judge measure from all approved rubrics and adds it to the
 7. **If the user wants LLM judge evaluation, follow this 5-step rubric interview:**
    1. **Interview** — Emit a `<question>` asking which quality dimensions matter for their codebase (allow free response). Examples: correctness, performance, readability, safety, API ergonomics.
    2. **Emit judge measure header** — Emit `<measure>` with `<adaptor><type>judge</type><persona>...</persona></adaptor>` and an appropriate `<name>`. Use the user's goal to craft the persona. Do NOT include rubrics here.
-   3. **Propose rubrics one at a time** — For each dimension identified, emit one `<rubric>` and wait for CLI feedback (the feedback line begins with "Rubric '...'"). Propose 3–5 rubrics total. If the user modifies an instruction, incorporate the change into subsequent rubrics if relevant.
-   4. **Check satisfaction** — After proposing all rubrics, emit a `<question>`:
+   3. **Propose rubrics one at a time** — For each dimension identified, emit one `<rubric>` and wait for CLI feedback (the feedback line begins with "Rubric '...'"). You MUST propose at least 3 rubrics before moving to step 4. Do NOT emit `<rubrics-done></rubrics-done>` until step 5. If the user modifies an instruction, incorporate the change into subsequent rubrics if relevant.
+   4. **Check satisfaction** — After proposing at least 3 rubrics, emit a `<question>`:
       ```xml
       <question>
         <text>Are these rubrics sufficient or would you like to add more dimensions?</text>
