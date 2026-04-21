@@ -477,20 +477,22 @@ fn run_implementing(
             state.current_phase = Phase::Testing;
             store.save_state(state)?;
         }
-        Err(e)
-            if e.downcast_ref::<ImplementError>()
-                .is_some_and(|e| matches!(e, ImplementError::NoCommit)) =>
-        {
+        Err(e) if e.downcast_ref::<ImplementError>().is_some() => {
+            let reason = match e.downcast_ref::<ImplementError>().unwrap() {
+                ImplementError::NoCommit => "implementation produced no commit".to_string(),
+                ImplementError::Git { source } => format!("git error: {source}"),
+                ImplementError::Agent { source } => format!("agent error: {source}"),
+            };
             println!(
-                "[autotune] iteration {} — implementation produced no commit, recording as crash",
-                state.current_iteration
+                "[autotune] iteration {} — {}, recording as crash",
+                state.current_iteration, reason
             );
             autotune_agent::trace::record(
                 "phase.decision",
                 serde_json::json!({
                     "phase": "Implementing",
                     "branch": "crash",
-                    "reason": "implementation produced no commit",
+                    "reason": reason,
                 }),
             );
             record_crash(state, store)?;

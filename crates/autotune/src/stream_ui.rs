@@ -17,6 +17,7 @@
 //!   doesn't leak into the terminal.
 
 use autotune_agent::{AgentEvent, EventHandler};
+use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -59,9 +60,10 @@ impl Stream {
     }
 
     fn new(status: &str, suppress: SuppressMode) -> Self {
-        // Show the ephemeral dim status line immediately.
+        // Show the dim status line as a permanent header; tool-tail lines
+        // will appear below it and be erased/redrawn as events arrive.
         let mut stderr = std::io::stderr();
-        let _ = write!(stderr, "\r\x1b[2K  \x1b[2m{status}\x1b[0m");
+        let _ = writeln!(stderr, "  \x1b[2m{status}\x1b[0m");
         let _ = stderr.flush();
 
         Self {
@@ -96,9 +98,10 @@ struct StreamState {
     current_line: String,
     /// Whether we are currently inside a ``` fenced code block.
     in_code_fence: bool,
-    /// True while the ephemeral dim line (status or tool use) occupies the
-    /// cursor and must be cleared before printing anything else.
-    has_tool_line: bool,
+    /// Rolling buffer of the last 3 tool-use descriptions currently shown.
+    tool_tail: VecDeque<String>,
+    /// How many dim lines we last rendered to stderr (so we can erase them).
+    rendered_tail_count: usize,
     /// True once the protocol payload has begun — further text is dropped.
     suppressed: bool,
     /// Protocol-payload detection mode.
@@ -113,7 +116,8 @@ impl StreamState {
             pending: String::new(),
             current_line: String::new(),
             in_code_fence: false,
-            has_tool_line: true,
+            tool_tail: VecDeque::new(),
+            rendered_tail_count: 0,
             suppressed: false,
             suppress_mode,
             skin: termimad::MadSkin::default_dark(),
@@ -184,25 +188,38 @@ impl StreamState {
         }
     }
 
+    /// Erase the currently rendered tail lines from stderr.
+    fn erase_tail(&mut self, stderr: &mut impl Write) {
+        if self.rendered_tail_count > 0 {
+            let _ = write!(stderr, "\x1b[{}A\x1b[J", self.rendered_tail_count);
+            self.rendered_tail_count = 0;
+        }
+    }
+
+    /// Re-render the current tool tail (up to 3 dim lines).
+    fn draw_tail(&mut self, stderr: &mut impl Write) {
+        for line in &self.tool_tail {
+            let trimmed = if line.len() > 120 { &line[..120] } else { line };
+            let _ = writeln!(stderr, "  \x1b[2m{trimmed}\x1b[0m");
+        }
+        self.rendered_tail_count = self.tool_tail.len();
+    }
+
     fn flush_pending(&mut self) {
         if self.pending.trim().is_empty() {
             self.pending.clear();
             return;
         }
         let md = std::mem::take(&mut self.pending);
-
-        // Clear the ephemeral status/tool line before writing a rendered block.
         let mut stderr = std::io::stderr();
-        if self.has_tool_line {
-            let _ = write!(stderr, "\r\x1b[2K");
-            self.has_tool_line = false;
-        }
+        self.erase_tail(&mut stderr);
         let _ = self
             .skin
             .write_text_on(&mut stderr, md.trim_end_matches('\n'));
         // Ensure a blank line follows each rendered block so subsequent
         // tool-use lines or blocks don't visually run together.
         let _ = writeln!(stderr);
+        self.draw_tail(&mut stderr);
         let _ = stderr.flush();
     }
 
@@ -210,14 +227,15 @@ impl StreamState {
         if !matches!(tool, "Read" | "Glob" | "Grep" | "Bash" | "Edit" | "Write") {
             return;
         }
-        let mut stderr = std::io::stderr();
-        if self.has_tool_line {
-            let _ = write!(stderr, "\r\x1b[2K");
-        }
         let detail = describe_tool_use(tool, input_summary);
-        let _ = write!(stderr, "  \x1b[2m{detail}\x1b[0m");
+        self.tool_tail.push_back(detail);
+        if self.tool_tail.len() > 3 {
+            self.tool_tail.pop_front();
+        }
+        let mut stderr = std::io::stderr();
+        self.erase_tail(&mut stderr);
+        self.draw_tail(&mut stderr);
         let _ = stderr.flush();
-        self.has_tool_line = true;
     }
 
     fn finish(&mut self) {
@@ -232,13 +250,10 @@ impl StreamState {
         }
         self.flush_pending();
 
-        // Clear the ephemeral line if still occupying the cursor.
-        if self.has_tool_line {
-            let mut stderr = std::io::stderr();
-            let _ = write!(stderr, "\r\x1b[2K");
-            let _ = stderr.flush();
-            self.has_tool_line = false;
-        }
+        // Clear the tool tail if still showing.
+        let mut stderr = std::io::stderr();
+        self.erase_tail(&mut stderr);
+        let _ = stderr.flush();
     }
 }
 
