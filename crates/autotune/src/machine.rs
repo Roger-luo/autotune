@@ -1296,10 +1296,11 @@ fn record_crash(state: &mut TaskState, store: &TaskStore) -> Result<()> {
     };
     store.append_ledger(&record)?;
 
-    // Clean up worktree
+    // Clean up worktree and branch so the same approach name can be retried.
     let repo_root =
         autotune_git::repo_root(store.root()).unwrap_or_else(|_| store.root().to_path_buf());
     let _ = autotune_git::remove_worktree(&repo_root, &approach.worktree_path);
+    let _ = autotune_git::delete_branch(&repo_root, &approach.branch_name);
 
     state.current_approach = None;
     state.current_phase = Phase::Recorded;
@@ -1331,10 +1332,11 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
     };
     store.append_ledger(&record)?;
 
-    // Clean up worktree
+    // Clean up worktree and branch so the same approach name can be retried.
     let repo_root =
         autotune_git::repo_root(store.root()).unwrap_or_else(|_| store.root().to_path_buf());
     let _ = autotune_git::remove_worktree(&repo_root, &approach.worktree_path);
+    let _ = autotune_git::delete_branch(&repo_root, &approach.branch_name);
 
     state.current_approach = None;
     state.current_phase = Phase::Recorded;
