@@ -138,13 +138,35 @@ pub struct RubricConfig {
     pub guidance: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CriterionStat {
+    Mean,
+    Median,
+    StdDev,
+}
+
+impl Default for CriterionStat {
+    fn default() -> Self {
+        Self::Mean
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CriterionBenchmark {
+    pub name: String,
+    pub group: String,
+    #[serde(default)]
+    pub stat: CriterionStat,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AdaptorConfig {
     #[serde(rename = "regex")]
     Regex { patterns: Vec<RegexPattern> },
     #[serde(rename = "criterion")]
-    Criterion { measure_name: String },
+    Criterion { benchmarks: Vec<CriterionBenchmark> },
     #[serde(rename = "script")]
     Script { command: Vec<String> },
     #[serde(rename = "judge")]
@@ -558,12 +580,8 @@ impl AutotuneConfig {
     fn adaptor_metric_names(&self, adaptor: &AdaptorConfig) -> Vec<String> {
         match adaptor {
             AdaptorConfig::Regex { patterns } => patterns.iter().map(|p| p.name.clone()).collect(),
-            AdaptorConfig::Criterion { .. } => {
-                vec![
-                    "mean".to_string(),
-                    "median".to_string(),
-                    "std_dev".to_string(),
-                ]
+            AdaptorConfig::Criterion { benchmarks } => {
+                benchmarks.iter().map(|b| b.name.clone()).collect()
             }
             AdaptorConfig::Script { .. } => vec![],
             AdaptorConfig::Judge { rubrics, .. } => rubrics.iter().map(|r| r.id.clone()).collect(),
@@ -640,20 +658,31 @@ command = []
     }
 
     #[test]
-    fn adaptor_metric_names_criterion_returns_three() {
+    fn adaptor_metric_names_criterion_returns_benchmark_names() {
         let toml = minimal_config_with_score(
             r#"
 [score]
 type = "weighted_sum"
-primary_metrics = [{ name = "mean", direction = "Minimize" }]
+primary_metrics = [{ name = "sort_ns", direction = "Minimize" }]
 "#,
         );
         let config: AutotuneConfig = toml::from_str(&toml).unwrap();
         let adaptor = AdaptorConfig::Criterion {
-            measure_name: "bench".to_string(),
+            benchmarks: vec![
+                CriterionBenchmark {
+                    name: "sort_ns".to_string(),
+                    group: "sort/random".to_string(),
+                    stat: CriterionStat::Mean,
+                },
+                CriterionBenchmark {
+                    name: "sort_median_ns".to_string(),
+                    group: "sort/random".to_string(),
+                    stat: CriterionStat::Median,
+                },
+            ],
         };
         let names = config.adaptor_metric_names(&adaptor);
-        assert_eq!(names, vec!["mean", "median", "std_dev"]);
+        assert_eq!(names, vec!["sort_ns", "sort_median_ns"]);
     }
 
     #[test]

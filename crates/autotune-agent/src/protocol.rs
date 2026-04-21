@@ -538,9 +538,11 @@ fn parse_measure(reader: &mut Reader<&[u8]>) -> Result<MeasureConfig, AgentError
 }
 
 fn parse_adaptor(reader: &mut Reader<&[u8]>) -> Result<AdaptorConfig, AgentError> {
+    use autotune_config::CriterionBenchmark;
+
     let mut type_tag: Option<String> = None;
     let mut patterns: Vec<RegexPattern> = Vec::new();
-    let mut measure_name: Option<String> = None;
+    let mut benchmarks: Vec<CriterionBenchmark> = Vec::new();
     let mut script_command: Vec<String> = Vec::new();
     let mut persona: Option<String> = None;
 
@@ -548,7 +550,7 @@ fn parse_adaptor(reader: &mut Reader<&[u8]>) -> Result<AdaptorConfig, AgentError
         match tag {
             "type" => type_tag = Some(read_text(reader, "type")?),
             "pattern" => patterns.push(parse_pattern(reader)?),
-            "measure-name" => measure_name = Some(read_text(reader, "measure-name")?),
+            "benchmark" => benchmarks.push(parse_criterion_benchmark(reader)?),
             "command" => script_command = parse_command(reader, "command")?,
             "persona" => persona = Some(read_text(reader, "persona")?),
             other => skip_element(reader, other)?,
@@ -563,10 +565,12 @@ fn parse_adaptor(reader: &mut Reader<&[u8]>) -> Result<AdaptorConfig, AgentError
     match type_tag.as_str() {
         "regex" => Ok(AdaptorConfig::Regex { patterns }),
         "criterion" => {
-            let measure_name = measure_name.ok_or_else(|| AgentError::ParseFailed {
-                message: "adaptor type=criterion requires <measure-name>".to_string(),
-            })?;
-            Ok(AdaptorConfig::Criterion { measure_name })
+            if benchmarks.is_empty() {
+                return Err(AgentError::ParseFailed {
+                    message: "adaptor type=criterion requires at least one <benchmark>".to_string(),
+                });
+            }
+            Ok(AdaptorConfig::Criterion { benchmarks })
         }
         "script" => Ok(AdaptorConfig::Script {
             command: script_command,
@@ -584,6 +588,53 @@ fn parse_adaptor(reader: &mut Reader<&[u8]>) -> Result<AdaptorConfig, AgentError
             message: format!("unknown adaptor type '{other}'"),
         }),
     }
+}
+
+fn parse_criterion_benchmark(
+    reader: &mut Reader<&[u8]>,
+) -> Result<autotune_config::CriterionBenchmark, AgentError> {
+    use autotune_config::{CriterionBenchmark, CriterionStat};
+
+    let mut name = String::new();
+    let mut group = String::new();
+    let mut stat = CriterionStat::Mean;
+
+    walk_children(reader, "benchmark", |tag, reader| {
+        match tag {
+            "name" => name = read_text(reader, "name")?,
+            "group" => group = read_text(reader, "group")?,
+            "stat" => {
+                let s = read_text(reader, "stat")?;
+                stat = match s.as_str() {
+                    "mean" => CriterionStat::Mean,
+                    "median" => CriterionStat::Median,
+                    "std_dev" => CriterionStat::StdDev,
+                    other => {
+                        return Err(AgentError::ParseFailed {
+                            message: format!(
+                                "unknown criterion stat '{other}'; expected mean, median, or std_dev"
+                            ),
+                        });
+                    }
+                };
+            }
+            other => skip_element(reader, other)?,
+        }
+        Ok(())
+    })?;
+
+    if name.is_empty() {
+        return Err(AgentError::ParseFailed {
+            message: "<benchmark> is missing <name>".to_string(),
+        });
+    }
+    if group.is_empty() {
+        return Err(AgentError::ParseFailed {
+            message: "<benchmark> is missing <group>".to_string(),
+        });
+    }
+
+    Ok(CriterionBenchmark { name, group, stat })
 }
 
 fn parse_pattern(reader: &mut Reader<&[u8]>) -> Result<RegexPattern, AgentError> {
@@ -901,7 +952,7 @@ fn read_text(reader: &mut Reader<&[u8]>, tag: &str) -> Result<String, AgentError
                 // Self-closing inside a text field — ignore.
             }
             Ok(Event::Text(t)) => {
-                let s = t.unescape().map_err(|e| AgentError::ParseFailed {
+                let s = t.xml_content().map_err(|e| AgentError::ParseFailed {
                     message: format!("text unescape failed in <{tag}>: {e}"),
                 })?;
                 out.push_str(&s);
@@ -1057,14 +1108,21 @@ mod tests {
 
     #[test]
     fn parse_measure_with_criterion_adaptor() {
-        let xml = r#"<measure><name>bench</name><command><segment>cargo</segment><segment>bench</segment></command><adaptor><type>criterion</type><measure-name>bench/sort</measure-name></adaptor></measure>"#;
+        let xml = r#"<measure><name>bench</name><command><segment>cargo</segment><segment>bench</segment></command><adaptor><type>criterion</type><benchmark><name>sort_mean_ns</name><group>bench/sort</group><stat>mean</stat></benchmark><benchmark><name>sort_median_ns</name><group>bench/sort</group><stat>median</stat></benchmark></adaptor></measure>"#;
         let frags = parse_agent_response(xml).unwrap();
         match &frags[0] {
             AgentFragment::Measure(m) => {
                 assert_eq!(m.name, "bench");
-                assert!(
-                    matches!(&m.adaptor, AdaptorConfig::Criterion { measure_name } if measure_name == "bench/sort")
-                );
+                match &m.adaptor {
+                    AdaptorConfig::Criterion { benchmarks } => {
+                        assert_eq!(benchmarks.len(), 2);
+                        assert_eq!(benchmarks[0].name, "sort_mean_ns");
+                        assert_eq!(benchmarks[0].group, "bench/sort");
+                        assert_eq!(benchmarks[1].name, "sort_median_ns");
+                        assert_eq!(benchmarks[1].stat, autotune_config::CriterionStat::Median);
+                    }
+                    _ => panic!("expected Criterion adaptor"),
+                }
             }
             _ => panic!("expected Measure"),
         }
@@ -1315,7 +1373,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_criterion_adaptor_missing_measure_name_errors() {
+    fn parse_criterion_adaptor_missing_benchmarks_errors() {
         let xml = r#"<measure><name>x</name><command><segment>sh</segment></command><adaptor><type>criterion</type></adaptor></measure>"#;
         let err = parse_agent_response(xml).unwrap_err();
         assert!(err.to_string().contains("criterion"), "error was: {err}");

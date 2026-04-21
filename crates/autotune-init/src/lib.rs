@@ -298,12 +298,8 @@ fn validate_score(score: &ScoreConfig, acc: &ConfigAccumulator) -> FragmentOutco
 fn adaptor_metric_names(adaptor: &AdaptorConfig) -> Vec<String> {
     match adaptor {
         AdaptorConfig::Regex { patterns } => patterns.iter().map(|p| p.name.clone()).collect(),
-        AdaptorConfig::Criterion { .. } => {
-            vec![
-                "mean".to_string(),
-                "median".to_string(),
-                "std_dev".to_string(),
-            ]
+        AdaptorConfig::Criterion { benchmarks } => {
+            benchmarks.iter().map(|b| b.name.clone()).collect()
         }
         AdaptorConfig::Script { .. } => vec![],
         AdaptorConfig::Judge { rubrics, .. } => rubrics.iter().map(|r| r.id.clone()).collect(),
@@ -1499,15 +1495,26 @@ mod tests {
     }
 
     #[test]
-    fn adaptor_metric_names_criterion_returns_fixed_set() {
+    fn adaptor_metric_names_criterion_returns_benchmark_names() {
+        use autotune_config::{CriterionBenchmark, CriterionStat};
         let adaptor = AdaptorConfig::Criterion {
-            measure_name: "bench/sort".to_string(),
+            benchmarks: vec![
+                CriterionBenchmark {
+                    name: "sort_mean_ns".to_string(),
+                    group: "bench/sort".to_string(),
+                    stat: CriterionStat::Mean,
+                },
+                CriterionBenchmark {
+                    name: "sort_median_ns".to_string(),
+                    group: "bench/sort".to_string(),
+                    stat: CriterionStat::Median,
+                },
+            ],
         };
         let names = adaptor_metric_names(&adaptor);
-        assert_eq!(names.len(), 3);
-        assert!(names.contains(&"mean".to_string()));
-        assert!(names.contains(&"median".to_string()));
-        assert!(names.contains(&"std_dev".to_string()));
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"sort_mean_ns".to_string()));
+        assert!(names.contains(&"sort_median_ns".to_string()));
     }
 
     #[test]

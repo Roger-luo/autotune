@@ -127,7 +127,23 @@ Use sparingly. The user replies naturally to whatever you write.
 ```
 - `<adaptor>`: how to extract metrics from the command output.
   - `<type>regex</type>` + one or more `<pattern>` children, each with `<name>` and `<regex>` (the regex must have one capture group; wrap in CDATA).
-  - `<type>criterion</type>` + `<measure-name>` to parse `cargo bench` / criterion output.
+  - `<type>criterion</type>` + `<measure-name>`: parses Criterion's `estimates.json` for the named benchmark. **Prefer this over regex whenever the project uses Criterion.** The adaptor reads `target/criterion/{{measure-name}}/new/estimates.json` and produces three metrics: `mean`, `median`, `std_dev` (all in nanoseconds for time benchmarks). `<measure-name>` is the Criterion benchmark group path, e.g. `sort/random` if Criterion stores results under `target/criterion/sort/random/`. To discover available names, explore `benches/` source files for `criterion_group!` / `Criterion::default()` calls, or list `target/criterion/` if it already exists. The measure `<command>` should be `cargo bench --bench <bench-name>` (or plain `cargo bench` to run all). **Direction for time metrics is always `Minimize`.** Full example:
+    ```xml
+    <measure>
+      <name>sort_bench</name>
+      <command>
+        <segment>cargo</segment>
+        <segment>bench</segment>
+        <segment>--bench</segment>
+        <segment>sort</segment>
+      </command>
+      <timeout>300</timeout>
+      <adaptor>
+        <type>criterion</type>
+        <measure-name>sort/random</measure-name>
+      </adaptor>
+    </measure>
+    ```
   - `<type>script</type>` + `<command><segment>...</segment>...</command>` to pipe measure output through an external script that prints `metric_name=value` lines.
   - `<type>judge</type>` + `<persona>` for an LLM-based rubric evaluator. The measure `<command>` is optional (stdout/stderr become judge context when present). Do NOT put rubrics in the `<adaptor>` — propose them via `<rubric>` fragments after the measure is accepted (see "Judge Rubric Design" below).
 

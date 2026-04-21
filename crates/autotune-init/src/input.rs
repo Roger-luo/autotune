@@ -96,9 +96,18 @@ impl TerminalInput {
 impl UserInput for TerminalInput {
     fn prompt_text(&self, message: &str) -> Result<String, io::Error> {
         println!("\n{}", message);
-        print!("> ");
-        io::stdout().flush()?;
-        Self::read_line()
+        if io::stdin().is_terminal() {
+            let _terminal_guard = autotune_agent::terminal::Guard::new();
+            dialoguer::Input::<String>::new()
+                .with_prompt(">")
+                .allow_empty(true)
+                .interact_text()
+                .map_err(io::Error::other)
+        } else {
+            print!("> ");
+            io::stdout().flush()?;
+            Self::read_line()
+        }
     }
 
     fn prompt_select(

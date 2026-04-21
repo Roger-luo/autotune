@@ -273,9 +273,22 @@ pub fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn Metr
                 .collect();
             Box::new(RegexAdaptor::new(configs))
         }
-        AdaptorConfig::Criterion { measure_name } => {
+        AdaptorConfig::Criterion { benchmarks } => {
+            use autotune_adaptor::criterion::{CriterionBenchmarkEntry, CriterionStat};
             let criterion_dir = working_dir.join("target").join("criterion");
-            Box::new(CriterionAdaptor::new(&criterion_dir, measure_name))
+            let entries = benchmarks
+                .iter()
+                .map(|b| CriterionBenchmarkEntry {
+                    name: b.name.clone(),
+                    group: b.group.clone(),
+                    stat: match b.stat {
+                        autotune_config::CriterionStat::Mean => CriterionStat::Mean,
+                        autotune_config::CriterionStat::Median => CriterionStat::Median,
+                        autotune_config::CriterionStat::StdDev => CriterionStat::StdDev,
+                    },
+                })
+                .collect();
+            Box::new(CriterionAdaptor::new(&criterion_dir, entries))
         }
         AdaptorConfig::Script { command } => Box::new(ScriptAdaptorWithWorkingDir::new(
             command.clone(),

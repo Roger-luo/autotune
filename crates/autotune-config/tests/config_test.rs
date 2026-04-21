@@ -650,7 +650,7 @@ backend = "claude"
 }
 
 #[test]
-fn parse_criterion_task_with_mean_metric() {
+fn parse_criterion_task_with_named_benchmarks() {
     let f = write_config(
         r#"
 [task]
@@ -663,11 +663,23 @@ tunable = ["src/**"]
 [[measure]]
 name = "criterion-bench"
 command = ["cargo", "bench"]
-adaptor = { type = "criterion", measure_name = "my_bench" }
+
+[measure.adaptor]
+type = "criterion"
+
+[[measure.adaptor.benchmarks]]
+name = "sort_mean_ns"
+group = "sort/random"
+stat = "mean"
+
+[[measure.adaptor.benchmarks]]
+name = "sort_median_ns"
+group = "sort/random"
+stat = "median"
 
 [score]
 type = "weighted_sum"
-primary_metrics = [{ name = "mean", direction = "Minimize" }]
+primary_metrics = [{ name = "sort_mean_ns", direction = "Minimize" }]
 "#,
     );
     let config = AutotuneConfig::load(f.path()).unwrap();
@@ -688,7 +700,14 @@ tunable = ["src/**"]
 [[measure]]
 name = "criterion-bench"
 command = ["cargo", "bench"]
-adaptor = { type = "criterion", measure_name = "my_bench" }
+
+[measure.adaptor]
+type = "criterion"
+
+[[measure.adaptor.benchmarks]]
+name = "sort_ns"
+group = "sort/random"
+stat = "mean"
 
 [score]
 type = "weighted_sum"

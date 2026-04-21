@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
 thiserror = "2"
 globset = "0.4"
 dirs = "6"

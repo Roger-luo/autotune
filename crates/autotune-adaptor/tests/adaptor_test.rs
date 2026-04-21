@@ -19,17 +19,36 @@ fn criterion_extracts_estimates() {
     )
     .unwrap();
 
-    let adaptor =
-        autotune_adaptor::criterion::CriterionAdaptor::new(&criterion_dir, "my-benchmark");
+    use autotune_adaptor::criterion::{CriterionBenchmarkEntry, CriterionStat};
+    let adaptor = autotune_adaptor::criterion::CriterionAdaptor::new(
+        &criterion_dir,
+        vec![
+            CriterionBenchmarkEntry {
+                name: "bench_mean".to_string(),
+                group: "my-benchmark".to_string(),
+                stat: CriterionStat::Mean,
+            },
+            CriterionBenchmarkEntry {
+                name: "bench_median".to_string(),
+                group: "my-benchmark".to_string(),
+                stat: CriterionStat::Median,
+            },
+            CriterionBenchmarkEntry {
+                name: "bench_std_dev".to_string(),
+                group: "my-benchmark".to_string(),
+                stat: CriterionStat::StdDev,
+            },
+        ],
+    );
     let output = MeasureOutput {
         stdout: String::new(),
         stderr: String::new(),
     };
 
     let metrics = adaptor.extract(&output).unwrap();
-    assert_eq!(metrics["mean"], 1.25);
-    assert_eq!(metrics["median"], 1.0);
-    assert_eq!(metrics["std_dev"], 0.25);
+    assert_eq!(metrics["bench_mean"], 1.25);
+    assert_eq!(metrics["bench_median"], 1.0);
+    assert_eq!(metrics["bench_std_dev"], 0.25);
 }
 
 #[test]

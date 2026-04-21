@@ -1094,8 +1094,10 @@ fn build_research_agent_prompt(
                     writeln!(p, "  - extracts `{}` via regex: {}", pat.name, pat.pattern).ok();
                 }
             }
-            autotune_config::AdaptorConfig::Criterion { measure_name } => {
-                writeln!(p, "  - extracts criterion metrics from `{measure_name}`").ok();
+            autotune_config::AdaptorConfig::Criterion { benchmarks } => {
+                for b in benchmarks {
+                    writeln!(p, "  - extracts criterion `{}` metric from group `{}`", b.name, b.group).ok();
+                }
             }
             autotune_config::AdaptorConfig::Script { command } => {
                 writeln!(
@@ -1777,14 +1779,14 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
             .context("failed to read task worktrees directory")?
         {
             let wt_path = entry?.path();
-            if wt_path.is_dir() {
-                if let Err(e) = autotune_git::remove_worktree(&repo_root, &wt_path) {
-                    eprintln!(
-                        "[autotune] warning: could not remove worktree at {}: {}",
-                        wt_path.display(),
-                        e
-                    );
-                }
+            if wt_path.is_dir()
+                && let Err(e) = autotune_git::remove_worktree(&repo_root, &wt_path)
+            {
+                eprintln!(
+                    "[autotune] warning: could not remove worktree at {}: {}",
+                    wt_path.display(),
+                    e
+                );
             }
         }
     }
@@ -1992,7 +1994,11 @@ mod tests {
                     command: Some(vec!["cargo".to_string(), "bench".to_string()]),
                     timeout: 600,
                     adaptor: autotune_config::AdaptorConfig::Criterion {
-                        measure_name: "throughput".to_string(),
+                        benchmarks: vec![autotune_config::CriterionBenchmark {
+                            name: "throughput_mean".to_string(),
+                            group: "throughput".to_string(),
+                            stat: autotune_config::CriterionStat::Mean,
+                        }],
                     },
                 },
                 autotune_config::MeasureConfig {
@@ -2593,7 +2599,7 @@ reasoning_effort = "low"
         assert!(prompt.contains("- unit: `cargo test -p autotune`"));
         assert!(prompt.contains("- coverage: `cargo llvm-cov`"));
         assert!(prompt.contains("extracts `line_coverage` via regex"));
-        assert!(prompt.contains("extracts criterion metrics from `throughput`"));
+        assert!(prompt.contains("extracts criterion `throughput_mean` metric from group `throughput`"));
         assert!(prompt.contains("extracts metrics via script: `python3 extract.py`"));
         assert!(prompt.contains("Score is a weighted sum"));
         assert!(prompt.contains("- line_coverage (Maximize, weight=1.5)"));

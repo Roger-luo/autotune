@@ -27,11 +27,11 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
-dialoguer = "0.11"
+dialoguer = "0.12"
 serde_json = "1"
 termimad = "0.34"
-toml = "0.8"
-toml_edit = "0.22"
+toml = "1"
+toml_edit = "0.25"
 autotune-mock = { path = "../autotune-mock", optional = true }
 
 [features]
@@ -44,5 +44,5 @@ autotune-config = { path = "../autotune-config" }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
-toml = "0.8"
+toml = "1"
 scenario = "0.1.2"
