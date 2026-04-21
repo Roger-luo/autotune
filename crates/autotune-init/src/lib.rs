@@ -6,14 +6,15 @@ pub use error::InitError;
 pub use input::{MockInput, TerminalInput, UserInput};
 pub use prompt::build_init_prompt;
 
-use autotune_agent::protocol::{AgentFragment, parse_agent_response};
+use autotune_agent::protocol::{AgentFragment, RubricProposal, parse_agent_response};
 use autotune_agent::{
     Agent, AgentConfig, AgentConfigWithEvents, AgentEvent, AgentSession, EventHandler,
     ToolPermission,
 };
 use autotune_config::global::GlobalConfig;
 use autotune_config::{
-    AutotuneConfig, MeasureConfig, PathsConfig, ScoreConfig, TaskConfig, TestConfig,
+    AdaptorConfig, AutotuneConfig, MeasureConfig, PathsConfig, RubricConfig, ScoreConfig,
+    ScoreRangeConfig, TaskConfig, TestConfig,
 };
 
 use std::collections::HashMap;
@@ -30,7 +31,7 @@ const MAX_TURNS: usize = 50;
 pub type ConfigValidator<'a> = dyn Fn(&AutotuneConfig) -> Result<HashMap<String, f64>, String> + 'a;
 
 /// Accumulated config sections during the init conversation.
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct ConfigAccumulator {
     task: Option<TaskConfig>,
     paths: Option<PathsConfig>,
@@ -38,6 +39,21 @@ struct ConfigAccumulator {
     measures: Vec<MeasureConfig>,
     score: Option<ScoreConfig>,
     agent: Option<autotune_config::AgentConfig>,
+    pending_judge: Option<PendingJudgeMeasure>,
+}
+
+impl Clone for ConfigAccumulator {
+    fn clone(&self) -> Self {
+        ConfigAccumulator {
+            task: self.task.clone(),
+            paths: self.paths.clone(),
+            tests: self.tests.clone(),
+            measures: self.measures.clone(),
+            score: self.score.clone(),
+            agent: self.agent.clone(),
+            pending_judge: None, // pending rubrics are not part of the preview
+        }
+    }
 }
 
 impl ConfigAccumulator {
@@ -46,6 +62,7 @@ impl ConfigAccumulator {
             && self.paths.is_some()
             && !self.measures.is_empty()
             && self.score.is_some()
+            && self.pending_judge.is_none()
     }
 
     /// Render a TOML preview of the current accumulated config for user approval.
@@ -81,7 +98,9 @@ impl ConfigAccumulator {
         if self.paths.is_none() {
             missing.push("paths");
         }
-        if self.measures.is_empty() {
+        if self.pending_judge.is_some() {
+            missing.push("judge rubrics (use <rubrics-done></rubrics-done> to finalize)");
+        } else if self.measures.is_empty() {
             missing.push("measure (at least one)");
         }
         if self.score.is_none() {
@@ -115,6 +134,21 @@ impl ConfigAccumulator {
 enum FragmentOutcome {
     Accepted(String),
     Rejected(String),
+}
+
+/// A judge measure that is waiting for rubric proposals before being finalized.
+struct PendingJudgeMeasure {
+    name: String,
+    persona: String,
+    command: Option<Vec<String>>,
+    approved_rubrics: Vec<RubricConfig>,
+}
+
+/// Outcome of presenting a rubric proposal to the user.
+enum RubricOutcome {
+    Accepted,
+    Rejected,
+    Modified(String),
 }
 
 fn validate_task(task: &TaskConfig) -> FragmentOutcome {
@@ -161,7 +195,14 @@ fn validate_test(test: &TestConfig) -> FragmentOutcome {
 
 fn validate_measure(measure: &MeasureConfig, acc: &ConfigAccumulator) -> FragmentOutcome {
     match &measure.adaptor {
-        autotune_config::AdaptorConfig::Judge { .. } => {
+        AdaptorConfig::Judge { .. } => {
+            if acc.pending_judge.is_some() {
+                return FragmentOutcome::Rejected(
+                    "a judge measure is already pending; finalize it with \
+                     <rubrics-done></rubrics-done> before adding another"
+                        .to_string(),
+                );
+            }
             if let Some(cmd) = &measure.command
                 && cmd.is_empty()
             {
@@ -254,22 +295,18 @@ fn validate_score(score: &ScoreConfig, acc: &ConfigAccumulator) -> FragmentOutco
 }
 
 /// Extract metric names that an adaptor config will produce.
-fn adaptor_metric_names(adaptor: &autotune_config::AdaptorConfig) -> Vec<String> {
+fn adaptor_metric_names(adaptor: &AdaptorConfig) -> Vec<String> {
     match adaptor {
-        autotune_config::AdaptorConfig::Regex { patterns } => {
-            patterns.iter().map(|p| p.name.clone()).collect()
-        }
-        autotune_config::AdaptorConfig::Criterion { .. } => {
+        AdaptorConfig::Regex { patterns } => patterns.iter().map(|p| p.name.clone()).collect(),
+        AdaptorConfig::Criterion { .. } => {
             vec![
                 "mean".to_string(),
                 "median".to_string(),
                 "std_dev".to_string(),
             ]
         }
-        autotune_config::AdaptorConfig::Script { .. } => vec![],
-        autotune_config::AdaptorConfig::Judge { rubrics, .. } => {
-            rubrics.iter().map(|r| r.id.clone()).collect()
-        }
+        AdaptorConfig::Script { .. } => vec![],
+        AdaptorConfig::Judge { rubrics, .. } => rubrics.iter().map(|r| r.id.clone()).collect(),
     }
 }
 
@@ -285,6 +322,8 @@ fn is_protocol_tag_start(s: &str) -> bool {
         "<measure",
         "<score",
         "<agent",
+        "<rubric",
+        "<rubrics-done",
     ];
     TAGS.iter().any(|t| s.starts_with(t))
 }
@@ -362,6 +401,52 @@ fn map_io(e: std::io::Error) -> InitError {
         InitError::UserAborted
     } else {
         InitError::Io { source: e }
+    }
+}
+
+/// Present a rubric proposal to the user and return their decision.
+fn show_rubric_proposal(
+    rubric: &RubricProposal,
+    user_input: &dyn UserInput,
+) -> Result<RubricOutcome, InitError> {
+    use autotune_agent::protocol::QuestionOption;
+    println!("[autotune] Proposed rubric:");
+    println!("  ID:          {}", rubric.id);
+    println!("  Title:       {}", rubric.title);
+    println!("  Instruction: {}", rubric.instruction);
+    println!("  Score range: {}–{}", rubric.score_min, rubric.score_max);
+
+    let options = vec![
+        QuestionOption {
+            key: "accept".to_string(),
+            label: "Accept".to_string(),
+            description: None,
+        },
+        QuestionOption {
+            key: "reject".to_string(),
+            label: "Reject".to_string(),
+            description: None,
+        },
+        QuestionOption {
+            key: "modify".to_string(),
+            label: "Modify (enter new instruction)".to_string(),
+            description: None,
+        },
+    ];
+
+    let choice = user_input
+        .prompt_select("", &options, false)
+        .map_err(map_io)?;
+
+    match choice.as_str() {
+        "reject" => Ok(RubricOutcome::Rejected),
+        "modify" => {
+            let new_instruction = user_input
+                .prompt_text("Enter new instruction:")
+                .map_err(map_io)?;
+            Ok(RubricOutcome::Modified(new_instruction))
+        }
+        _ => Ok(RubricOutcome::Accepted),
     }
 }
 
@@ -730,7 +815,20 @@ fn run_init_inner(
                     FragmentOutcome::Accepted(msg) => {
                         println!("[autotune] {msg}");
                         ack_lines.push(msg);
-                        acc.measures.push(measure);
+                        if matches!(&measure.adaptor, AdaptorConfig::Judge { .. }) {
+                            let persona = match &measure.adaptor {
+                                AdaptorConfig::Judge { persona, .. } => persona.clone(),
+                                _ => unreachable!(),
+                            };
+                            acc.pending_judge = Some(PendingJudgeMeasure {
+                                name: measure.name.clone(),
+                                persona,
+                                command: measure.command.clone(),
+                                approved_rubrics: vec![],
+                            });
+                        } else {
+                            acc.measures.push(measure);
+                        }
                     }
                     FragmentOutcome::Rejected(err) => {
                         println!("[autotune] validation error: {err}");
@@ -754,9 +852,92 @@ fn run_init_inner(
                     ack_lines.push(msg);
                     acc.agent = Some(*agent_cfg);
                 }
-                // Rubric/RubricsDone fragments are handled by the judge interview
-                // flow (Task 2); the init flow ignores them for now.
-                AgentFragment::Rubric(_) | AgentFragment::RubricsDone => {}
+                AgentFragment::Rubric(rubric) => {
+                    if let Some(pending) = acc.pending_judge.as_ref() {
+                        if pending.approved_rubrics.iter().any(|r| r.id == rubric.id) {
+                            let err = format!(
+                                "rubric: duplicate id '{}' — rubric ids must be unique within a judge measure",
+                                rubric.id
+                            );
+                            println!("[autotune] validation error: {err}");
+                            rejection_lines.push(err);
+                        } else {
+                            match show_rubric_proposal(&rubric, user_input)? {
+                                RubricOutcome::Accepted => {
+                                    let pending = acc.pending_judge.as_mut().unwrap();
+                                    pending.approved_rubrics.push(RubricConfig {
+                                        id: rubric.id.clone(),
+                                        title: rubric.title.clone(),
+                                        instruction: rubric.instruction.clone(),
+                                        score_range: ScoreRangeConfig {
+                                            min: rubric.score_min,
+                                            max: rubric.score_max,
+                                        },
+                                        guidance: None,
+                                    });
+                                    ack_lines.push(format!(
+                                        "Rubric '{}' ({}–{}): accepted.",
+                                        rubric.id, rubric.score_min, rubric.score_max
+                                    ));
+                                }
+                                RubricOutcome::Rejected => {
+                                    ack_lines.push(format!(
+                                        "Rubric '{}': rejected by user.",
+                                        rubric.id
+                                    ));
+                                }
+                                RubricOutcome::Modified(new_instruction) => {
+                                    let pending = acc.pending_judge.as_mut().unwrap();
+                                    pending.approved_rubrics.push(RubricConfig {
+                                        id: rubric.id.clone(),
+                                        title: rubric.title.clone(),
+                                        instruction: new_instruction.clone(),
+                                        score_range: ScoreRangeConfig {
+                                            min: rubric.score_min,
+                                            max: rubric.score_max,
+                                        },
+                                        guidance: None,
+                                    });
+                                    ack_lines.push(format!(
+                                        "Rubric '{}' accepted with modified instruction: '{new_instruction}'.",
+                                        rubric.id
+                                    ));
+                                }
+                            }
+                        }
+                    } else {
+                        let err = "rubric: no active judge measure — emit <measure> with <adaptor><type>judge</type> first".to_string();
+                        println!("[autotune] validation error: {err}");
+                        rejection_lines.push(err);
+                    }
+                }
+                AgentFragment::RubricsDone => {
+                    if let Some(pending) = acc.pending_judge.as_ref() {
+                        if pending.approved_rubrics.is_empty() {
+                            let err = "rubrics-done: at least one rubric must be approved before finalizing".to_string();
+                            println!("[autotune] validation error: {err}");
+                            rejection_lines.push(err);
+                        } else {
+                            let pending = acc.pending_judge.take().unwrap();
+                            let n = pending.approved_rubrics.len();
+                            let measure = MeasureConfig {
+                                name: pending.name,
+                                command: pending.command,
+                                timeout: 600,
+                                adaptor: AdaptorConfig::Judge {
+                                    persona: pending.persona,
+                                    rubrics: pending.approved_rubrics,
+                                },
+                            };
+                            acc.measures.push(measure);
+                            ack_lines.push(format!("Judge measure finalized with {n} rubric(s)."));
+                        }
+                    } else {
+                        let err = "rubrics-done: no active judge measure".to_string();
+                        println!("[autotune] validation error: {err}");
+                        rejection_lines.push(err);
+                    }
+                }
             }
         }
 
@@ -1469,5 +1650,165 @@ mod tests {
     #[test]
     fn print_trial_failure_with_empty_string() {
         print_trial_failure("");
+    }
+
+    // --- judge measure / rubric tests ---
+
+    fn judge_measure_config(persona: &str) -> MeasureConfig {
+        MeasureConfig {
+            name: "quality".to_string(),
+            command: None,
+            timeout: 600,
+            adaptor: AdaptorConfig::Judge {
+                persona: persona.to_string(),
+                rubrics: vec![],
+            },
+        }
+    }
+
+    fn minimal_rubric_proposal(id: &str) -> autotune_agent::protocol::RubricProposal {
+        autotune_agent::protocol::RubricProposal {
+            id: id.to_string(),
+            title: format!("{id} title"),
+            instruction: format!("{id} instruction"),
+            score_min: 1,
+            score_max: 5,
+        }
+    }
+
+    #[test]
+    fn judge_measure_creates_pending_state() {
+        let mut acc = ConfigAccumulator::default();
+        let measure = judge_measure_config("A senior engineer");
+        match validate_measure(&measure, &acc) {
+            FragmentOutcome::Accepted(_) => {
+                acc.pending_judge = Some(PendingJudgeMeasure {
+                    name: measure.name.clone(),
+                    persona: "A senior engineer".to_string(),
+                    command: None,
+                    approved_rubrics: vec![],
+                });
+            }
+            FragmentOutcome::Rejected(e) => panic!("unexpected rejection: {e}"),
+        }
+        assert!(acc.pending_judge.is_some());
+        assert!(acc.measures.is_empty());
+    }
+
+    #[test]
+    fn unfinalized_judge_blocks_completion() {
+        let mut acc = complete_accumulator();
+        acc.measures.clear();
+        acc.pending_judge = Some(PendingJudgeMeasure {
+            name: "quality".to_string(),
+            persona: "reviewer".to_string(),
+            command: None,
+            approved_rubrics: vec![autotune_config::RubricConfig {
+                id: "correctness".to_string(),
+                title: "Correctness".to_string(),
+                instruction: "Is it correct?".to_string(),
+                score_range: autotune_config::ScoreRangeConfig { min: 1, max: 5 },
+                guidance: None,
+            }],
+        });
+        assert!(!acc.is_complete());
+        assert!(
+            acc.missing_sections()
+                .iter()
+                .any(|s| s.contains("rubrics-done"))
+        );
+    }
+
+    #[test]
+    fn pending_judge_missing_section_hides_generic_measure_missing() {
+        let mut acc = ConfigAccumulator {
+            task: Some(minimal_task()),
+            paths: Some(minimal_paths()),
+            ..Default::default()
+        };
+        acc.pending_judge = Some(PendingJudgeMeasure {
+            name: "q".to_string(),
+            persona: "p".to_string(),
+            command: None,
+            approved_rubrics: vec![],
+        });
+        let missing = acc.missing_sections();
+        assert!(
+            !missing.contains(&"measure (at least one)"),
+            "should not show generic measure missing when judge is pending: {missing:?}"
+        );
+        assert!(missing.iter().any(|s| s.contains("rubrics-done")));
+    }
+
+    #[test]
+    fn rubrics_done_finalizes_measure() {
+        let rubric = autotune_config::RubricConfig {
+            id: "correctness".to_string(),
+            title: "Correctness".to_string(),
+            instruction: "Is it correct?".to_string(),
+            score_range: autotune_config::ScoreRangeConfig { min: 1, max: 5 },
+            guidance: None,
+        };
+        let mut acc = ConfigAccumulator {
+            pending_judge: Some(PendingJudgeMeasure {
+                name: "quality".to_string(),
+                persona: "A senior engineer".to_string(),
+                command: None,
+                approved_rubrics: vec![rubric],
+            }),
+            ..Default::default()
+        };
+        // Simulate RubricsDone processing
+        let pending = acc.pending_judge.take().unwrap();
+        let assembled = MeasureConfig {
+            name: pending.name,
+            command: pending.command,
+            timeout: 600,
+            adaptor: AdaptorConfig::Judge {
+                persona: pending.persona,
+                rubrics: pending.approved_rubrics,
+            },
+        };
+        acc.measures.push(assembled);
+
+        assert!(acc.pending_judge.is_none());
+        assert_eq!(acc.measures.len(), 1);
+        match &acc.measures[0].adaptor {
+            AdaptorConfig::Judge { persona, rubrics } => {
+                assert_eq!(persona, "A senior engineer");
+                assert_eq!(rubrics.len(), 1);
+                assert_eq!(rubrics[0].id, "correctness");
+            }
+            _ => panic!("expected Judge adaptor"),
+        }
+    }
+
+    #[test]
+    fn validate_measure_rejects_second_judge_when_pending() {
+        let acc = ConfigAccumulator {
+            pending_judge: Some(PendingJudgeMeasure {
+                name: "existing".to_string(),
+                persona: "p".to_string(),
+                command: None,
+                approved_rubrics: vec![],
+            }),
+            ..Default::default()
+        };
+        let measure = judge_measure_config("Another persona");
+        match validate_measure(&measure, &acc) {
+            FragmentOutcome::Rejected(msg) => {
+                assert!(msg.contains("already pending"), "msg: {msg}");
+            }
+            FragmentOutcome::Accepted(_) => panic!("should have rejected second judge measure"),
+        }
+    }
+
+    #[test]
+    fn show_rubric_proposal_accept_path() {
+        // MockInput returns first option key = "accept"
+        let input = MockInput::new("yes");
+        let rubric = minimal_rubric_proposal("correctness");
+        let outcome = show_rubric_proposal(&rubric, &input).unwrap();
+        assert!(matches!(outcome, RubricOutcome::Accepted));
     }
 }
