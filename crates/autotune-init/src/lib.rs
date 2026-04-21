@@ -658,6 +658,10 @@ fn run_init_inner(
     let user_goal = user_input
         .prompt_text("What would you like autotune to do in this project?")
         .map_err(map_io)?;
+    autotune_agent::trace::record(
+        "init.user_input",
+        serde_json::json!({"prompt": "What would you like autotune to do in this project?", "value": user_goal}),
+    );
 
     // Append the user's goal to the agent prompt so it has context from the start
     let agent_config = {
@@ -778,10 +782,18 @@ fn run_init_inner(
                     FragmentOutcome::Accepted(msg) => {
                         println!("[autotune] {msg}");
                         ack_lines.push(msg);
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "task", "outcome": "accepted", "name": task.name}),
+                        );
                         acc.task = Some(task);
                     }
                     FragmentOutcome::Rejected(err) => {
                         println!("[autotune] validation error: {err}");
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "task", "outcome": "rejected", "error": err}),
+                        );
                         rejection_lines.push(format!("task: {err}"));
                     }
                 },
@@ -789,10 +801,18 @@ fn run_init_inner(
                     FragmentOutcome::Accepted(msg) => {
                         println!("[autotune] {msg}");
                         ack_lines.push(msg);
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "paths", "outcome": "accepted"}),
+                        );
                         acc.paths = Some(paths);
                     }
                     FragmentOutcome::Rejected(err) => {
                         println!("[autotune] validation error: {err}");
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "paths", "outcome": "rejected", "error": err}),
+                        );
                         rejection_lines.push(format!("paths: {err}"));
                     }
                 },
@@ -800,10 +820,18 @@ fn run_init_inner(
                     FragmentOutcome::Accepted(msg) => {
                         println!("[autotune] {msg}");
                         ack_lines.push(msg);
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "test", "outcome": "accepted", "name": test.name}),
+                        );
                         acc.tests.push(test);
                     }
                     FragmentOutcome::Rejected(err) => {
                         println!("[autotune] validation error: {err}");
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "test", "outcome": "rejected", "error": err}),
+                        );
                         rejection_lines.push(format!("test: {err}"));
                     }
                 },
@@ -811,6 +839,10 @@ fn run_init_inner(
                     FragmentOutcome::Accepted(msg) => {
                         println!("[autotune] {msg}");
                         ack_lines.push(msg);
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "measure", "outcome": "accepted", "name": measure.name}),
+                        );
                         if matches!(&measure.adaptor, AdaptorConfig::Judge { .. }) {
                             let persona = match &measure.adaptor {
                                 AdaptorConfig::Judge { persona, .. } => persona.clone(),
@@ -828,6 +860,10 @@ fn run_init_inner(
                     }
                     FragmentOutcome::Rejected(err) => {
                         println!("[autotune] validation error: {err}");
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "measure", "outcome": "rejected", "error": err}),
+                        );
                         rejection_lines.push(format!("measure: {err}"));
                     }
                 },
@@ -835,10 +871,18 @@ fn run_init_inner(
                     FragmentOutcome::Accepted(msg) => {
                         println!("[autotune] {msg}");
                         ack_lines.push(msg);
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "score", "outcome": "accepted"}),
+                        );
                         acc.score = Some(score);
                     }
                     FragmentOutcome::Rejected(err) => {
                         println!("[autotune] validation error: {err}");
+                        autotune_agent::trace::record(
+                            "init.fragment",
+                            serde_json::json!({"kind": "score", "outcome": "rejected", "error": err}),
+                        );
                         rejection_lines.push(format!("score: {err}"));
                     }
                 },
@@ -940,10 +984,18 @@ fn run_init_inner(
             let preview = acc.assemble_preview();
             let display = format!("All required sections collected. Proposed config:\n\n{preview}");
             let approved = user_input.prompt_approve(&display).map_err(map_io)?;
+            autotune_agent::trace::record(
+                "init.approval",
+                serde_json::json!({"approved": approved}),
+            );
             if !approved {
                 let feedback = user_input
                     .prompt_text("What would you like to change?")
                     .map_err(map_io)?;
+                autotune_agent::trace::record(
+                    "init.user_input",
+                    serde_json::json!({"prompt": "What would you like to change?", "value": feedback}),
+                );
                 let handler = make_event_handler("revising config...", false);
                 let response = agent.send_streaming(
                     &session,
@@ -965,11 +1017,19 @@ fn run_init_inner(
                 match validator(&trial_config) {
                     Ok(metrics) => {
                         println!("[autotune] baseline metrics: {metrics:?}");
+                        autotune_agent::trace::record(
+                            "init.validation",
+                            serde_json::json!({"outcome": "ok", "metrics": metrics}),
+                        );
                         validated_metrics = Some(metrics);
                         break 'outer;
                     }
                     Err(err) => {
                         print_trial_failure(&err);
+                        autotune_agent::trace::record(
+                            "init.validation",
+                            serde_json::json!({"outcome": "failed", "error": err}),
+                        );
                         let retry = user_input
                             .prompt_approve("Let the agent revise the config?")
                             .map_err(map_io)?;

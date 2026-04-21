@@ -29,35 +29,83 @@
 //! | `phase.decision`      | `{phase, branch, reason}`                          |
 //! | `approval.prompt`     | `{tool, scope, reason}`                            |
 //! | `approval.answer`     | `{tool, decision}`                                 |
-//! | `user.input`          | `{prompt, value}`                                  |
+//! | `init.start`          | `{config_exists, repo_root}`                       |
+//! | `init.user_input`     | `{prompt, value}`                                  |
+//! | `init.fragment`       | `{kind, outcome, name?, error?}`                   |
+//! | `init.approval`       | `{approved}`                                       |
+//! | `init.validation`     | `{outcome, metrics? | error?}`                     |
 //!
 //! Payloads are logged verbatim (including full prompts and responses). The
 //! trace file is meant for local debugging, not shipping off-box.
 
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-/// Holds `Some(writer)` when `AUTOTUNE_TRACE_FILE` was set at first access and
-/// the file opened successfully; `None` otherwise. Resolved once per process —
-/// flipping the env var mid-run has no effect.
+/// Holds `Some(writer)` when tracing is enabled, `None` otherwise.
+/// Set explicitly by `init()` or lazily by the first `record()` call.
 static WRITER: OnceLock<Option<Mutex<BufWriter<File>>>> = OnceLock::new();
 
-fn writer() -> Option<&'static Mutex<BufWriter<File>>> {
+/// Error returned when `init()` cannot set up the trace file.
+#[derive(Debug, thiserror::Error)]
+pub enum TraceInitError {
+    #[error(
+        "trace file already exists: {path:?} — delete it or choose a different path"
+    )]
+    AlreadyExists { path: OsString },
+    #[error("failed to create trace file {path:?}: {source}")]
+    Create {
+        path: OsString,
+        #[source]
+        source: io::Error,
+    },
+    #[error("trace already initialized before init() was called")]
+    AlreadyInitialized,
+}
+
+/// Explicitly initialize tracing from `AUTOTUNE_TRACE_FILE`.
+///
+/// Must be called once, before any `record()` call. Returns an error if:
+/// - the file already exists (`AlreadyExists`) — delete it or use a new path,
+/// - the path is unwritable / the parent directory is missing (`Create`),
+/// - `init()` was called after `record()` already lazily initialized the
+///   writer (`AlreadyInitialized`).
+///
+/// When `AUTOTUNE_TRACE_FILE` is not set, `init()` is a no-op and returns `Ok`.
+pub fn init() -> Result<(), TraceInitError> {
+    let Some(path) = std::env::var_os("AUTOTUNE_TRACE_FILE") else {
+        let _ = WRITER.set(None);
+        return Ok(());
+    };
+    open_trace_file(&path)
+}
+
+/// Create the trace file at `path` and install it as the global writer.
+/// Errors if the file already exists or the path is unwritable.
+fn open_trace_file(path: &std::ffi::OsStr) -> Result<(), TraceInitError> {
+    let file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                TraceInitError::AlreadyExists { path: path.to_owned() }
+            } else {
+                TraceInitError::Create { path: path.to_owned(), source: e }
+            }
+        })?;
+
     WRITER
-        .get_or_init(|| {
-            let path = std::env::var_os("AUTOTUNE_TRACE_FILE")?;
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .ok()?;
-            Some(Mutex::new(BufWriter::new(file)))
-        })
-        .as_ref()
+        .set(Some(Mutex::new(BufWriter::new(file))))
+        .map_err(|_| TraceInitError::AlreadyInitialized)
+}
+
+fn writer() -> Option<&'static Mutex<BufWriter<File>>> {
+    WRITER.get().and_then(|opt| opt.as_ref())
 }
 
 /// True when `AUTOTUNE_TRACE_FILE` was set and the file opened successfully.
@@ -132,5 +180,64 @@ mod tests {
             return;
         }
         assert!(!is_enabled());
+    }
+
+    // --- open_trace_file() / init() tests ---
+    //
+    // nextest runs each test in its own process, so OnceLock state does not
+    // bleed between these tests even though WRITER is a static.
+    // We call the private `open_trace_file` directly to avoid env-var mutation
+    // (unsafe in Rust 2024).
+
+    /// Opening a fresh path creates the file and enables record().
+    #[test]
+    fn open_trace_file_creates_file_and_enables_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+
+        open_trace_file(path.as_os_str()).expect("should succeed for a new path");
+
+        assert!(is_enabled(), "tracing should be enabled");
+        assert!(path.exists(), "trace file should be created");
+
+        record("test.event", json!({"key": "value"}));
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["category"], "test.event");
+        assert_eq!(parsed["payload"]["key"], "value");
+    }
+
+    /// Opening a path where a file already exists returns AlreadyExists.
+    #[test]
+    fn open_trace_file_errors_if_file_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.jsonl");
+        std::fs::write(&path, b"old content\n").unwrap();
+
+        let err = open_trace_file(path.as_os_str())
+            .expect_err("should fail when file already exists");
+
+        assert!(
+            matches!(err, TraceInitError::AlreadyExists { .. }),
+            "expected AlreadyExists, got: {err}"
+        );
+        // Existing content must not be touched.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old content\n");
+    }
+
+    /// Opening a path whose parent directory does not exist returns Create.
+    #[test]
+    fn open_trace_file_errors_if_directory_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent").join("trace.jsonl");
+
+        let err = open_trace_file(path.as_os_str())
+            .expect_err("should fail for missing parent dir");
+
+        assert!(
+            matches!(err, TraceInitError::Create { .. }),
+            "expected Create, got: {err}"
+        );
     }
 }

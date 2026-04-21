@@ -27,6 +27,8 @@ fn main() -> Result<()> {
     // Layer 2: catch panics that escape a Guard (e.g., panics in non-guarded code paths).
     autotune_agent::terminal::install_panic_hook();
 
+    autotune_agent::trace::init().context("AUTOTUNE_TRACE_FILE")?;
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -954,6 +956,14 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
     let config_path = repo_root.join(".autotune.toml");
     let mut should_write = false;
+
+    autotune_agent::trace::record(
+        "init.start",
+        serde_json::json!({
+            "config_exists": config_path.exists(),
+            "repo_root": repo_root.display().to_string(),
+        }),
+    );
 
     let mut config = if config_path.exists() {
         load_config(&repo_root)?

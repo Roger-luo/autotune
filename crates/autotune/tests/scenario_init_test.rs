@@ -168,6 +168,71 @@ fn scenario_init_creates_config_and_baseline() {
     );
 }
 
+/// autotune init writes an init.start record to AUTOTUNE_TRACE_FILE.
+#[test]
+fn scenario_init_creates_trace_file_with_init_start() {
+    let project = mock_project();
+    let trace_path = project.path().join("trace.jsonl");
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_TRACE_FILE", &trace_path)
+        .current_dir(project.path())
+        .write_stdin("optimize performance\nperf\nbench\nyes\n")
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "autotune init failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    assert!(trace_path.exists(), "trace file should be created");
+
+    let content = std::fs::read_to_string(&trace_path).unwrap();
+    let first_line = content.lines().next().expect("trace file should not be empty");
+    let record: serde_json::Value = serde_json::from_str(first_line)
+        .expect("first trace line should be valid JSON");
+    assert_eq!(
+        record["category"], "init.start",
+        "first trace record should be init.start, got: {record}"
+    );
+}
+
+/// autotune init exits with an error when AUTOTUNE_TRACE_FILE already exists.
+#[test]
+fn scenario_init_errors_when_trace_file_already_exists() {
+    let project = mock_project();
+    let trace_path = project.path().join("trace.jsonl");
+    std::fs::write(&trace_path, b"old content\n").unwrap();
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("init")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_TRACE_FILE", &trace_path)
+        .current_dir(project.path())
+        .write_stdin("optimize performance\n")
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "autotune init should fail when trace file already exists"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already exists") || stderr.contains("AUTOTUNE_TRACE_FILE"),
+        "error message should mention the conflict: {stderr}"
+    );
+    // Pre-existing content must be untouched.
+    assert_eq!(std::fs::read_to_string(&trace_path).unwrap(), "old content\n");
+}
+
 #[test]
 fn scenario_init_with_existing_config_skips_agent() {
     let project = mock_project();
