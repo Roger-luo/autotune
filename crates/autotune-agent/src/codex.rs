@@ -203,6 +203,7 @@ impl CodexAgent {
     ) -> Result<AgentResponse, AgentError> {
         let mut thread_id: Option<String> = None;
         let mut last_message = String::new();
+        let mut agent_error: Option<String> = None;
 
         for line in reader.lines() {
             let line = line.map_err(|source| AgentError::Io { source })?;
@@ -227,6 +228,20 @@ impl CodexAgent {
 
             match event {
                 "thread.started" | "thread/started" | "thread_started" => {}
+                "error" => {
+                    if let Some(msg) = value.get("message").and_then(Value::as_str) {
+                        agent_error = Some(msg.to_string());
+                    }
+                }
+                "turn.failed" | "turn/failed" | "turn_failed" => {
+                    let msg = value
+                        .get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(Value::as_str);
+                    if let Some(m) = msg {
+                        agent_error = Some(m.to_string());
+                    }
+                }
                 "agent_message_delta" => {
                     if let Some(text) = Self::delta_text(&value)
                         && !text.is_empty()
@@ -272,6 +287,13 @@ impl CodexAgent {
         let session_id = thread_id.ok_or_else(|| AgentError::ParseFailed {
             message: "codex JSON missing thread/session id".to_string(),
         })?;
+
+        // Surface agent-reported errors when no successful response was received.
+        if last_message.is_empty() {
+            if let Some(err_msg) = agent_error {
+                return Err(AgentError::CommandFailed { message: err_msg });
+            }
+        }
 
         Ok(AgentResponse {
             text: last_message,
@@ -333,6 +355,12 @@ impl CodexAgent {
                     return Err(AgentError::Interrupted);
                 }
             }
+            // Prefer an error message from the JSONL stream over the raw exit-code message.
+            if let Err(AgentError::CommandFailed { message }) =
+                Self::parse_jsonl(BufReader::new(Cursor::new(&output.stdout)), None)
+            {
+                return Err(AgentError::CommandFailed { message });
+            }
             return Err(AgentError::CommandFailed {
                 message: format!(
                     "codex exited with {}\nargs: {:?}{}",
@@ -385,6 +413,10 @@ impl CodexAgent {
                 if status.signal() == Some(2) {
                     return Err(AgentError::Interrupted);
                 }
+            }
+            // Prefer an error message captured from the JSONL stream over the raw exit-code message.
+            if let Err(e @ AgentError::CommandFailed { .. }) = response {
+                return Err(e);
             }
             let mut stderr_text = String::new();
             let _ = stderr.read_to_string(&mut stderr_text);
@@ -784,6 +816,37 @@ mod tests {
 
         assert_eq!(response.session_id, "thread-123");
         assert_eq!(response.text, "OK");
+    }
+
+    #[test]
+    fn parse_jsonl_surfaces_usage_limit_error() {
+        let jsonl = r#"{"type":"thread.started","thread_id":"thread-123"}
+{"type":"turn.started"}
+{"type":"error","message":"You've hit your usage limit. Try again at 2:20 PM."}
+{"type":"turn.failed","error":{"message":"You've hit your usage limit. Try again at 2:20 PM."}}"#;
+
+        let err = CodexAgent::parse_jsonl(std::io::Cursor::new(jsonl), None).unwrap_err();
+
+        match err {
+            AgentError::CommandFailed { message } => {
+                assert!(
+                    message.contains("usage limit"),
+                    "expected usage limit message, got: {message}"
+                );
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_jsonl_does_not_suppress_error_when_agent_replied() {
+        // If the agent managed to produce a response despite an error event, keep the response.
+        let jsonl = r#"{"type":"thread.started","thread_id":"thread-123"}
+{"type":"error","message":"transient warning"}
+{"type":"item.completed","item":{"type":"agent_message","text":"all good"}}"#;
+
+        let response = CodexAgent::parse_jsonl(std::io::Cursor::new(jsonl), None).unwrap();
+        assert_eq!(response.text, "all good");
     }
 
     #[test]
