@@ -86,12 +86,12 @@ fn permissions_have_correct_counts() {
         .filter(|p| matches!(p, ToolPermission::Deny(_)))
         .count();
 
-    assert_eq!(allow_count, 3, "should have 3 Allow permissions");
-    assert_eq!(
-        scoped_count,
-        tunable.len() * 2,
-        "should have N*2 AllowScoped permissions"
-    );
+    // 3 read-only allows (Read/Glob/Grep) + 2 unscoped write allows
+    // (Edit/Write). Edit/Write used to be `AllowScoped` per tunable path,
+    // but recent Claude CLI builds silently reject the `Tool:<glob>`
+    // syntax — see `implementation_agent_permissions` module doc.
+    assert_eq!(allow_count, 5, "should have 5 Allow permissions");
+    assert_eq!(scoped_count, 0, "Edit/Write are no longer path-scoped");
     assert_eq!(deny_count, 4, "should have 4 Deny permissions");
 }
 
