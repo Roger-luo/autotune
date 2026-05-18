@@ -18,7 +18,7 @@
 
 use autotune_agent::{AgentEvent, EventHandler};
 use std::collections::VecDeque;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::sync::{Arc, Mutex};
 
 /// Which kind of protocol payload (if any) to suppress once it starts.
@@ -337,6 +337,26 @@ impl autotune_plan::ToolApprover for TerminalToolApprover {
                 "reason": req.reason,
             }),
         );
+
+        // Non-TTY graceful deny. Without this check, `dialoguer::Confirm::interact()`
+        // below tries to read from a `/dev/null`-or-pipe stdin and surfaces an
+        // `IO error: not a terminal`, which `handle_tool_requests` then bubbles up
+        // as `PlanError::Agent` — aborting the whole task. That's a bad failure
+        // mode for backgrounded or CI runs (any invocation with stdin redirected).
+        // Treating it as "deny + log + continue" lets the loop keep iterating
+        // using whatever statically-allowed tools the agent already has.
+        if !std::io::stdin().is_terminal() {
+            println!("[autotune] no TTY — auto-denying runtime tool request (set up the tool statically if it's needed unattended)");
+            autotune_agent::trace::record(
+                "approval.answer",
+                serde_json::json!({
+                    "tool": req.tool,
+                    "decision": "deny",
+                    "reason": "no_tty",
+                }),
+            );
+            return Ok(autotune_plan::ApprovalDecision::Deny);
+        }
 
         // Layer 1: dialoguer puts the terminal in raw mode. If interrupted,
         // Drop on this guard restores.
