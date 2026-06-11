@@ -51,7 +51,9 @@
 //! }
 //! ```
 
-use std::sync::Once;
+use std::collections::VecDeque;
+use std::io::Write;
+use std::sync::{Arc, Mutex, Once};
 
 static HOOK_ONCE: Once = Once::new();
 
@@ -126,6 +128,13 @@ pub fn install_panic_hook() {
     });
 }
 
+/// Number of physical rows the live tail may occupy, scaled to the terminal
+/// height: `(height / 4)` clamped to `[3, 8]`. Keeps the dim tail visible
+/// without letting it dominate the screen.
+pub fn rows_for_height(height: u16) -> usize {
+    ((height / 4) as usize).clamp(3, 8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +168,24 @@ mod tests {
         // Calling twice must not panic or cause undefined behavior.
         install_panic_hook();
         install_panic_hook();
+    }
+
+    #[test]
+    fn rows_for_height_clamps_low() {
+        assert_eq!(rows_for_height(0), 3);
+        assert_eq!(rows_for_height(4), 3);
+        assert_eq!(rows_for_height(10), 3); // 10/4 = 2 -> clamped to 3
+    }
+
+    #[test]
+    fn rows_for_height_scales_in_band() {
+        assert_eq!(rows_for_height(24), 6); // 24/4 = 6
+        assert_eq!(rows_for_height(28), 7);
+    }
+
+    #[test]
+    fn rows_for_height_clamps_high() {
+        assert_eq!(rows_for_height(40), 8); // 40/4 = 10 -> clamped to 8
+        assert_eq!(rows_for_height(200), 8);
     }
 }
