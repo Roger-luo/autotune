@@ -921,7 +921,10 @@ fn scenario_run_live_tail_does_not_flood_narrow_terminal() {
 
     let output = session.wait().unwrap();
     let text = output.stdout();
-    assert!(!text.contains("panicked"), "must not panic.\noutput:\n{text}");
+    assert!(
+        !text.contains("panicked"),
+        "must not panic.\noutput:\n{text}"
+    );
 
     // Render the full captured PTY stream the way a real 40×100 terminal
     // would, applying every cursor-up / erase the live tail emitted.

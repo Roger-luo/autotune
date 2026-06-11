@@ -422,7 +422,11 @@ mod tests {
         // 10 CJK chars = 20 columns; budget 7 cols fits 3 chars (6 cols), not 4 (8).
         let cjk = "你好世界你好世界你好"; // 10 wide chars
         let out = sanitize_line(cjk, 7);
-        assert!(out.width() <= 7, "display width {} exceeds budget", out.width());
+        assert!(
+            out.width() <= 7,
+            "display width {} exceeds budget",
+            out.width()
+        );
         assert_eq!(out.chars().count(), 3);
     }
 
