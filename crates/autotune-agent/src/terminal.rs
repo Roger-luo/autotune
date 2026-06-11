@@ -372,7 +372,10 @@ mod tests {
     #[test]
     fn sanitize_strips_sgr_color() {
         assert_eq!(sanitize_line("\x1b[31mred\x1b[0m", 80), "red");
-        assert_eq!(sanitize_line("\x1b[1;38;5;208mhi\x1b[0m there", 80), "hi there");
+        assert_eq!(
+            sanitize_line("\x1b[1;38;5;208mhi\x1b[0m there", 80),
+            "hi there"
+        );
     }
 
     #[test]
