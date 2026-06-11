@@ -187,6 +187,67 @@ fn sanitize_line(line: &str, max_cols: usize) -> String {
         .collect()
 }
 
+/// Two-space indent applied to every tail line.
+const TAIL_INDENT: usize = 2;
+
+/// Rolling buffer of the most recent output lines plus the count of physical
+/// rows last drawn, so the next erase removes exactly what was rendered.
+///
+/// Pure state + rendering: all I/O goes through a caller-supplied [`Write`] and
+/// the terminal dimensions are passed in, so it is fully unit-testable without
+/// a TTY. [`LiveTail`] drives this against stderr for subprocess output;
+/// `stream_ui` embeds it for the agent tool tail.
+#[derive(Default)]
+pub struct TailState {
+    lines: VecDeque<String>,
+    rendered: usize,
+}
+
+impl TailState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append `line`, capping the buffer to the row budget for `height`.
+    pub fn push(&mut self, line: &str, height: u16) {
+        let budget = rows_for_height(height);
+        self.lines.push_back(line.to_owned());
+        while self.lines.len() > budget {
+            self.lines.pop_front();
+        }
+    }
+
+    /// Erase the rows drawn by the previous [`draw`](Self::draw). No-op if none.
+    pub fn erase(&mut self, out: &mut impl Write) {
+        if self.rendered > 0 {
+            let _ = write!(out, "\x1b[{}A\x1b[J", self.rendered);
+            self.rendered = 0;
+        }
+    }
+
+    /// Draw the current buffer: each line sanitized to the width budget,
+    /// indented, dimmed when `color`. Records the row count so the next
+    /// [`erase`](Self::erase) matches exactly.
+    pub fn draw(&mut self, out: &mut impl Write, width: u16, color: bool) {
+        let max_cols = (width as usize).saturating_sub(TAIL_INDENT + 1);
+        for line in &self.lines {
+            let text = sanitize_line(line, max_cols);
+            if color {
+                let _ = writeln!(out, "  \x1b[2m{text}\x1b[0m");
+            } else {
+                let _ = writeln!(out, "  {text}");
+            }
+        }
+        self.rendered = self.lines.len();
+    }
+
+    /// Convenience: erase the previous block then draw the current one.
+    pub fn redraw(&mut self, out: &mut impl Write, width: u16, color: bool) {
+        self.erase(out);
+        self.draw(out, width, color);
+    }
+}
+
 /// Number of physical rows the live tail may occupy, scaled to the terminal
 /// height: `(height / 4)` clamped to `[3, 8]`. Keeps the dim tail visible
 /// without letting it dominate the screen.
@@ -287,5 +348,85 @@ mod tests {
     #[test]
     fn sanitize_empty_budget_yields_empty() {
         assert_eq!(sanitize_line("anything", 0), "");
+    }
+
+    fn drawn(buf: &[u8]) -> String {
+        String::from_utf8(buf.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn tailstate_push_caps_to_budget() {
+        let mut t = TailState::new();
+        for i in 0..10 {
+            t.push(&format!("line {i}"), 24); // budget = 6
+        }
+        let mut buf = Vec::new();
+        t.draw(&mut buf, 80, false);
+        // 6 rows drawn, each terminated by '\n'.
+        assert_eq!(drawn(&buf).matches('\n').count(), 6);
+        // Newest line retained, oldest dropped.
+        assert!(drawn(&buf).contains("line 9"));
+        assert!(!drawn(&buf).contains("line 3"));
+    }
+
+    #[test]
+    fn tailstate_draw_emits_min_count() {
+        let mut t = TailState::new();
+        t.push("a", 24);
+        t.push("b", 24);
+        let mut buf = Vec::new();
+        t.draw(&mut buf, 80, false);
+        assert_eq!(drawn(&buf), "  a\n  b\n");
+    }
+
+    #[test]
+    fn tailstate_draw_color_wraps_in_dim() {
+        let mut t = TailState::new();
+        t.push("x", 24);
+        let mut buf = Vec::new();
+        t.draw(&mut buf, 80, true);
+        assert_eq!(drawn(&buf), "  \x1b[2mx\x1b[0m\n");
+    }
+
+    #[test]
+    fn tailstate_erase_matches_drawn_rows() {
+        let mut t = TailState::new();
+        t.push("a", 24);
+        t.push("b", 24);
+        let mut buf = Vec::new();
+        t.draw(&mut buf, 80, false); // rendered = 2
+        let mut erase_buf = Vec::new();
+        t.erase(&mut erase_buf);
+        assert_eq!(drawn(&erase_buf), "\x1b[2A\x1b[J");
+    }
+
+    #[test]
+    fn tailstate_erase_noop_when_nothing_drawn() {
+        let mut t = TailState::new();
+        let mut buf = Vec::new();
+        t.erase(&mut buf);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn tailstate_redraw_erases_prev_then_draws() {
+        let mut t = TailState::new();
+        t.push("a", 24);
+        t.push("b", 24);
+        let mut buf = Vec::new();
+        t.draw(&mut buf, 80, false); // rendered = 2
+        t.push("c", 24);
+        let mut buf2 = Vec::new();
+        t.redraw(&mut buf2, 80, false);
+        assert_eq!(drawn(&buf2), "\x1b[2A\x1b[J  a\n  b\n  c\n");
+    }
+
+    #[test]
+    fn tailstate_draw_truncates_to_width() {
+        let mut t = TailState::new();
+        t.push("0123456789", 24);
+        let mut buf = Vec::new();
+        t.draw(&mut buf, 6, false); // max_cols = 6 - (2+1) = 3
+        assert_eq!(drawn(&buf), "  012\n");
     }
 }
