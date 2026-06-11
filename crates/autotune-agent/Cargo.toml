@@ -11,6 +11,7 @@ quick-xml = "0.39"
 autotune-config = { path = "../autotune-config" }
 dirs = "6"
 terminal_size = "0.4"
+unicode-width = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

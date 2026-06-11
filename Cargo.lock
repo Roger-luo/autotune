@@ -151,6 +151,7 @@ dependencies = [
  "tempfile",
  "terminal_size",
  "thiserror 2.0.18",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]

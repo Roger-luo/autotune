@@ -175,16 +175,25 @@ fn strip_ansi(s: &str) -> String {
 }
 
 /// Strip ANSI escapes and remaining control characters (except tab), then
-/// truncate to at most `max_cols` characters — char-boundary safe, so it never
-/// panics on multi-byte UTF-8. Stripping escapes both prevents truncating
-/// inside an escape sequence and stops a child-emitted reset from cancelling
-/// our dim styling.
+/// truncate to at most `max_cols` *display columns* using Unicode width — so
+/// wide characters (CJK/emoji, 2 cols each) can't push the line past the
+/// terminal width and wrap. Char-boundary safe; never panics.
 fn sanitize_line(line: &str, max_cols: usize) -> String {
-    strip_ansi(line)
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in strip_ansi(line)
         .chars()
         .filter(|c| !c.is_control() || *c == '\t')
-        .take(max_cols)
-        .collect()
+    {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > max_cols {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
 }
 
 /// Two-space indent applied to every tail line.
@@ -400,8 +409,21 @@ mod tests {
 
     #[test]
     fn sanitize_truncates_multibyte_without_panic() {
-        // 4-byte emoji, truncate to 1 char.
-        assert_eq!(sanitize_line("😀x", 1), "😀");
+        // '😀' is 2 columns wide: it fits in a 2-col budget but not a 1-col one.
+        assert_eq!(sanitize_line("😀x", 2), "😀");
+        assert_eq!(sanitize_line("😀x", 1), "");
+        // Never panics regardless of budget vs. char boundaries.
+        let _ = sanitize_line("😀😀😀", 3);
+    }
+
+    #[test]
+    fn sanitize_truncates_wide_chars_by_display_width() {
+        use unicode_width::UnicodeWidthStr;
+        // 10 CJK chars = 20 columns; budget 7 cols fits 3 chars (6 cols), not 4 (8).
+        let cjk = "你好世界你好世界你好"; // 10 wide chars
+        let out = sanitize_line(cjk, 7);
+        assert!(out.width() <= 7, "display width {} exceeds budget", out.width());
+        assert_eq!(out.chars().count(), 3);
     }
 
     #[test]
