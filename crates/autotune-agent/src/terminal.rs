@@ -255,6 +255,66 @@ pub fn rows_for_height(height: u16) -> usize {
     ((height / 4) as usize).clamp(3, 8)
 }
 
+/// Terminal dimensions `(width, height)` in cells for stderr, falling back to
+/// `(80, 24)` when the size can't be queried (e.g. stderr is not a TTY).
+pub fn stderr_size() -> (u16, u16) {
+    terminal_size::terminal_size_of(std::io::stderr())
+        .map(|(w, h)| (w.0, h.0))
+        .unwrap_or((80, 24))
+}
+
+/// Thread-safe, cloneable handle that renders a live dimmed tail of recent
+/// output lines to stderr, bounded to a fraction of the terminal height.
+///
+/// Created once per subprocess run; the stdout and stderr reader threads each
+/// hold a clone and call [`push_line`](Self::push_line) per line. Call
+/// [`finish`](Self::finish) after the child exits to erase the block. When
+/// stderr is not a TTY every method is a no-op (output is collected elsewhere).
+#[derive(Clone)]
+pub struct LiveTail {
+    inner: Arc<Mutex<TailState>>,
+    enabled: bool,
+    color: bool,
+}
+
+impl LiveTail {
+    /// Build a handle bound to stderr, gating on whether stderr is a TTY and on
+    /// the `NO_COLOR` convention (matching `style`).
+    pub fn stderr() -> Self {
+        use std::io::IsTerminal;
+        let is_tty = std::io::stderr().is_terminal();
+        Self {
+            inner: Arc::new(Mutex::new(TailState::new())),
+            enabled: is_tty,
+            color: is_tty && std::env::var_os("NO_COLOR").is_none(),
+        }
+    }
+
+    /// Push one output line and redraw the tail. No-op when not a TTY.
+    pub fn push_line(&self, line: &str) {
+        if !self.enabled {
+            return;
+        }
+        let (width, height) = stderr_size();
+        let mut out = std::io::stderr();
+        let mut state = self.inner.lock().unwrap();
+        state.push(line, height);
+        state.redraw(&mut out, width, self.color);
+        let _ = out.flush();
+    }
+
+    /// Erase the whole tail block. Call once after the command finishes.
+    pub fn finish(&self) {
+        if !self.enabled {
+            return;
+        }
+        let mut out = std::io::stderr();
+        let mut state = self.inner.lock().unwrap();
+        state.erase(&mut out);
+        let _ = out.flush();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,5 +488,23 @@ mod tests {
         let mut buf = Vec::new();
         t.draw(&mut buf, 6, false); // max_cols = 6 - (2+1) = 3
         assert_eq!(drawn(&buf), "  012\n");
+    }
+
+    #[test]
+    fn stderr_size_returns_positive_dims() {
+        // Not a TTY in the test runner -> falls back to the default.
+        let (w, h) = stderr_size();
+        assert!(w > 0 && h > 0);
+    }
+
+    #[test]
+    fn livetail_noop_when_not_tty() {
+        // In the test runner stderr is not a TTY, so push/finish are no-ops and
+        // must not panic. Clones share state.
+        let tail = LiveTail::stderr();
+        tail.push_line("anything");
+        let clone = tail.clone();
+        clone.push_line("more");
+        tail.finish();
     }
 }
