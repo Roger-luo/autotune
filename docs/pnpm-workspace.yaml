@@ -1,0 +1,7 @@
+# Allow these dependencies to run their install/build scripts.
+# Both ship prebuilt platform binaries; approving them clears pnpm's
+# "ignored build scripts" warning, which otherwise fails the dependency
+# check pnpm runs before the `build` script.
+allowBuilds:
+  esbuild: true
+  sharp: true

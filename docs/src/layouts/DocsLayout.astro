@@ -1,0 +1,87 @@
+---
+import type { MarkdownHeading } from 'astro';
+import Sidebar from '../components/Sidebar.astro';
+import ThemeToggle from '../components/ThemeToggle.astro';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+  headings?: MarkdownHeading[];
+}
+
+const SITE_TITLE = 'Autotune';
+const { title, description, headings = [] } = Astro.props;
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+const pageTitle = title === SITE_TITLE ? title : `${title} · ${SITE_TITLE}`;
+---
+
+<!doctype html>
+<html lang="en" data-theme="light" data-theme-mode="auto">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{pageTitle}</title>
+    {description && <meta name="description" content={description} />}
+    {/* Resolve the theme before first paint to avoid a flash of the wrong colors. */}
+    <script is:inline>
+      (function () {
+        try {
+          var v = localStorage.getItem('theme');
+          var mode = v === 'light' || v === 'dark' || v === 'auto' ? v : 'auto';
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+          var root = document.documentElement;
+          root.dataset.theme = resolved;
+          root.dataset.themeMode = mode;
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.svg" alt="" width="22" height="22" />
+          <span>{SITE_TITLE}</span>
+        </a>
+        <ThemeToggle />
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar-col">
+        <Sidebar />
+      </aside>
+
+      <main class="content">
+        <article class="prose">
+          <h1>{title}</h1>
+          {description && <p class="lead">{description}</p>}
+          <slot />
+        </article>
+        <footer class="content-footer">
+          <p>Autotune documentation · built with Astro</p>
+        </footer>
+      </main>
+
+      {
+        toc.length > 0 && (
+          <aside class="toc-col">
+            <nav class="toc" aria-label="On this page">
+              <p class="toc-title">On this page</p>
+              <ul>
+                {toc.map((h) => (
+                  <li class:list={[`toc-depth-${h.depth}`]}>
+                    <a href={`#${h.slug}`}>{h.text}</a>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          </aside>
+        )
+      }
+    </div>
+  </body>
+</html>

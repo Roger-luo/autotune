@@ -1,0 +1,35 @@
+---
+import { getCollection } from 'astro:content';
+
+// Build the navigation from the docs collection, ordered by `order` then title.
+const entries = await getCollection('docs');
+const items = entries
+  .map((entry) => ({
+    title: entry.data.title,
+    order: entry.data.order,
+    href: entry.id === 'index' ? '/' : `/${entry.id}/`,
+  }))
+  .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+
+const current = Astro.url.pathname;
+const isActive = (href: string) =>
+  href === current || (href !== '/' && current.startsWith(href));
+---
+
+<nav class="sidebar" aria-label="Documentation">
+  <ul>
+    {
+      items.map((item) => (
+        <li>
+          <a
+            href={item.href}
+            class:list={['nav-link', { active: isActive(item.href) }]}
+            aria-current={isActive(item.href) ? 'page' : undefined}
+          >
+            {item.title}
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</nav>
