@@ -4,14 +4,24 @@ import { getCollection } from 'astro:content';
 // Sections are rendered in this order; any others are appended alphabetically.
 const SECTION_ORDER = ['Guides', 'Crates', 'API Reference'];
 
-const entries = await getCollection('docs');
+// Merge the hand-written docs and the generated API-reference collections.
+const docsEntries = await getCollection('docs');
+const apiEntries = await getCollection('api');
 
-const items = entries.map((entry) => ({
-  label: entry.data.sidebarLabel ?? entry.data.title,
-  order: entry.data.order,
-  section: entry.data.section,
-  href: entry.id === 'index' ? '/' : `/${entry.id}/`,
-}));
+const items = [
+  ...docsEntries.map((entry) => ({
+    label: entry.data.sidebarLabel ?? entry.data.title,
+    order: entry.data.order,
+    section: entry.data.section,
+    href: entry.id === 'index' ? '/' : `/${entry.id}/`,
+  })),
+  ...apiEntries.map((entry) => ({
+    label: entry.data.sidebarLabel ?? entry.data.title,
+    order: entry.data.order,
+    section: entry.data.section,
+    href: `/api/${entry.id}/`,
+  })),
+];
 
 const sections = [...new Set(items.map((i) => i.section))].sort((a, b) => {
   const ia = SECTION_ORDER.indexOf(a);

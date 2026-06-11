@@ -8,15 +8,14 @@
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",
-    "api:rustdoc": "node scripts/rustdoc-to-json.mjs",
-    "api:build": "node scripts/gen-api.mjs",
-    "api:gen": "pnpm api:rustdoc && pnpm api:build"
+    "api:rustdoc": "node scripts/rustdoc-to-json.mjs"
   },
   "dependencies": {
     "astro": "^5"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.4",
+    "@types/node": "^22",
     "typescript": "^5.6.3"
   }
 }

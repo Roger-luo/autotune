@@ -3,10 +3,9 @@ node_modules/
 dist/
 .astro/
 
-# Raw rustdoc JSON (regenerate with `pnpm api:rustdoc`); the generated
-# Markdown under src/content/docs/api/ is committed so the site builds
-# without a Rust toolchain.
-.rustdoc/
+# Note: docs/.rustdoc/*.json (rustdoc output) is committed — the API-reference
+# content loader reads it directly, so the site builds without a Rust
+# toolchain. Regenerate it with `pnpm api:rustdoc`.
 
 # Environment & logs
 .env
