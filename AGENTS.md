@@ -122,6 +122,7 @@ Detailed notes on non-obvious mechanics live in [notes/](notes/):
 - [config-and-tasks.md](notes/config-and-tasks.md) — Global vs project config merge, task auto-forking, how the implementation agent receives AGENTS.md/CLAUDE.md.
 - [scoring-and-rank.md](notes/scoring-and-rank.md) — Current `rank` semantics, baseline-vs-best scoring behavior, and why report `Rank` is an improvement score rather than the raw metric.
 - [live-tail-rendering.md](notes/live-tail-rendering.md) — Dimmed rolling-tail rendering of subprocess/agent output, the cursor-up erase footgun, and the height-based line budget.
+- [docs-site.md](notes/docs-site.md) — The Astro docs site under `docs/`; API reference generated from rustdoc JSON via a live content loader, pinned to `format_version: 57`.
 
 ## Key Conventions
 

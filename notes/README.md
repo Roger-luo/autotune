@@ -26,3 +26,6 @@ took you a while to figure out and would not be obvious from reading the code.
 - [live-tail-rendering.md](live-tail-rendering.md) — How subprocess/agent output
   is shown as a dimmed rolling tail, the physical-vs-logical-row erase footgun,
   and the terminal-height line-count policy.
+- [docs-site.md](docs-site.md) — The Astro docs site under `docs/`, how the API
+  reference is generated from rustdoc JSON via a live content loader, and the
+  `format_version: 57` pinning footgun when nightly changes the format.
