@@ -839,6 +839,109 @@ fn scenario_run_fix_retry_discards_when_budget_exhausted() {
 }
 
 // ---------------------------------------------------------------------------
+// Live-tail flood regression
+// ---------------------------------------------------------------------------
+
+/// Config identical to CONFIG_TOML except the measure command floods stdout
+/// with 80 wide lines (>40 cols) before emitting the metric. Used to verify
+/// the live tail erase math stays correct under wrapping-width pressure.
+const NOISY_CONFIG_TOML: &str = r#"
+[task]
+name = "noisy-task"
+description = "noisy bench scenario"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "noisy-bench"
+command = ["sh", "-c", "i=0; while [ $i -lt 80 ]; do printf 'NOISELINE_%03d_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\n' \"$i\"; i=$((i+1)); done; echo 'metric_value: 42.0'"]
+timeout = 10
+adaptor = { type = "regex", patterns = [{ name = "metric_value", pattern = "metric_value: ([0-9.]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric_value", direction = "Minimize", weight = 1.0 }]
+guardrail_metrics = []
+"#;
+
+fn noisy_project() -> Project {
+    let project = Project::empty()
+        .file(".autotune.toml", NOISY_CONFIG_TOML)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+    project
+}
+
+/// End-to-end guard: when a measure command floods stdout with lines wider
+/// than the terminal, the dimmed live tail must NOT leave un-erased rows on
+/// screen. Rendered in a narrow PTY (forces wrapping if the erase math were
+/// wrong) that is tall enough not to scroll, the final screen must contain no
+/// leftover `NOISELINE` rows — the tail is erased on completion.
+#[test]
+fn scenario_run_live_tail_does_not_flood_narrow_terminal() {
+    use scenario::ScreenBuffer;
+
+    let project = noisy_project();
+    let script = write_script(
+        &project,
+        &[
+            // 1. Initial spawn: just prose.
+            "Ready to plan.",
+            // 2. First send (planning turn): a complete <plan>.
+            "<plan>\
+               <approach>noop</approach>\
+               <hypothesis>measure only</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let session = Scenario::new(autotune_bin())
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env(
+            "AUTOTUNE_MOCK_RESEARCH_SCRIPT",
+            script.to_string_lossy().as_ref(),
+        )
+        .current_dir(project.path())
+        .terminal(Terminal::pty(40, 100)) // narrow (forces wrap if buggy) + tall (no scroll)
+        .timeout(Duration::from_secs(60))
+        .spawn()
+        .unwrap();
+
+    let output = session.wait().unwrap();
+    let text = output.stdout();
+    assert!(!text.contains("panicked"), "must not panic.\noutput:\n{text}");
+
+    // Render the full captured PTY stream the way a real 40×100 terminal
+    // would, applying every cursor-up / erase the live tail emitted.
+    // ScreenBuffer::new takes (rows, cols).
+    let mut screen = ScreenBuffer::new(100, 40);
+    screen.process(output.stdout_raw());
+    let lines = screen.lines();
+
+    // The fix erases the tail on completion; on a non-scrolling screen no
+    // NOISELINE row may survive. (Allow <=1 for the documented bottom-of-screen
+    // scroll edge.)
+    let noise_rows = lines.iter().filter(|l| l.contains("NOISELINE")).count();
+    assert!(
+        noise_rows <= 1,
+        "live tail left {noise_rows} un-erased NOISELINE rows on a 40-col terminal:\n{}",
+        lines.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Judge adaptor scenario
 // ---------------------------------------------------------------------------
 
