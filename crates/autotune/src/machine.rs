@@ -9,6 +9,7 @@ use chrono::{DateTime, Days, FixedOffset, NaiveTime, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 
 use crate::agent_factory::{AgentRole, build_agent_for_backend, resolve_backend_name};
+use autotune_agent::aprintln;
 use autotune_agent::{Agent, AgentSession};
 use autotune_config::AutotuneConfig;
 use autotune_implement::{FixOutcome, ImplementError};
@@ -106,7 +107,7 @@ pub fn run_single_phase(
             run_recorded(config, store, state)?;
         }
         Phase::Done => {
-            println!("[autotune] task complete");
+            aprintln!("[autotune] task complete");
             return Ok(true);
         }
     }
@@ -127,7 +128,7 @@ pub fn run_task(
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
-            println!("[autotune] shutdown requested, saving state and exiting");
+            aprintln!("[autotune] shutdown requested, saving state and exiting");
             store.save_state(&state)?;
             return Ok(());
         }
@@ -141,13 +142,13 @@ pub fn run_task(
                     // the subprocess dies with SIGINT and the phase returns an
                     // error. Recognize that and exit cleanly with saved state.
                     PhaseFailure::ExitCleanly => {
-                        println!("[autotune] interrupted — saving state and exiting");
+                        aprintln!("[autotune] interrupted — saving state and exiting");
                         shutdown.store(true, Ordering::SeqCst);
                         store.save_state(&state)?;
                         return Ok(());
                     }
                     PhaseFailure::WaitAndRetry { until } => {
-                        println!(
+                        aprintln!(
                             "[autotune] agent rate limited — waiting until {} and retrying",
                             until.format("%Y-%m-%d %H:%M:%S UTC")
                         );
@@ -321,7 +322,7 @@ fn run_planning(
     research_session: &AgentSession,
     approver: Option<&dyn ToolApprover>,
 ) -> Result<()> {
-    println!(
+    aprintln!(
         "[autotune] iteration {} — planning",
         state.current_iteration
     );
@@ -370,13 +371,17 @@ fn run_planning(
         &state.advancing_branch,
     )
     .context("failed to set up worktree")?;
-    println!(
+    aprintln!(
         "[autotune] created branch '{}' from '{}'",
-        branch_name, state.advancing_branch
+        branch_name,
+        state.advancing_branch
     );
-    println!(
+    aprintln!(
         "[autotune] created worktree at {} on branch '{}'",
-        worktree_path.strip_prefix(&repo_root).unwrap_or(&worktree_path).display(),
+        worktree_path
+            .strip_prefix(&repo_root)
+            .unwrap_or(&worktree_path)
+            .display(),
         branch_name
     );
 
@@ -417,7 +422,7 @@ fn run_implementing(
         .implementation
         .as_ref()
         .and_then(|c| c.model.as_deref());
-    println!(
+    aprintln!(
         "[autotune] iteration {} — implementing '{}': model={}",
         state.current_iteration,
         approach.name,
@@ -483,9 +488,10 @@ fn run_implementing(
                 ImplementError::Git { source } => format!("git error: {source}"),
                 ImplementError::Agent { source } => format!("agent error: {source}"),
             };
-            println!(
+            aprintln!(
                 "[autotune] iteration {} — {}, recording as crash",
-                state.current_iteration, reason
+                state.current_iteration,
+                reason
             );
             autotune_agent::trace::record(
                 "phase.decision",
@@ -507,9 +513,10 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
         .current_approach
         .as_ref()
         .context("no current approach in Testing phase")?;
-    println!(
+    aprintln!(
         "[autotune] iteration {} — testing '{}'",
-        state.current_iteration, approach.name
+        state.current_iteration,
+        approach.name
     );
 
     let test_results = autotune_test::run_all_tests(&config.test, &approach.worktree_path)
@@ -575,9 +582,10 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
                     approach_mut.fix_attempts
                 )
             };
-            println!(
+            aprintln!(
                 "[autotune] iteration {} — tests failed ({}), discarding",
-                state.current_iteration, reason
+                state.current_iteration,
+                reason
             );
             record_discard(state, store, &reason)?;
         } else {
@@ -585,7 +593,7 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
             // (tier-2) still sees all prior failures, not just the most
             // recent one the session already knows about.
             approach_mut.fix_history.push(test_output);
-            println!(
+            aprintln!(
                 "[autotune] iteration {} — tests failed, entering Fixing (attempt {}/{})",
                 state.current_iteration,
                 approach_mut.fix_attempts + 1,
@@ -687,7 +695,7 @@ fn run_fixing(
                 "implementer session unproductive and fresh-spawn budget ({max_fresh}) exhausted"
             )
         };
-        println!("[autotune] iteration {iteration} — {reason}");
+        aprintln!("[autotune] iteration {iteration} — {reason}");
         return record_discard(state, store, &reason);
     }
 
@@ -780,7 +788,7 @@ fn run_fixing(
                     approach_mut.impl_session_id = None;
                     (approach_mut.fix_attempts, approach_mut.fresh_spawns)
                 };
-                println!(
+                aprintln!(
                     "[autotune] iteration {iteration} — implementer session went unproductive; will respawn"
                 );
                 autotune_agent::trace::record(
@@ -808,7 +816,7 @@ fn run_fixing(
             } else {
                 // Fresh respawn also produced nothing — give up.
                 let reason = "implementer produced no edits after fresh respawn".to_string();
-                println!("[autotune] iteration {iteration} — {reason}");
+                aprintln!("[autotune] iteration {iteration} — {reason}");
                 autotune_agent::trace::record(
                     "phase.decision",
                     serde_json::json!({
@@ -958,9 +966,10 @@ fn run_measuring(
         .current_approach
         .as_ref()
         .context("no current approach in Measuring phase")?;
-    println!(
+    aprintln!(
         "[autotune] iteration {} — measuring '{}'",
-        state.current_iteration, approach.name
+        state.current_iteration,
+        approach.name
     );
 
     let approach_name = approach.name.clone();
@@ -1005,9 +1014,10 @@ fn run_scoring(
         .as_ref()
         .map(|a| a.name.clone())
         .context("no current approach in Scoring phase")?;
-    println!(
+    aprintln!(
         "[autotune] iteration {} — scoring '{}'",
-        state.current_iteration, approach_name
+        state.current_iteration,
+        approach_name
     );
 
     let candidate_metrics = state
@@ -1045,8 +1055,8 @@ fn run_scoring(
 
     let (score_line, metrics_line) =
         format_scoring_status_lines(state.current_iteration, &score_output, &candidate_metrics);
-    println!("{score_line}");
-    println!("{metrics_line}");
+    aprintln!("{score_line}");
+    aprintln!("{metrics_line}");
     autotune_agent::trace::record(
         "phase.decision",
         serde_json::json!({
@@ -1143,9 +1153,10 @@ fn run_integrating(
         .current_approach
         .as_ref()
         .context("no current approach in Integrating phase")?;
-    println!(
+    aprintln!(
         "[autotune] iteration {} — integrating '{}'",
-        state.current_iteration, approach.name
+        state.current_iteration,
+        approach.name
     );
 
     // Rebase the worktree branch onto the advancing branch. Run the rebase
@@ -1156,7 +1167,7 @@ fn run_integrating(
         .context("rebase onto advancing branch failed")?;
 
     if !clean && let Err(e) = resolve_rebase_conflicts(agent, wt, research_session) {
-        println!("[autotune] conflict resolution failed: {e}, discarding");
+        aprintln!("[autotune] conflict resolution failed: {e}, discarding");
         let _ = autotune_git::rebase_abort(wt);
         return record_discard(state, store, &format!("rebase conflict: {e}"));
     }
@@ -1194,7 +1205,7 @@ fn resolve_rebase_conflicts(
         research_session,
         autotune_agent::ToolPermission::Allow("Edit".into()),
     ) {
-        println!("[autotune] warning: could not grant Edit to research session: {e}");
+        aprintln!("[autotune] warning: could not grant Edit to research session: {e}");
     }
 
     // A rebase may hit multiple conflict steps (one per commit being replayed).
@@ -1205,7 +1216,7 @@ fn resolve_rebase_conflicts(
         if conflicted.is_empty() {
             break;
         }
-        println!(
+        aprintln!(
             "[autotune] rebase conflict round {} — {} file(s)",
             round + 1,
             conflicted.len()
@@ -1260,7 +1271,7 @@ fn build_conflict_resolution_prompt(conflicted_files: &[String], repo_root: &Pat
 }
 
 fn run_recorded(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
-    println!(
+    aprintln!(
         "[autotune] iteration {} — recorded",
         state.current_iteration
     );
@@ -1358,7 +1369,7 @@ fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
                     .filter(|r| r.status != IterationStatus::Baseline)
                     .count() as u64;
                 if non_baseline_count >= *max {
-                    println!("[autotune] stop: reached max iterations ({max})");
+                    aprintln!("[autotune] stop: reached max iterations ({max})");
                     return Ok(true);
                 }
             }
@@ -1374,9 +1385,10 @@ fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
             .find(|r| r.status == IterationStatus::Kept)
         && last_kept.rank >= target
     {
-        println!(
+        aprintln!(
             "[autotune] stop: target improvement reached (rank {:.4} >= {:.4})",
-            last_kept.rank, target
+            last_kept.rank,
+            target
         );
         return Ok(true);
     }
@@ -1409,7 +1421,7 @@ fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
                     format!("{}={:.4} {} {:.4}", tm.name, cur, op, tm.value)
                 })
                 .collect();
-            println!(
+            aprintln!(
                 "[autotune] stop: target metric(s) reached ({})",
                 summary.join(", ")
             );

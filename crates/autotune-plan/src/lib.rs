@@ -1,3 +1,4 @@
+use autotune_agent::aeprintln;
 use autotune_agent::protocol::{ToolRequest, parse_tool_requests};
 use autotune_agent::{
     Agent, AgentError, AgentResponse, AgentSession, EventHandler, ToolPermission,
@@ -396,7 +397,7 @@ pub fn plan_next(
                 return Ok(hypothesis);
             }
             Err(err) if attempt < MAX_PLAN_ATTEMPTS && is_retryable(&err) => {
-                eprintln!(
+                aeprintln!(
                     "[autotune] planning response invalid (attempt {attempt}/{MAX_PLAN_ATTEMPTS}): {err} — asking agent to retry"
                 );
                 let correction = build_plan_correction_prompt(&err);

@@ -1,6 +1,7 @@
 use autotune_adaptor::criterion::CriterionAdaptor;
 use autotune_adaptor::regex::{RegexAdaptor, RegexPatternConfig};
 use autotune_adaptor::{MetricAdaptor, Metrics};
+use autotune_agent::aprintln;
 
 // Re-export for consumers that need to work with build_adaptor
 pub use autotune_adaptor::MeasureOutput;
@@ -148,7 +149,7 @@ pub fn run_judge_measure(
     agent_cfg.prompt = prompt;
 
     let model = ctx.agent_config.model.as_deref().unwrap_or("default");
-    println!("[autotune] judge '{}': model={}", config.name, model);
+    aprintln!("[autotune] judge '{}': model={}", config.name, model);
 
     let (maybe_handler, maybe_finish) = if let Some(ref factory) = ctx.make_stream {
         let status = format!("judge '{}' evaluating...", config.name);

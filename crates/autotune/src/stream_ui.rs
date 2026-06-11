@@ -16,6 +16,7 @@
 //!   response is treated as the XML protocol payload and suppressed so it
 //!   doesn't leak into the terminal.
 
+use autotune_agent::aprintln;
 use autotune_agent::{AgentEvent, EventHandler};
 use std::collections::VecDeque;
 use std::io::Write;
@@ -322,7 +323,7 @@ impl autotune_plan::ToolApprover for TerminalToolApprover {
     ) -> std::io::Result<autotune_plan::ApprovalDecision> {
         clear_status();
         println!();
-        println!("[autotune] research agent requests a tool:");
+        aprintln!("[autotune] research agent requests a tool:");
         let scope_str = match &req.scope {
             Some(s) if !s.is_empty() => format!("{}({s})", req.tool),
             _ => req.tool.clone(),

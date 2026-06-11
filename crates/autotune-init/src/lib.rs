@@ -6,6 +6,7 @@ pub use error::InitError;
 pub use input::{MockInput, TerminalInput, UserInput};
 pub use prompt::build_init_prompt;
 
+use autotune_agent::aprintln;
 use autotune_agent::protocol::{AgentFragment, RubricProposal, parse_agent_response};
 use autotune_agent::{
     Agent, AgentConfig, AgentConfigWithEvents, AgentEvent, AgentSession, EventHandler,
@@ -424,7 +425,7 @@ fn show_rubric_proposal(
     user_input: &dyn UserInput,
 ) -> Result<RubricOutcome, InitError> {
     use autotune_agent::protocol::QuestionOption;
-    println!("[autotune] Proposed rubric:");
+    aprintln!("[autotune] Proposed rubric:");
     println!("  ID:          {}", rubric.id);
     println!("  Title:       {}", rubric.title);
     println!("  Instruction: {}", rubric.instruction);
@@ -471,7 +472,7 @@ fn print_trial_failure(err: &str) {
         .lines()
         .find(|l| !l.is_empty())
         .unwrap_or("unknown error");
-    println!("[autotune] trial run failed: {}", summary);
+    aprintln!("[autotune] trial run failed: {}", summary);
 }
 
 /// Result of a successful init: the config and optional baseline metrics
@@ -577,7 +578,7 @@ fn run_init_inner(
 
     // Show agent info
     let model_display = model.as_deref().unwrap_or("default");
-    println!(
+    aprintln!(
         "[autotune] init agent: backend={}, model={}",
         agent.backend_name(),
         model_display
@@ -806,7 +807,7 @@ fn run_init_inner(
                 }
                 AgentFragment::Task(task) => match validate_task(&task) {
                     FragmentOutcome::Accepted(msg) => {
-                        println!("[autotune] {msg}");
+                        aprintln!("[autotune] {msg}");
                         ack_lines.push(msg);
                         autotune_agent::trace::record(
                             "init.fragment",
@@ -815,7 +816,7 @@ fn run_init_inner(
                         acc.task = Some(task);
                     }
                     FragmentOutcome::Rejected(err) => {
-                        println!("[autotune] validation error: {err}");
+                        aprintln!("[autotune] validation error: {err}");
                         autotune_agent::trace::record(
                             "init.fragment",
                             serde_json::json!({"kind": "task", "outcome": "rejected", "error": err}),
@@ -825,7 +826,7 @@ fn run_init_inner(
                 },
                 AgentFragment::Paths(paths) => match validate_paths(&paths) {
                     FragmentOutcome::Accepted(msg) => {
-                        println!("[autotune] {msg}");
+                        aprintln!("[autotune] {msg}");
                         ack_lines.push(msg);
                         autotune_agent::trace::record(
                             "init.fragment",
@@ -834,7 +835,7 @@ fn run_init_inner(
                         acc.paths = Some(paths);
                     }
                     FragmentOutcome::Rejected(err) => {
-                        println!("[autotune] validation error: {err}");
+                        aprintln!("[autotune] validation error: {err}");
                         autotune_agent::trace::record(
                             "init.fragment",
                             serde_json::json!({"kind": "paths", "outcome": "rejected", "error": err}),
@@ -844,7 +845,7 @@ fn run_init_inner(
                 },
                 AgentFragment::Test(test) => match validate_test(&test) {
                     FragmentOutcome::Accepted(msg) => {
-                        println!("[autotune] {msg}");
+                        aprintln!("[autotune] {msg}");
                         ack_lines.push(msg);
                         autotune_agent::trace::record(
                             "init.fragment",
@@ -853,7 +854,7 @@ fn run_init_inner(
                         acc.tests.push(test);
                     }
                     FragmentOutcome::Rejected(err) => {
-                        println!("[autotune] validation error: {err}");
+                        aprintln!("[autotune] validation error: {err}");
                         autotune_agent::trace::record(
                             "init.fragment",
                             serde_json::json!({"kind": "test", "outcome": "rejected", "error": err}),
@@ -863,7 +864,7 @@ fn run_init_inner(
                 },
                 AgentFragment::Measure(measure) => match validate_measure(&measure, &acc) {
                     FragmentOutcome::Accepted(msg) => {
-                        println!("[autotune] {msg}");
+                        aprintln!("[autotune] {msg}");
                         ack_lines.push(msg);
                         autotune_agent::trace::record(
                             "init.fragment",
@@ -885,7 +886,7 @@ fn run_init_inner(
                         }
                     }
                     FragmentOutcome::Rejected(err) => {
-                        println!("[autotune] validation error: {err}");
+                        aprintln!("[autotune] validation error: {err}");
                         autotune_agent::trace::record(
                             "init.fragment",
                             serde_json::json!({"kind": "measure", "outcome": "rejected", "error": err}),
@@ -895,7 +896,7 @@ fn run_init_inner(
                 },
                 AgentFragment::Score(score) => match validate_score(&score, &acc) {
                     FragmentOutcome::Accepted(msg) => {
-                        println!("[autotune] {msg}");
+                        aprintln!("[autotune] {msg}");
                         ack_lines.push(msg);
                         autotune_agent::trace::record(
                             "init.fragment",
@@ -904,7 +905,7 @@ fn run_init_inner(
                         acc.score = Some(score);
                     }
                     FragmentOutcome::Rejected(err) => {
-                        println!("[autotune] validation error: {err}");
+                        aprintln!("[autotune] validation error: {err}");
                         autotune_agent::trace::record(
                             "init.fragment",
                             serde_json::json!({"kind": "score", "outcome": "rejected", "error": err}),
@@ -914,7 +915,7 @@ fn run_init_inner(
                 },
                 AgentFragment::Agent(agent_cfg) => {
                     let msg = "agent config accepted".to_string();
-                    println!("[autotune] {msg}");
+                    aprintln!("[autotune] {msg}");
                     ack_lines.push(msg);
                     acc.agent = Some(*agent_cfg);
                 }
@@ -925,7 +926,7 @@ fn run_init_inner(
                                 "rubric: duplicate id '{}' — rubric ids must be unique within a judge measure",
                                 rubric.id
                             );
-                            println!("[autotune] validation error: {err}");
+                            aprintln!("[autotune] validation error: {err}");
                             rejection_lines.push(err);
                         } else {
                             match show_rubric_proposal(&rubric, user_input)? {
@@ -971,7 +972,7 @@ fn run_init_inner(
                         }
                     } else {
                         let err = "rubric: no active judge measure — emit <measure> with <adaptor><type>judge</type> first".to_string();
-                        println!("[autotune] validation error: {err}");
+                        aprintln!("[autotune] validation error: {err}");
                         rejection_lines.push(err);
                     }
                 }
@@ -979,7 +980,7 @@ fn run_init_inner(
                     if let Some(pending) = acc.pending_judge.as_ref() {
                         if pending.approved_rubrics.is_empty() {
                             let err = "rubrics-done: at least one rubric must be approved before finalizing".to_string();
-                            println!("[autotune] validation error: {err}");
+                            aprintln!("[autotune] validation error: {err}");
                             rejection_lines.push(err);
                         } else {
                             let pending = acc.pending_judge.take().unwrap();
@@ -998,7 +999,7 @@ fn run_init_inner(
                         }
                     } else {
                         let err = "rubrics-done: no active judge measure".to_string();
-                        println!("[autotune] validation error: {err}");
+                        aprintln!("[autotune] validation error: {err}");
                         rejection_lines.push(err);
                     }
                 }
@@ -1043,10 +1044,10 @@ fn run_init_inner(
                 let trial_config = acc
                     .clone_assemble()
                     .expect("is_complete() was true but clone_assemble() returned None");
-                println!("[autotune] validating config — running trial run...");
+                aprintln!("[autotune] validating config — running trial run...");
                 match validator(&trial_config) {
                     Ok(metrics) => {
-                        println!("[autotune] baseline metrics: {metrics:?}");
+                        aprintln!("[autotune] baseline metrics: {metrics:?}");
                         autotune_agent::trace::record(
                             "init.validation",
                             serde_json::json!({"outcome": "ok", "metrics": metrics}),

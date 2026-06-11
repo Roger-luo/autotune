@@ -289,10 +289,10 @@ impl CodexAgent {
         })?;
 
         // Surface agent-reported errors when no successful response was received.
-        if last_message.is_empty() {
-            if let Some(err_msg) = agent_error {
-                return Err(AgentError::CommandFailed { message: err_msg });
-            }
+        if last_message.is_empty()
+            && let Some(err_msg) = agent_error
+        {
+            return Err(AgentError::CommandFailed { message: err_msg });
         }
 
         Ok(AgentResponse {

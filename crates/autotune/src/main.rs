@@ -13,6 +13,7 @@ use chrono::Utc;
 use clap::Parser;
 
 use autotune_agent::Agent;
+use autotune_agent::{aeprintln, aprintln};
 use autotune_config::global::GlobalConfig;
 use autotune_config::{AutotuneConfig, ScoreConfig};
 use autotune_score::ScoreCalculator;
@@ -70,8 +71,12 @@ fn find_repo_root() -> Result<PathBuf> {
 
 fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
     let config_path = repo_root.join(".autotune.toml");
-    AutotuneConfig::load(&config_path)
-        .with_context(|| format!("failed to load config from {}", rel(&config_path, repo_root)))
+    AutotuneConfig::load(&config_path).with_context(|| {
+        format!(
+            "failed to load config from {}",
+            rel(&config_path, repo_root)
+        )
+    })
 }
 
 fn global_user_config_path() -> Result<PathBuf> {
@@ -139,7 +144,7 @@ fn prepare_run_task_dir(repo_root: &Path, config: &mut AutotuneConfig) -> Result
         // If state.json is missing, this is leftover from a failed previous
         // run (crashed before state was persisted). Clean it up and retry.
         if !task_dir.join("state.json").exists() {
-            println!(
+            aprintln!(
                 "[autotune] removing incomplete task state at {}",
                 rel(&task_dir, repo_root)
             );
@@ -151,9 +156,10 @@ fn prepare_run_task_dir(repo_root: &Path, config: &mut AutotuneConfig) -> Result
             // the existing task should use `resume` instead.
             let original_name = config.task.name.clone();
             let forked_name = next_available_task_name(repo_root, &original_name)?;
-            println!(
+            aprintln!(
                 "[autotune] task '{}' already exists — forking as '{}' (use 'resume' to continue the existing task)",
-                original_name, forked_name
+                original_name,
+                forked_name
             );
             config.task.name = forked_name;
             task_dir = config.task_dir(repo_root);
@@ -259,7 +265,7 @@ fn global_backend_name(global_config: &GlobalConfig, role: AgentRole) -> Option<
 fn build_agent(config: &AutotuneConfig, role: AgentRole) -> Result<Box<dyn Agent>> {
     #[cfg(feature = "mock")]
     if std::env::var("AUTOTUNE_MOCK").is_ok() {
-        eprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
+        aeprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
         let mut builder = autotune_mock::MockAgent::builder();
 
         // Scenario tests can drive the research agent by pointing
@@ -372,7 +378,7 @@ fn build_agent_from_global(
 ) -> Result<Box<dyn Agent>> {
     #[cfg(feature = "mock")]
     if std::env::var("AUTOTUNE_MOCK").is_ok() {
-        eprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
+        aeprintln!("[autotune] using mock agent (AUTOTUNE_MOCK is set)");
         return Ok(Box::new(mock_init_agent()));
     }
 
@@ -648,7 +654,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Run sanity tests
     if !config.test.is_empty() {
-        println!("[autotune] running sanity tests...");
+        aprintln!("[autotune] running sanity tests...");
         let test_results = autotune_test::run_all_tests(&config.test, &repo_root)
             .context("sanity tests failed to execute")?;
         if !autotune_test::all_passed(&test_results) {
@@ -659,11 +665,11 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
                 .collect();
             bail!("sanity tests failed: {}", failed.join(", "));
         }
-        println!("[autotune] sanity tests passed");
+        aprintln!("[autotune] sanity tests passed");
     }
 
     // Take baseline measurements
-    println!("[autotune] collecting baseline metrics...");
+    aprintln!("[autotune] collecting baseline metrics...");
     let (baseline_metrics, baseline_reports) = autotune_benchmark::run_all_measures_with_output(
         &config.measure,
         &repo_root,
@@ -672,7 +678,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         judge_ctx.as_ref(),
     )
     .context("baseline measures failed")?;
-    println!("[autotune] baseline metrics: {:?}", baseline_metrics);
+    aprintln!("[autotune] baseline metrics: {:?}", baseline_metrics);
 
     // Persist raw baseline stdout/stderr per measure so the research agent
     // can look up detailed reports (e.g. coverage output) on demand.
@@ -694,12 +700,16 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Spawn research agent
     let research_model = config.agent.research.as_ref().and_then(|r| r.model.clone());
-    println!(
+    aprintln!(
         "[autotune] spawning research agent: model={}",
         research_model.as_deref().unwrap_or("default"),
     );
-    let research_prompt =
-        build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files, &repo_root);
+    let research_prompt = build_research_agent_prompt(
+        &config,
+        &baseline_metrics,
+        &baseline_output_files,
+        &repo_root,
+    );
 
     let mut research_config = research_agent_session_config(&config, &repo_root);
     research_config.prompt = research_prompt;
@@ -732,7 +742,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     spawn_stream.finish();
     let research_response = _research_response;
 
-    println!(
+    aprintln!(
         "[autotune] research agent session: {}",
         research_response.session_id
     );
@@ -746,9 +756,10 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let advancing_branch = format!("autotune/{}-main", config.task.name);
     autotune_git::create_branch_from(&repo_root, &advancing_branch, &config.task.canonical_branch)
         .context("failed to create advancing branch")?;
-    println!(
+    aprintln!(
         "[autotune] created advancing branch '{}' from '{}'",
-        advancing_branch, config.task.canonical_branch
+        advancing_branch,
+        config.task.canonical_branch
     );
 
     // Initialize state
@@ -765,7 +776,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     ctrlc::set_handler(move || {
-        println!("\n[autotune] received Ctrl+C, shutting down gracefully...");
+        aprintln!("\n[autotune] received Ctrl+C, shutting down gracefully...");
         shutdown_clone.store(true, Ordering::SeqCst);
     })
     .context("failed to set Ctrl+C handler")?;
@@ -795,9 +806,9 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         false,
         &agent.handover_command(&research_session),
     );
-    println!("{status_line}");
-    println!("{handover_line}");
-    println!("[autotune] results at: {}", rel(&task_dir, &repo_root));
+    aprintln!("{status_line}");
+    aprintln!("{handover_line}");
+    aprintln!("[autotune] results at: {}", rel(&task_dir, &repo_root));
 
     Ok(())
 }
@@ -812,8 +823,13 @@ fn cmd_resume(
     let autotune_dir = repo_root.join(".autotune");
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
-    let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
+    let store = TaskStore::open(&task_dir).with_context(|| {
+        format!(
+            "task '{}' not found at {}",
+            task_name,
+            rel(&task_dir, &repo_root)
+        )
+    })?;
 
     // Load frozen config from snapshot
     let config_snapshot = store
@@ -849,7 +865,7 @@ fn cmd_resume(
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     ctrlc::set_handler(move || {
-        println!("\n[autotune] received Ctrl+C, shutting down gracefully...");
+        aprintln!("\n[autotune] received Ctrl+C, shutting down gracefully...");
         shutdown_clone.store(true, Ordering::SeqCst);
     })
     .context("failed to set Ctrl+C handler")?;
@@ -898,8 +914,8 @@ fn cmd_resume(
     };
     let (status_line, handover_line) =
         completion_messages(&task_name, true, &agent.handover_command(&research_session));
-    println!("{status_line}");
-    println!("{handover_line}");
+    aprintln!("{status_line}");
+    aprintln!("{handover_line}");
 
     Ok(())
 }
@@ -978,12 +994,12 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
         load_config(&repo_root)?
     } else {
         // Agent-assisted init
-        println!("[autotune] no .autotune.toml found — starting agent-assisted init");
+        aprintln!("[autotune] no .autotune.toml found — starting agent-assisted init");
 
         let config = match run_agent_assisted_init(&repo_root)? {
             InitFlowOutcome::Config(config) => *config,
             InitFlowOutcome::Cancelled => {
-                println!("\n[autotune] init cancelled");
+                aprintln!("\n[autotune] init cancelled");
                 return Ok(());
             }
         };
@@ -1001,12 +1017,12 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
     if should_write {
         let toml_content = toml::to_string_pretty(&config).context("failed to serialize config")?;
         std::fs::write(&config_path, &toml_content).context("failed to write .autotune.toml")?;
-        println!("[autotune] wrote .autotune.toml");
+        aprintln!("[autotune] wrote .autotune.toml");
     }
 
     println!();
-    println!("[autotune] task '{}' configured", config.task.name);
-    println!("[autotune] run `autotune run` to start the tune loop");
+    aprintln!("[autotune] task '{}' configured", config.task.name);
+    aprintln!("[autotune] run `autotune run` to start the tune loop");
 
     Ok(())
 }
@@ -1311,7 +1327,10 @@ fn run_with_live_tail(
     let stdout_thread = std::thread::spawn(move || {
         let reader = BufReader::new(child_stdout);
         for line in reader.lines().map_while(Result::ok) {
-            stdout_buf2.lock().unwrap().extend_from_slice(line.as_bytes());
+            stdout_buf2
+                .lock()
+                .unwrap()
+                .extend_from_slice(line.as_bytes());
             stdout_buf2.lock().unwrap().push(b'\n');
             {
                 let mut t = tail2.lock().unwrap();
@@ -1329,7 +1348,10 @@ fn run_with_live_tail(
     let stderr_thread = std::thread::spawn(move || {
         let reader = BufReader::new(child_stderr);
         for line in reader.lines().map_while(Result::ok) {
-            stderr_buf2.lock().unwrap().extend_from_slice(line.as_bytes());
+            stderr_buf2
+                .lock()
+                .unwrap()
+                .extend_from_slice(line.as_bytes());
             stderr_buf2.lock().unwrap().push(b'\n');
             {
                 let mut t = tail3.lock().unwrap();
@@ -1789,8 +1811,13 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
     let autotune_dir = repo_root.join(".autotune");
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
-    let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
+    let store = TaskStore::open(&task_dir).with_context(|| {
+        format!(
+            "task '{}' not found at {}",
+            task_name,
+            rel(&task_dir, &repo_root)
+        )
+    })?;
 
     // Load frozen config from snapshot
     let config_snapshot = store
@@ -1856,9 +1883,10 @@ fn cmd_step(task_name: String, expected_phase: Phase) -> Result<()> {
         },
     )?;
 
-    println!(
+    aprintln!(
         "[autotune] step complete — task '{}' is now in phase {}",
-        task_name, state.current_phase
+        task_name,
+        state.current_phase
     );
 
     Ok(())
@@ -1869,8 +1897,13 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     let autotune_dir = repo_root.join(".autotune");
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
-    let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
+    let store = TaskStore::open(&task_dir).with_context(|| {
+        format!(
+            "task '{}' not found at {}",
+            task_name,
+            rel(&task_dir, &repo_root)
+        )
+    })?;
 
     let state = store.load_state().context("failed to load state")?;
     let ledger = store.load_ledger().context("failed to load ledger")?;
@@ -1885,9 +1918,10 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     std::fs::write(&output_path, &json)
         .with_context(|| format!("failed to write export to {}", output_path))?;
 
-    println!(
+    aprintln!(
         "[autotune] exported task '{}' to {}",
-        task_name, output_path
+        task_name,
+        output_path
     );
 
     Ok(())
@@ -1907,8 +1941,13 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
     let autotune_dir = repo_root.join(".autotune");
     let task_dir = autotune_dir.join("tasks").join(&task_name);
 
-    let store = TaskStore::open(&task_dir)
-        .with_context(|| format!("task '{}' not found at {}", task_name, rel(&task_dir, &repo_root)))?;
+    let store = TaskStore::open(&task_dir).with_context(|| {
+        format!(
+            "task '{}' not found at {}",
+            task_name,
+            rel(&task_dir, &repo_root)
+        )
+    })?;
 
     let state = store.load_state().context("failed to load task state")?;
     let advancing_branch = &state.advancing_branch;
@@ -1930,7 +1969,7 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
             if wt_path.is_dir()
                 && let Err(e) = autotune_git::remove_worktree(&repo_root, &wt_path)
             {
-                eprintln!(
+                aeprintln!(
                     "[autotune] warning: could not remove worktree at {}: {}",
                     rel(&wt_path, &repo_root),
                     e
@@ -1947,7 +1986,7 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
             "fast-forward '{advancing_branch}' into '{canonical_branch}' failed — histories may have diverged"
         )
     })?;
-    println!("[autotune] fast-forwarded '{advancing_branch}' → '{canonical_branch}'");
+    aprintln!("[autotune] fast-forwarded '{advancing_branch}' → '{canonical_branch}'");
 
     // Delete all worktree branches (autotune/<task>/<slug>).
     let branch_prefix = format!("autotune/{task_name}/");
@@ -1955,22 +1994,22 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
         .context("failed to list worktree branches")?;
     for branch in &worktree_branches {
         if let Err(e) = autotune_git::delete_branch(&repo_root, branch) {
-            eprintln!("[autotune] warning: could not delete branch '{branch}': {e}");
+            aeprintln!("[autotune] warning: could not delete branch '{branch}': {e}");
         } else {
-            println!("[autotune] deleted branch '{branch}'");
+            aprintln!("[autotune] deleted branch '{branch}'");
         }
     }
 
     // Delete the advancing branch.
     if let Err(e) = autotune_git::delete_branch(&repo_root, advancing_branch) {
-        eprintln!(
+        aeprintln!(
             "[autotune] warning: could not delete advancing branch '{advancing_branch}': {e}"
         );
     } else {
-        println!("[autotune] deleted advancing branch '{advancing_branch}'");
+        aprintln!("[autotune] deleted advancing branch '{advancing_branch}'");
     }
 
-    println!("[autotune] task '{task_name}' integrated and cleaned up");
+    aprintln!("[autotune] task '{task_name}' integrated and cleaned up");
     Ok(())
 }
 
@@ -2728,8 +2767,12 @@ reasoning_effort = "low"
             PathBuf::from(".autotune/tasks/coverage-task/iterations/000-baseline/coverage.stderr"),
         ];
 
-        let prompt =
-            build_research_agent_prompt(&config, &baseline_metrics, &baseline_output_files, Path::new(""));
+        let prompt = build_research_agent_prompt(
+            &config,
+            &baseline_metrics,
+            &baseline_output_files,
+            Path::new(""),
+        );
 
         assert!(prompt.contains("- Name: coverage-task"));
         assert!(prompt.contains("- Description: Improve line coverage"));
@@ -2790,7 +2833,8 @@ reasoning_effort = "low"
 
     #[test]
     fn build_research_agent_prompt_forbids_test_edits_by_default() {
-        let prompt = build_research_agent_prompt(&sample_config(), &HashMap::new(), &[], Path::new(""));
+        let prompt =
+            build_research_agent_prompt(&sample_config(), &HashMap::new(), &[], Path::new(""));
 
         assert!(prompt.contains("must not modify test files"));
         assert!(!prompt.contains("may modify test files"));

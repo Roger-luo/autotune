@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod codex;
 pub mod protocol;
+pub mod style;
 pub mod terminal;
 pub mod trace;
 

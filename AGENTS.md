@@ -129,6 +129,7 @@ Detailed notes on non-obvious mechanics live in [notes/](notes/):
 - **No unsafe code:** Do not use `unsafe` blocks anywhere in the codebase. Use safe abstractions from crates like `nix` for Unix APIs, and `CommandExt::process_group()` instead of raw `libc` calls. For tests, prefer `ClaudeAgent::with_command()` over modifying environment variables (which requires `unsafe` in edition 2024).
 - **Atomic state writes:** All state persistence uses write-to-temp-then-rename (via `tempfile::NamedTempFile`)
 - **Direction types:** `autotune_config::Direction`, `autotune_score::weighted_sum::Direction`, and `autotune_score::threshold::Direction` are separate enums that need mapping in `main.rs`
+- **`[autotune]`-tagged status lines:** Emit them with `autotune_agent::aprintln!` / `aeprintln!`, **not** `println!` / `eprintln!`. These render the line in Autotune's accent color (orange) on a TTY so it's visually distinct from what the user types, and fall back to plain text when piped/redirected (keeping exact-string test assertions and log files clean). Color is gated on the destination stream being a terminal and honors `NO_COLOR`. See `autotune_agent::style`. (Functions that *return* a tagged `String` for printing elsewhere — e.g. `completion_messages` — stay plain `format!`; colorize at the `aprintln!` call site so their unit tests keep asserting the plain text.)
 
 ### Terminal state restoration
 
