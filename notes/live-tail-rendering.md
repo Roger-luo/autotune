@@ -21,15 +21,27 @@ behind, and they accumulate until the screen is full of dim text — drowning th
 The fix is to guarantee **one logical line == one physical row**: every line is
 sanitized (`sanitize_line`) and truncated to `width - indent - 1` columns using
 the *live* terminal width (`stderr_size`), so it can never wrap. Then the
-cursor-up count is exact. Corollaries:
+cursor-up count is exact *for blocks that fit on screen without scrolling*
+(see the scroll caveat below). Corollaries:
 
 - Never truncate by byte index (`&line[..120]` panics on a UTF-8 boundary) — we
   truncate by `char`.
 - Strip ANSI escapes from child output before truncating: truncating mid-escape
   corrupts the sequence, and a child-emitted reset would otherwise cancel our
-  dim styling. (Display-width of wide chars like CJK/emoji is *not* handled —
-  truncation is by char count — so a pathological all-wide-char line can still
-  wrap by a bounded amount. Tracked upstream.)
+  dim styling.
+
+Two known limitations where the cursor-up count can still be off by a bounded
+amount (neither floods the screen the way the original wrapping bug did):
+
+- **Wide characters.** Display-width of CJK/emoji is *not* handled — truncation
+  is by char count — so a pathological all-wide-char line can still wrap by a
+  bounded amount. Tracked upstream.
+- **Bottom-of-screen scroll.** When the drawn block sits against the last row,
+  printing it scrolls the viewport; the rows that scrolled off the top are gone,
+  but `\x1b[{N}A` still assumes they're there, so the next erase under-clears and
+  can leave one stale dim row. This is inherent to any in-place cursor-up
+  renderer (the old code had it too); fixing it properly needs a scroll region
+  or save/restore-cursor, which we judged not worth the complexity here.
 
 ## Height policy
 

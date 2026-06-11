@@ -251,8 +251,12 @@ fn describe_tool_use(tool: &str, input: &str) -> String {
     if input.is_empty() {
         format!("{tool}()")
     } else {
-        let summary = if input.len() > 60 {
-            format!("{}...", &input[..57])
+        // Truncate by `char`, not byte index: `&input[..57]` panics when byte
+        // 57 lands inside a multi-byte UTF-8 char (tool summaries can hold
+        // non-ASCII file paths / patterns).
+        let summary = if input.chars().count() > 60 {
+            let head: String = input.chars().take(57).collect();
+            format!("{head}...")
         } else {
             input.to_string()
         };
@@ -409,6 +413,19 @@ mod tests {
         assert!(
             result.starts_with("Grep("),
             "expected Grep( prefix: {result}"
+        );
+    }
+
+    #[test]
+    fn describe_tool_use_truncates_multibyte_on_char_boundary() {
+        // Byte 57 lands in the middle of the 2-byte 'é'; byte-slicing would
+        // panic. Char-based truncation must keep 57 chars and not panic.
+        let input = format!("{}é{}", "a".repeat(56), "b".repeat(20));
+        let result = describe_tool_use("Read", &input);
+        assert!(result.starts_with("Read(aaaa"));
+        assert!(
+            result.ends_with("...)"),
+            "expected truncation marker: {result}"
         );
     }
 

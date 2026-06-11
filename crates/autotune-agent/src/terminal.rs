@@ -227,7 +227,8 @@ impl TailState {
 
     /// Draw the current buffer: each line sanitized to the width budget,
     /// indented, dimmed when `color`. Records the row count so the next
-    /// [`erase`](Self::erase) matches exactly.
+    /// [`erase`](Self::erase) removes exactly these rows — exact for blocks
+    /// that fit without scrolling (see `notes/live-tail-rendering.md`).
     pub fn draw(&mut self, out: &mut impl Write, width: u16, color: bool) {
         let max_cols = (width as usize).saturating_sub(TAIL_INDENT + 1);
         for line in &self.lines {
@@ -413,6 +414,15 @@ mod tests {
         assert_eq!(sanitize_line("anything", 0), "");
     }
 
+    #[test]
+    fn sanitize_handles_truncated_escape() {
+        // A CSI opened but never terminated (stream cut off): drop the dangling
+        // sequence, keep the prefix, never panic.
+        assert_eq!(sanitize_line("abc\x1b[", 80), "abc");
+        // A lone trailing ESC.
+        assert_eq!(sanitize_line("abc\x1b", 80), "abc");
+    }
+
     fn drawn(buf: &[u8]) -> String {
         String::from_utf8(buf.to_vec()).unwrap()
     }
@@ -491,6 +501,27 @@ mod tests {
         let mut buf = Vec::new();
         t.draw(&mut buf, 6, false); // max_cols = 6 - (2+1) = 3
         assert_eq!(drawn(&buf), "  012\n");
+    }
+
+    #[test]
+    fn tailstate_draw_strips_ansi_and_never_exceeds_width() {
+        // The crux of the fix: a line carrying its own color codes AND wider
+        // than the terminal must, after strip + truncate, occupy exactly one
+        // physical row (so the cursor-up erase count stays exact).
+        let mut t = TailState::new();
+        t.push(&format!("\x1b[31m{}\x1b[0m", "x".repeat(200)), 24);
+        let width = 20u16;
+        let mut buf = Vec::new();
+        t.draw(&mut buf, width, false);
+        let out = drawn(&buf);
+        for row in out.lines() {
+            assert!(!row.contains('\x1b'), "child ANSI leaked into row: {row:?}");
+            assert!(
+                row.chars().count() <= width as usize,
+                "row would wrap ({} cols > {width}): {row:?}",
+                row.chars().count()
+            );
+        }
     }
 
     #[test]
