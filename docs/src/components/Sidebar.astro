@@ -1,35 +1,55 @@
 ---
 import { getCollection } from 'astro:content';
 
-// Build the navigation from the docs collection, ordered by `order` then title.
-const entries = await getCollection('docs');
-const items = entries
-  .map((entry) => ({
-    title: entry.data.title,
-    order: entry.data.order,
-    href: entry.id === 'index' ? '/' : `/${entry.id}/`,
-  }))
-  .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+// Sections are rendered in this order; any others are appended alphabetically.
+const SECTION_ORDER = ['Guides', 'Crates', 'API Reference'];
 
-const current = Astro.url.pathname;
-const isActive = (href: string) =>
-  href === current || (href !== '/' && current.startsWith(href));
+const entries = await getCollection('docs');
+
+const items = entries.map((entry) => ({
+  label: entry.data.sidebarLabel ?? entry.data.title,
+  order: entry.data.order,
+  section: entry.data.section,
+  href: entry.id === 'index' ? '/' : `/${entry.id}/`,
+}));
+
+const sections = [...new Set(items.map((i) => i.section))].sort((a, b) => {
+  const ia = SECTION_ORDER.indexOf(a);
+  const ib = SECTION_ORDER.indexOf(b);
+  return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
+});
+
+const groups = sections.map((section) => ({
+  section,
+  items: items
+    .filter((i) => i.section === section)
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label)),
+}));
+
+const norm = (s: string) => s.replace(/\/+$/, '') || '/';
+const current = norm(Astro.url.pathname);
+const isActive = (href: string) => norm(href) === current;
 ---
 
 <nav class="sidebar" aria-label="Documentation">
-  <ul>
-    {
-      items.map((item) => (
-        <li>
-          <a
-            href={item.href}
-            class:list={['nav-link', { active: isActive(item.href) }]}
-            aria-current={isActive(item.href) ? 'page' : undefined}
-          >
-            {item.title}
-          </a>
-        </li>
-      ))
-    }
-  </ul>
+  {
+    groups.map((group) => (
+      <div class="nav-group">
+        <p class="nav-group-title">{group.section}</p>
+        <ul>
+          {group.items.map((item) => (
+            <li>
+              <a
+                href={item.href}
+                class:list={['nav-link', { active: isActive(item.href) }]}
+                aria-current={isActive(item.href) ? 'page' : undefined}
+              >
+                {item.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))
+  }
 </nav>

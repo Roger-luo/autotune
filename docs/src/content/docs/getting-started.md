@@ -1,6 +1,7 @@
 ---
 title: Getting started
 description: Install Autotune and run your first tuning loop.
+section: Guides
 order: 1
 ---
 

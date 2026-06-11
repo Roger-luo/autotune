@@ -1,6 +1,8 @@
 ---
 title: Autotune
 description: Autonomous, metric-driven tuning of codebases with LLM agents.
+section: Guides
+sidebarLabel: Overview
 order: 0
 ---
 
@@ -24,3 +26,5 @@ extraction, scoring, and git integration.
 
 - [Getting started](/getting-started/) — install and run your first tune.
 - [Configuration](/configuration/) — the `.autotune.toml` reference.
+- [Crates](/crates/) — guides for each workspace crate.
+- [API reference](/api/) — types and functions generated from rustdoc.

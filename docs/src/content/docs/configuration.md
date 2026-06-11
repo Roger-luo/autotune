@@ -1,11 +1,14 @@
 ---
 title: Configuration
 description: The .autotune.toml reference.
+section: Guides
 order: 2
 ---
 
 Autotune reads its configuration from `.autotune.toml` in your project root.
-Global defaults can be set once and merged per project.
+Global defaults can be set once and merged per project. The full set of fields
+is owned by the [`autotune-config`](/crates/autotune-config/) crate — see its
+[API reference](/api/autotune-config/) for the exact types.
 
 ## Task commands
 
@@ -24,7 +27,7 @@ An adaptor turns raw task output into a `name → number` map. Built-in adaptors
 
 A score calculator compares baseline, candidate, and best metrics and returns a
 rank plus a keep/discard decision. Built-in calculators include weighted-sum,
-threshold, and script-based scorers.
+threshold, and script-based scorers. See [`autotune-score`](/crates/autotune-score/)
+for how the rank is computed.
 
-> This page is a scaffold. Expand each section with the full option reference as
-> the configuration surface stabilizes.
+Not installed yet? Start with the [getting started](/getting-started/) guide.

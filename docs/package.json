@@ -7,7 +7,10 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check"
+    "check": "astro check",
+    "api:rustdoc": "node scripts/rustdoc-to-json.mjs",
+    "api:build": "node scripts/gen-api.mjs",
+    "api:gen": "pnpm api:rustdoc && pnpm api:build"
   },
   "dependencies": {
     "astro": "^5"

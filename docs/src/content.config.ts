@@ -10,6 +10,10 @@ const docs = defineCollection({
     title: z.string(),
     description: z.string().optional(),
     order: z.number().default(100),
+    // Sidebar grouping; rendered in the order defined by Sidebar.astro.
+    section: z.string().default('Guides'),
+    // Optional shorter label for the sidebar (defaults to `title`).
+    sidebarLabel: z.string().optional(),
   }),
 });
 

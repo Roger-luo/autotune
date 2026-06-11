@@ -241,6 +241,20 @@ a:hover {
   font-weight: 600;
 }
 
+.nav-group + .nav-group {
+  margin-top: 1.5rem;
+}
+
+.nav-group-title {
+  margin: 0 0 0.4rem;
+  padding: 0 0.75rem;
+  font-size: 0.7rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+}
+
 /* ------------------------------------------------------------------ *
  * On-this-page (TOC)
  * ------------------------------------------------------------------ */
