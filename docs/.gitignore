@@ -1,0 +1,13 @@
+# Astro / Node
+node_modules/
+dist/
+.astro/
+
+# Note: docs/.rustdoc/*.json (rustdoc output) is committed — the API-reference
+# content loader reads it directly, so the site builds without a Rust
+# toolchain. Regenerate it with `pnpm api:rustdoc`.
+
+# Environment & logs
+.env
+.env.production
+npm-debug.log*

@@ -1,0 +1,57 @@
+---
+// Three-state color theme toggle: auto -> light -> dark -> auto.
+// The chosen *mode* is stored in localStorage under "theme"; the resolved
+// light/dark value is written to <html data-theme>. The initial resolve runs
+// in a blocking inline script in DocsLayout's <head> to avoid a flash of the
+// wrong theme — this component handles cycling and live system changes.
+---
+
+<button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch color theme">
+  <span class="theme-icon" data-icon="auto" aria-hidden="true">◐</span>
+  <span class="theme-icon" data-icon="light" aria-hidden="true">☀</span>
+  <span class="theme-icon" data-icon="dark" aria-hidden="true">☾</span>
+  <span class="theme-label"></span>
+</button>
+
+<script>
+  const KEY = 'theme';
+  const ORDER = ['auto', 'light', 'dark'] as const;
+  type Mode = (typeof ORDER)[number];
+
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+
+  function getMode(): Mode {
+    const v = localStorage.getItem(KEY);
+    return v === 'light' || v === 'dark' || v === 'auto' ? v : 'auto';
+  }
+
+  function resolve(mode: Mode): 'light' | 'dark' {
+    return mode === 'auto' ? (mq.matches ? 'dark' : 'light') : mode;
+  }
+
+  function apply(mode: Mode) {
+    const root = document.documentElement;
+    root.dataset.theme = resolve(mode);
+    root.dataset.themeMode = mode;
+
+    const btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    btn.dataset.mode = mode;
+    const label = btn.querySelector<HTMLElement>('.theme-label');
+    if (label) label.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+    btn.setAttribute('title', `Theme: ${mode} (click to change)`);
+  }
+
+  apply(getMode());
+
+  document.getElementById('theme-toggle')?.addEventListener('click', () => {
+    const next = ORDER[(ORDER.indexOf(getMode()) + 1) % ORDER.length]!;
+    localStorage.setItem(KEY, next);
+    apply(next);
+  });
+
+  // Follow the OS while in auto mode.
+  mq.addEventListener('change', () => {
+    if (getMode() === 'auto') apply('auto');
+  });
+</script>

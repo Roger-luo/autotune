@@ -1,0 +1,65 @@
+---
+import { getCollection } from 'astro:content';
+
+// Sections are rendered in this order; any others are appended alphabetically.
+const SECTION_ORDER = ['Guides', 'Crates', 'API Reference'];
+
+// Merge the hand-written docs and the generated API-reference collections.
+const docsEntries = await getCollection('docs');
+const apiEntries = await getCollection('api');
+
+const items = [
+  ...docsEntries.map((entry) => ({
+    label: entry.data.sidebarLabel ?? entry.data.title,
+    order: entry.data.order,
+    section: entry.data.section,
+    href: entry.id === 'index' ? '/' : `/${entry.id}/`,
+  })),
+  ...apiEntries.map((entry) => ({
+    label: entry.data.sidebarLabel ?? entry.data.title,
+    order: entry.data.order,
+    section: entry.data.section,
+    href: `/api/${entry.id}/`,
+  })),
+];
+
+const sections = [...new Set(items.map((i) => i.section))].sort((a, b) => {
+  const ia = SECTION_ORDER.indexOf(a);
+  const ib = SECTION_ORDER.indexOf(b);
+  return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
+});
+
+const groups = sections.map((section) => ({
+  section,
+  items: items
+    .filter((i) => i.section === section)
+    .sort((a, b) => a.order - b.order || a.label.localeCompare(b.label)),
+}));
+
+const norm = (s: string) => s.replace(/\/+$/, '') || '/';
+const current = norm(Astro.url.pathname);
+const isActive = (href: string) => norm(href) === current;
+---
+
+<nav class="sidebar" aria-label="Documentation">
+  {
+    groups.map((group) => (
+      <div class="nav-group">
+        <p class="nav-group-title">{group.section}</p>
+        <ul>
+          {group.items.map((item) => (
+            <li>
+              <a
+                href={item.href}
+                class:list={['nav-link', { active: isActive(item.href) }]}
+                aria-current={isActive(item.href) ? 'page' : undefined}
+              >
+                {item.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))
+  }
+</nav>

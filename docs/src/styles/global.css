@@ -1,0 +1,494 @@
+/* ------------------------------------------------------------------ *
+ * Theme tokens
+ *
+ * `:root` holds the light palette. `:root[data-theme="dark"]` overrides
+ * it with the dark palette. The active value is chosen by the theme
+ * toggle (auto/light/dark) — see src/components/ThemeToggle.astro.
+ * ------------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+
+  --accent: #2f88d8;
+  --accent-hover: #1f6fbf;
+  --accent-soft: rgba(47, 136, 216, 0.12);
+
+  --bg: #ffffff;
+  --surface: #f6f8fa;
+  --surface-2: #eef1f5;
+  --text: #1a1f26;
+  --text-muted: #5a6472;
+  --border: #e5e9ee;
+  --code-bg: #f3f5f8;
+  --code-text: #1a1f26;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  --content-width: 46rem;
+  --sidebar-width: 15rem;
+  --toc-width: 13rem;
+  --header-height: 3.5rem;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --accent: #5db4f0;
+  --accent-hover: #84c8f5;
+  --accent-soft: rgba(93, 180, 240, 0.14);
+
+  --bg: #0e1216;
+  --surface: #161b22;
+  --surface-2: #1c232c;
+  --text: #e6edf3;
+  --text-muted: #9aa7b4;
+  --border: #222a33;
+  --code-bg: #161b22;
+  --code-text: #e6edf3;
+}
+
+/* ------------------------------------------------------------------ *
+ * Reset & base
+ * ------------------------------------------------------------------ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--header-height) + 1rem);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Header
+ * ------------------------------------------------------------------ */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--header-height);
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  backdrop-filter: saturate(150%) blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-inner {
+  max-width: calc(
+    var(--sidebar-width) + var(--content-width) + var(--toc-width) + 6rem
+  );
+  height: 100%;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 650;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.brand:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.brand img {
+  display: block;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Theme toggle
+ * ------------------------------------------------------------------ */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.7rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.theme-icon {
+  display: none;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.theme-toggle[data-mode='auto'] .theme-icon[data-icon='auto'],
+.theme-toggle[data-mode='light'] .theme-icon[data-icon='light'],
+.theme-toggle[data-mode='dark'] .theme-icon[data-icon='dark'] {
+  display: inline;
+}
+
+.theme-label {
+  min-width: 2.5em;
+  text-align: left;
+}
+
+/* ------------------------------------------------------------------ *
+ * Layout grid
+ * ------------------------------------------------------------------ */
+.layout {
+  max-width: calc(
+    var(--sidebar-width) + var(--content-width) + var(--toc-width) + 6rem
+  );
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--toc-width);
+  gap: 2.5rem;
+  align-items: start;
+}
+
+.sidebar-col,
+.toc-col {
+  position: sticky;
+  top: var(--header-height);
+  align-self: start;
+  max-height: calc(100vh - var(--header-height));
+  overflow-y: auto;
+  padding: 2rem 0;
+}
+
+.content {
+  min-width: 0;
+  padding: 2rem 0 4rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Sidebar nav
+ * ------------------------------------------------------------------ */
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar li {
+  margin: 0;
+}
+
+.nav-link {
+  display: block;
+  padding: 0.4rem 0.75rem;
+  margin: 0.1rem 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  border-left: 2px solid transparent;
+}
+
+.nav-link:hover {
+  color: var(--text);
+  background: var(--surface);
+  text-decoration: none;
+}
+
+.nav-link.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.nav-group + .nav-group {
+  margin-top: 1.5rem;
+}
+
+.nav-group-title {
+  margin: 0 0 0.4rem;
+  padding: 0 0.75rem;
+  font-size: 0.7rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------------ *
+ * On-this-page (TOC)
+ * ------------------------------------------------------------------ */
+.toc-title {
+  margin: 0 0 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.toc ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+}
+
+.toc a {
+  display: block;
+  padding: 0.25rem 0 0.25rem 0.85rem;
+  margin-left: -1px;
+  border-left: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.toc a:hover {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  text-decoration: none;
+}
+
+.toc-depth-3 a {
+  padding-left: 1.7rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Prose (rendered Markdown)
+ * ------------------------------------------------------------------ */
+.prose {
+  max-width: var(--content-width);
+}
+
+.prose > :first-child {
+  margin-top: 0;
+}
+
+.prose h1 {
+  font-size: 2.1rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.5rem;
+}
+
+.prose h2 {
+  font-size: 1.45rem;
+  letter-spacing: -0.01em;
+  margin: 2.4rem 0 0.8rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.prose h3 {
+  font-size: 1.15rem;
+  margin: 1.8rem 0 0.6rem;
+}
+
+.prose p,
+.prose ul,
+.prose ol {
+  margin: 0 0 1.1rem;
+}
+
+.prose .lead {
+  font-size: 1.15rem;
+  color: var(--text-muted);
+  margin-bottom: 1.8rem;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.4rem;
+}
+
+.prose li {
+  margin: 0.3rem 0;
+}
+
+.prose strong {
+  font-weight: 650;
+}
+
+.prose blockquote {
+  margin: 1.3rem 0;
+  padding: 0.2rem 1.1rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 6px 6px 0;
+  color: var(--text);
+}
+
+.prose blockquote p {
+  margin: 0.6rem 0;
+}
+
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2.5rem 0;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.3rem 0;
+  font-size: 0.92rem;
+}
+
+.prose th,
+.prose td {
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.prose th {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+/* Inline code */
+.prose :not(pre) > code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.12em 0.4em;
+}
+
+/* Code blocks (Shiki) */
+.prose pre {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  padding: 1rem 1.1rem;
+  margin: 1.3rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.prose pre code {
+  font-family: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Shiki dual-theme switch
+ *
+ * The Markdown pipeline emits both light and dark token colors as CSS
+ * variables. Light is the default; when the page is in dark mode we
+ * swap to the dark variables so code blocks follow the toggle.
+ * ------------------------------------------------------------------ */
+:root[data-theme='dark'] .astro-code,
+:root[data-theme='dark'] .astro-code span {
+  color: var(--shiki-dark) !important;
+  background-color: var(--shiki-dark-bg) !important;
+}
+
+/* ------------------------------------------------------------------ *
+ * Footer
+ * ------------------------------------------------------------------ */
+.content-footer {
+  max-width: var(--content-width);
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.content-footer p {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Responsive
+ * ------------------------------------------------------------------ */
+@media (max-width: 60rem) {
+  .layout {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
+  .toc-col {
+    display: none;
+  }
+}
+
+@media (max-width: 44rem) {
+  .layout {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .sidebar-col {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding: 1rem 0 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .nav-link {
+    border-left: none;
+  }
+  .content {
+    padding-top: 1.5rem;
+  }
+}
+
+/* Respect reduced-motion preferences. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  * {
+    transition: none !important;
+  }
+}
