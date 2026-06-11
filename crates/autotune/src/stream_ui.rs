@@ -18,7 +18,6 @@
 
 use autotune_agent::aprintln;
 use autotune_agent::{AgentEvent, EventHandler};
-use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -99,10 +98,8 @@ struct StreamState {
     current_line: String,
     /// Whether we are currently inside a ``` fenced code block.
     in_code_fence: bool,
-    /// Rolling buffer of the last 3 tool-use descriptions currently shown.
-    tool_tail: VecDeque<String>,
-    /// How many dim lines we last rendered to stderr (so we can erase them).
-    rendered_tail_count: usize,
+    /// Rolling tail of recent tool-use descriptions (height-bounded, dimmed).
+    tail: autotune_agent::terminal::TailState,
     /// True once the protocol payload has begun — further text is dropped.
     suppressed: bool,
     /// Protocol-payload detection mode.
@@ -117,8 +114,7 @@ impl StreamState {
             pending: String::new(),
             current_line: String::new(),
             in_code_fence: false,
-            tool_tail: VecDeque::new(),
-            rendered_tail_count: 0,
+            tail: autotune_agent::terminal::TailState::new(),
             suppressed: false,
             suppress_mode,
             skin: termimad::MadSkin::default_dark(),
@@ -191,19 +187,14 @@ impl StreamState {
 
     /// Erase the currently rendered tail lines from stderr.
     fn erase_tail(&mut self, stderr: &mut impl Write) {
-        if self.rendered_tail_count > 0 {
-            let _ = write!(stderr, "\x1b[{}A\x1b[J", self.rendered_tail_count);
-            self.rendered_tail_count = 0;
-        }
+        self.tail.erase(stderr);
     }
 
-    /// Re-render the current tool tail (up to 3 dim lines).
+    /// Re-render the current tool tail (height-bounded, dimmed) to stderr.
     fn draw_tail(&mut self, stderr: &mut impl Write) {
-        for line in &self.tool_tail {
-            let trimmed = if line.len() > 120 { &line[..120] } else { line };
-            let _ = writeln!(stderr, "  \x1b[2m{trimmed}\x1b[0m");
-        }
-        self.rendered_tail_count = self.tool_tail.len();
+        let (width, _) = autotune_agent::terminal::stderr_size();
+        let color = autotune_agent::style::stderr_color();
+        self.tail.draw(stderr, width, color);
     }
 
     fn flush_pending(&mut self) {
@@ -229,10 +220,8 @@ impl StreamState {
             return;
         }
         let detail = describe_tool_use(tool, input_summary);
-        self.tool_tail.push_back(detail);
-        if self.tool_tail.len() > 3 {
-            self.tool_tail.pop_front();
-        }
+        let (_, height) = autotune_agent::terminal::stderr_size();
+        self.tail.push(&detail, height);
         let mut stderr = std::io::stderr();
         self.erase_tail(&mut stderr);
         self.draw_tail(&mut stderr);
@@ -262,8 +251,12 @@ fn describe_tool_use(tool: &str, input: &str) -> String {
     if input.is_empty() {
         format!("{tool}()")
     } else {
-        let summary = if input.len() > 60 {
-            format!("{}...", &input[..57])
+        // Truncate by `char`, not byte index: `&input[..57]` panics when byte
+        // 57 lands inside a multi-byte UTF-8 char (tool summaries can hold
+        // non-ASCII file paths / patterns).
+        let summary = if input.chars().count() > 60 {
+            let head: String = input.chars().take(57).collect();
+            format!("{head}...")
         } else {
             input.to_string()
         };
@@ -420,6 +413,19 @@ mod tests {
         assert!(
             result.starts_with("Grep("),
             "expected Grep( prefix: {result}"
+        );
+    }
+
+    #[test]
+    fn describe_tool_use_truncates_multibyte_on_char_boundary() {
+        // Byte 57 lands in the middle of the 2-byte 'é'; byte-slicing would
+        // panic. Char-based truncation must keep 57 chars and not panic.
+        let input = format!("{}é{}", "a".repeat(56), "b".repeat(20));
+        let result = describe_tool_use("Read", &input);
+        assert!(result.starts_with("Read(aaaa"));
+        assert!(
+            result.ends_with("...)"),
+            "expected truncation marker: {result}"
         );
     }
 

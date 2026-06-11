@@ -336,10 +336,6 @@ fn run_command_with_timeout(
     config: &MeasureConfig,
     working_dir: &Path,
 ) -> Result<Output, MeasureError> {
-    use std::collections::VecDeque;
-    use std::io::{IsTerminal, Write};
-    use std::sync::{Arc, Mutex};
-
     let command = config.command.as_deref().ok_or_else(|| MeasureError::Io {
         name: config.name.clone(),
         source: std::io::Error::other("measure command is required but not set"),
@@ -365,61 +361,16 @@ fn run_command_with_timeout(
         source,
     })?;
 
-    let is_tty = std::io::stderr().is_terminal();
-
-    // Shared tail: last 3 lines + how many we've drawn.
-    struct Tail {
-        lines: VecDeque<String>,
-        rendered: usize,
-    }
-    let tail: Arc<Mutex<Tail>> = Arc::new(Mutex::new(Tail {
-        lines: VecDeque::new(),
-        rendered: 0,
-    }));
-
-    let redraw = {
-        let tail = tail.clone();
-        move || {
-            if !is_tty {
-                return;
-            }
-            let mut t = tail.lock().unwrap();
-            let mut stderr = std::io::stderr();
-            if t.rendered > 0 {
-                let _ = write!(stderr, "\x1b[{}A\x1b[J", t.rendered);
-            }
-            t.rendered = t.lines.len();
-            for line in &t.lines {
-                let trimmed = if line.len() > 120 { &line[..120] } else { line };
-                let _ = writeln!(stderr, "  \x1b[2m{trimmed}\x1b[0m");
-            }
-            let _ = stderr.flush();
-        }
-    };
-    let redraw2 = redraw.clone();
+    let tail = autotune_agent::terminal::LiveTail::stderr();
 
     let stdout_tail = tail.clone();
     let stdout_handle = spawn_line_reader(child.stdout.take(), move |line| {
-        {
-            let mut t = stdout_tail.lock().unwrap();
-            t.lines.push_back(line.to_owned());
-            if t.lines.len() > 3 {
-                t.lines.pop_front();
-            }
-        }
-        redraw();
+        stdout_tail.push_line(line);
     });
 
     let stderr_tail = tail.clone();
     let stderr_handle = spawn_line_reader(child.stderr.take(), move |line| {
-        {
-            let mut t = stderr_tail.lock().unwrap();
-            t.lines.push_back(line.to_owned());
-            if t.lines.len() > 3 {
-                t.lines.pop_front();
-            }
-        }
-        redraw2();
+        stderr_tail.push_line(line);
     });
 
     let result = match wait_for_child(config, &mut child) {
@@ -431,15 +382,7 @@ fn run_command_with_timeout(
         }
     };
 
-    // Erase the tail lines.
-    if is_tty {
-        let rendered = tail.lock().unwrap().rendered;
-        if rendered > 0 {
-            let mut stderr = std::io::stderr();
-            let _ = write!(stderr, "\x1b[{}A\x1b[J", rendered);
-            let _ = stderr.flush();
-        }
-    }
+    tail.finish();
 
     result
 }
