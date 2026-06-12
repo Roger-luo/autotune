@@ -1317,13 +1317,33 @@ fn run_integrating(
     // Rebase the worktree branch onto the advancing branch. Run the rebase
     // inside the worktree directory since the branch is checked out there
     // (can't checkout a worktree-attached branch from the main repo).
-    let wt = &approach.worktree_path;
-    let clean = autotune_git::rebase(wt, &state.advancing_branch)
-        .context("rebase onto advancing branch failed")?;
+    let wt = approach.worktree_path.clone();
 
-    if !clean && let Err(e) = resolve_rebase_conflicts(agent, wt, research_session) {
+    // Running tests/benchmarks can leave the worktree dirty (e.g. insta
+    // `.snap.new` files written during a test run), and git refuses to rebase
+    // a dirty tree. The evaluated candidate is the committed HEAD, so discard
+    // those side-effects first.
+    if autotune_git::has_uncommitted_changes(&wt).unwrap_or(false) {
+        autotune_git::reset_to_head(&wt).context("failed to clean worktree before integration")?;
+    }
+
+    // A rebase failure that isn't a conflict (e.g. an unexpected git state)
+    // should discard this iteration, not crash the whole tune loop.
+    let clean = match autotune_git::rebase(&wt, &state.advancing_branch) {
+        Ok(clean) => clean,
+        Err(e) => {
+            aprintln!(
+                "[autotune] iteration {} — rebase failed: {e}, discarding",
+                state.current_iteration
+            );
+            let _ = autotune_git::rebase_abort(&wt);
+            return record_discard(state, store, &format!("rebase failed: {e}"));
+        }
+    };
+
+    if !clean && let Err(e) = resolve_rebase_conflicts(agent, &wt, research_session) {
         aprintln!("[autotune] conflict resolution failed: {e}, discarding");
-        let _ = autotune_git::rebase_abort(wt);
+        let _ = autotune_git::rebase_abort(&wt);
         return record_discard(state, store, &format!("rebase conflict: {e}"));
     }
 

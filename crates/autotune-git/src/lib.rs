@@ -380,17 +380,38 @@ pub fn rebase(dir: &Path, onto: &str) -> Result<bool, GitError> {
     let result = git(dir, &[OsStr::new("rebase"), OsStr::new(onto)]);
     match result {
         Ok(_) => Ok(true),
-        Err(_) => {
+        Err(e) => {
             if has_merge_conflicts(dir)? {
                 Ok(false)
             } else {
-                Err(GitError::CommandFailed {
-                    command: format!("git rebase {onto}"),
-                    stderr: "rebase failed for an unexpected reason".to_string(),
-                })
+                // Preserve the real git error (e.g. "cannot rebase: You have
+                // unstaged changes") instead of a generic message — the caller
+                // surfaces it in the discard reason / trace for debugging.
+                Err(e)
             }
         }
     }
+}
+
+/// Discard all uncommitted changes — both tracked modifications/deletions and
+/// untracked files — restoring the worktree to its current HEAD. Ignored files
+/// (build caches such as `target/`) are left untouched.
+///
+/// Used before integration: running tests/benchmarks can leave the disposable
+/// worktree dirty (e.g. insta `.snap.new` artifacts), and git refuses to rebase
+/// a dirty tree. The evaluated candidate is the committed HEAD, so these
+/// side-effects are safe to drop.
+pub fn reset_to_head(dir: &Path) -> Result<(), GitError> {
+    git(
+        dir,
+        &[
+            OsStr::new("reset"),
+            OsStr::new("--hard"),
+            OsStr::new("HEAD"),
+        ],
+    )?;
+    git(dir, &[OsStr::new("clean"), OsStr::new("-fd")])?;
+    Ok(())
 }
 
 /// Stage resolved files and continue an in-progress rebase.
@@ -602,6 +623,32 @@ mod tests {
         assert_eq!(
             sha_before, sha_after,
             "HEAD must not advance when the hook rejects the commit"
+        );
+    }
+
+    #[test]
+    fn reset_to_head_discards_tracked_and_untracked_changes() {
+        let dir = make_repo();
+        // Tracked modification, plus an untracked file (mimics an insta
+        // `.snap.new` left by a test run).
+        fs::write(dir.path().join("README.md"), b"modified after commit").unwrap();
+        fs::write(dir.path().join("stray.snap.new"), b"junk").unwrap();
+        assert!(has_uncommitted_changes(dir.path()).unwrap());
+
+        reset_to_head(dir.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            "hello",
+            "tracked file should be restored to HEAD"
+        );
+        assert!(
+            !dir.path().join("stray.snap.new").exists(),
+            "untracked file should be removed"
+        );
+        assert!(
+            !has_uncommitted_changes(dir.path()).unwrap(),
+            "worktree should be clean after reset"
         );
     }
 
