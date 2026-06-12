@@ -151,6 +151,7 @@ version = "0.1.0"
 dependencies = [
  "autotune-config",
  "dirs",
+ "nix 0.28.0",
  "quick-xml",
  "serde",
  "serde_json",

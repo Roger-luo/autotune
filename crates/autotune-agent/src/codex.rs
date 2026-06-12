@@ -340,12 +340,29 @@ impl CodexAgent {
 
     fn run_codex(&self, args: &[String], cwd: &Path) -> Result<AgentResponse, AgentError> {
         let _guard = crate::terminal::Guard::new();
-        let output = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        command
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::null())
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let child = command
+            .spawn()
             .map_err(|source| AgentError::Io { source })?;
+        let _child_guard = crate::child::ChildGuard::new(child.id());
+        let output = child
+            .wait_with_output()
+            .map_err(|source| AgentError::Io { source })?;
+
+        if crate::child::is_shutting_down() {
+            return Err(AgentError::Interrupted);
+        }
 
         if !output.status.success() {
             #[cfg(unix)]
@@ -381,14 +398,24 @@ impl CodexAgent {
         event_handler: &EventHandler,
     ) -> Result<AgentResponse, AgentError> {
         let _guard = crate::terminal::Guard::new();
-        let mut child = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        command
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Own process group so shutdown can signal the whole agent subtree
+        // (see `crate::child`).
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command
             .spawn()
             .map_err(|source| AgentError::Io { source })?;
+        let _child_guard = crate::child::ChildGuard::new(child.id());
 
         let stdout = child
             .stdout
@@ -405,6 +432,10 @@ impl CodexAgent {
 
         let response = Self::parse_jsonl(BufReader::new(stdout), Some(event_handler));
         let status = child.wait().map_err(|source| AgentError::Io { source })?;
+
+        if crate::child::is_shutting_down() {
+            return Err(AgentError::Interrupted);
+        }
 
         if !status.success() {
             #[cfg(unix)]

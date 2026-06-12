@@ -646,9 +646,13 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     let store = TaskStore::new(&task_dir).context("failed to create task store")?;
 
-    // Snapshot config
-    let config_content = std::fs::read_to_string(repo_root.join(".autotune.toml"))
-        .context("failed to read config")?;
+    // Snapshot the *effective* config — i.e. after global agent defaults have
+    // been merged in — not the raw `.autotune.toml`. This freezes exactly what
+    // the run uses so `autotune resume` reconstructs identical behavior (e.g.
+    // the implementation fix-retry budget), instead of falling back to
+    // built-in defaults because the raw project config never set them.
+    let config_content =
+        toml::to_string_pretty(&config).context("failed to serialize config for snapshot")?;
     store
         .save_config_snapshot(&config_content)
         .context("failed to save config snapshot")?;
@@ -803,10 +807,14 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     ctrlc::set_handler(move || {
-        aprintln!("\n[autotune] received Ctrl+C, shutting down gracefully...");
+        aprintln!("\n[autotune] received shutdown signal, shutting down gracefully...");
+        // Tear down any in-flight agent subprocess (and its descendants) so it
+        // isn't orphaned. This also unblocks the agent call — the CLI exits via
+        // signal, which the loop treats as a clean interruption.
+        autotune_agent::child::terminate_active_children();
         shutdown_clone.store(true, Ordering::SeqCst);
     })
-    .context("failed to set Ctrl+C handler")?;
+    .context("failed to set shutdown signal handler")?;
 
     // Run state machine
     machine::run_task(
@@ -892,10 +900,14 @@ fn cmd_resume(
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
     ctrlc::set_handler(move || {
-        aprintln!("\n[autotune] received Ctrl+C, shutting down gracefully...");
+        aprintln!("\n[autotune] received shutdown signal, shutting down gracefully...");
+        // Tear down any in-flight agent subprocess (and its descendants) so it
+        // isn't orphaned. This also unblocks the agent call — the CLI exits via
+        // signal, which the loop treats as a clean interruption.
+        autotune_agent::child::terminate_active_children();
         shutdown_clone.store(true, Ordering::SeqCst);
     })
-    .context("failed to set Ctrl+C handler")?;
+    .context("failed to set shutdown signal handler")?;
 
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
 
@@ -2673,6 +2685,90 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
 
         let init = config.agent.init.as_ref().expect("init role");
         assert_eq!(init.model.as_deref(), Some("haiku"));
+    }
+
+    /// Regression: `autotune run` snapshots the *merged* config (after global
+    /// agent defaults are applied), so `autotune resume` reconstructs the same
+    /// effective config. Previously the snapshot was the raw `.autotune.toml`,
+    /// so resume lost global-only role settings (e.g. the implementation
+    /// fix-retry budget) and silently fell back to built-in defaults.
+    #[test]
+    fn config_snapshot_roundtrip_preserves_merged_agent_defaults() {
+        let mut config: AutotuneConfig = toml::from_str(
+            r#"
+[task]
+name = "demo"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "bench"
+command = ["echo", "metric: 1"]
+adaptor = { type = "regex", patterns = [{ name = "metric", pattern = "metric: ([0-9]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric", direction = "Minimize" }]
+
+[agent]
+"#,
+        )
+        .unwrap();
+        let global = GlobalConfig {
+            agent: Some(autotune_config::AgentConfig {
+                backend: Some("claude".to_string()),
+                model: Some("sonnet".to_string()),
+                max_turns: None,
+                reasoning_effort: None,
+                max_fix_attempts: None,
+                max_fresh_spawns: None,
+                research: Some(autotune_config::AgentRoleConfig {
+                    backend: None,
+                    model: Some("opus".to_string()),
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+                implementation: Some(autotune_config::AgentRoleConfig {
+                    backend: None,
+                    model: None,
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: Some(3),
+                    max_fresh_spawns: Some(1),
+                }),
+                init: None,
+                judge: None,
+            }),
+        };
+
+        apply_global_agent_defaults(&mut config, &global);
+        // Sanity: the run-time config carries the merged values.
+        let impl_role = config.agent.implementation.as_ref().unwrap();
+        assert_eq!(impl_role.max_fix_attempts, Some(3));
+
+        // `run` snapshots this; `resume` reloads it.
+        let snapshot = toml::to_string_pretty(&config).expect("serialize snapshot");
+        let reloaded: AutotuneConfig = toml::from_str(&snapshot).expect("reparse snapshot");
+
+        let reloaded_impl = reloaded
+            .agent
+            .implementation
+            .as_ref()
+            .expect("implementation role survives snapshot");
+        assert_eq!(
+            reloaded_impl.max_fix_attempts,
+            Some(3),
+            "resume must see the merged fix-retry budget, not a built-in default"
+        );
+        assert_eq!(reloaded_impl.effective_max_fix_attempts(), 3);
+        assert_eq!(
+            reloaded.agent.research.as_ref().unwrap().model.as_deref(),
+            Some("opus")
+        );
     }
 
     #[test]

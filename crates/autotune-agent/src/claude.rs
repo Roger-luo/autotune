@@ -175,11 +175,30 @@ impl ClaudeAgent {
 
     fn run_claude(&self, args: &[String], cwd: &Path) -> Result<AgentResponse, AgentError> {
         let _guard = crate::terminal::Guard::new();
-        let output = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        command
             .args(args)
             .current_dir(cwd)
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Own process group so shutdown can signal the whole agent subtree
+        // (see `crate::child`).
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let child = command
+            .spawn()
             .map_err(|source| AgentError::Io { source })?;
+        let _child_guard = crate::child::ChildGuard::new(child.id());
+        let output = child
+            .wait_with_output()
+            .map_err(|source| AgentError::Io { source })?;
+
+        if crate::child::is_shutting_down() {
+            return Err(AgentError::Interrupted);
+        }
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -227,13 +246,24 @@ impl ClaudeAgent {
             .collect();
         args.push("--verbose".to_string());
 
-        let mut child = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        command
             .args(&args)
             .current_dir(cwd)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Own process group so shutdown can signal the whole agent subtree
+        // (the `claude` CLI plus its node/MCP/tool descendants) via
+        // `crate::child::terminate_active_children`, without orphaning them.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command
             .spawn()
             .map_err(|source| AgentError::Io { source })?;
+        let _child_guard = crate::child::ChildGuard::new(child.id());
 
         let stdout = child
             .stdout
@@ -341,6 +371,12 @@ impl ClaudeAgent {
         }
 
         let status = child.wait().map_err(|source| AgentError::Io { source })?;
+
+        // If we tore this child down for shutdown, its exit — clean or not —
+        // is an interruption, not a real response to parse/retry.
+        if crate::child::is_shutting_down() {
+            return Err(AgentError::Interrupted);
+        }
 
         if !status.success() {
             // Distinguish "killed by SIGINT" (user pressed Ctrl+C) from a real
