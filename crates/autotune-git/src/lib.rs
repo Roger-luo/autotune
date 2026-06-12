@@ -2,7 +2,7 @@ mod error;
 
 pub use error::GitError;
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -269,13 +269,45 @@ pub fn has_uncommitted_changes(dir: &Path) -> Result<bool, GitError> {
     Ok(!output.stdout.trim().is_empty())
 }
 
-/// Stage all changes (including untracked files) and create a commit.
+/// Glob patterns that must never be committed: transient artifacts written by
+/// test/tooling runs, not source changes. `cargo test` with `insta` drops
+/// `*.snap.new` pending-snapshot files into the tree, and patch/merge tools
+/// leave `*.orig` / `*.rej`. Staging them pollutes candidate commits (and a
+/// later deletion left the worktree dirty enough to break the integration
+/// rebase). They are excluded from every autotune `git add`.
+const NEVER_COMMIT_GLOBS: &[&str] = &["*.snap.new", "*.orig", "*.rej"];
+
+/// Stage all changes (including untracked files) and create a commit. Transient
+/// tooling artifacts ([`NEVER_COMMIT_GLOBS`]) are excluded from staging.
 pub fn stage_all_and_commit(dir: &Path, message: &str) -> Result<(), GitError> {
-    git(dir, &[OsStr::new("add"), OsStr::new("-A")])?;
+    stage_all(dir)?;
     git(
         dir,
         &[OsStr::new("commit"), OsStr::new("-m"), OsStr::new(message)],
     )?;
+    Ok(())
+}
+
+/// Stage every change in the worktree (additions, modifications, deletions)
+/// except the transient artifacts in [`NEVER_COMMIT_GLOBS`].
+fn stage_all(dir: &Path) -> Result<(), GitError> {
+    // `git add -A -- . :(exclude,glob)**/<pat>` stages all changes anchored at
+    // the worktree root, minus the excluded globs at any depth. The `glob`
+    // magic makes `**` span directories so nested artifacts (e.g.
+    // `src/sum/snapshots/foo.snap.new`) are excluded too.
+    let mut args: Vec<OsString> = vec![
+        OsString::from("add"),
+        OsString::from("-A"),
+        OsString::from("--"),
+        OsString::from("."),
+    ];
+    for glob in NEVER_COMMIT_GLOBS {
+        args.push(OsString::from(format!(":(exclude,glob)**/{glob}")));
+        // Also exclude the pattern at the repo root (where `**/` doesn't match).
+        args.push(OsString::from(format!(":(exclude,glob){glob}")));
+    }
+    let refs: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+    git(dir, &refs)?;
     Ok(())
 }
 
@@ -624,6 +656,51 @@ mod tests {
             sha_before, sha_after,
             "HEAD must not advance when the hook rejects the commit"
         );
+    }
+
+    #[test]
+    fn stage_all_and_commit_excludes_transient_artifacts() {
+        let dir = make_repo();
+        // A real source change in a nested dir...
+        let src = dir.path().join("crates/pkg/src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("lib.rs"), b"pub fn f() {}").unwrap();
+        // ...alongside transient junk a test/tool run would leave behind,
+        // both nested and at the repo root.
+        let snaps = dir.path().join("crates/pkg/src/snapshots");
+        fs::create_dir_all(&snaps).unwrap();
+        fs::write(snaps.join("t.snap.new"), b"pending").unwrap();
+        fs::write(dir.path().join("root.orig"), b"merge junk").unwrap();
+
+        stage_all_and_commit(dir.path(), "candidate change").unwrap();
+
+        // The real change is committed; the junk is not.
+        let tree = git(
+            dir.path(),
+            &[
+                OsStr::new("ls-tree"),
+                OsStr::new("-r"),
+                OsStr::new("--name-only"),
+                OsStr::new("HEAD"),
+            ],
+        )
+        .unwrap()
+        .stdout;
+        assert!(
+            tree.contains("crates/pkg/src/lib.rs"),
+            "real source change should be committed, tree:\n{tree}"
+        );
+        assert!(
+            !tree.contains(".snap.new"),
+            "transient .snap.new must not be committed, tree:\n{tree}"
+        );
+        assert!(
+            !tree.contains(".orig"),
+            "transient .orig must not be committed, tree:\n{tree}"
+        );
+        // The junk remains in the worktree as untracked (not destroyed) —
+        // integration's reset_to_head is what cleans it before rebase.
+        assert!(snaps.join("t.snap.new").exists());
     }
 
     #[test]
