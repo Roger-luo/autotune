@@ -5,12 +5,31 @@
 1. **Project config** `.autotune.toml` — loaded by `load_config()`. Required.
 2. **Global user config** `~/.config/autotune/config.toml` — agent defaults
    (model, max_turns). Merged by `apply_global_agent_defaults()` in `main.rs`
-   so **project settings win; global fills gaps**.
+   so **project settings win; global fills gaps**. Set `AUTOTUNE_GLOBAL_CONFIG`
+   to point at an alternate global config file (used by scenario tests that
+   drive the compiled binary, since the `#[cfg(test)]` override can't reach it).
 3. **Task name override** from the CLI (`autotune run <name>`), if any.
 
 For agent role settings specifically (`[agent.research]`, `[agent.implementation]`,
 `[agent.init]`), `None` fields in project config fall back to the global config.
 This lets a user set `model = "sonnet"` globally without editing every project.
+
+The full precedence ladder for a resolved role field (e.g. `research.model`),
+lowest to highest, is:
+
+```
+global [agent]  <  global [agent.<role>]  <  project [agent]  <  project [agent.<role>]
+```
+
+First non-`None` from the top wins. The key non-obvious point: a global
+**per-role** override (`[agent.research] model = "opus"`) must beat the global
+**general** default (`[agent] model = "sonnet"`). A past bug folded the global
+general defaults into the "project" layer before merging, so an *empty* project
+`[agent]` table (a bare `[agent]` header, common after `autotune init`) caused
+the general `sonnet` to outrank the per-role `opus` — the research agent
+silently spawned as `sonnet`. `apply_global_agent_defaults()` therefore keeps
+`project_general` and `global_general` as separate layers and chains overlays in
+the order above; do not pre-merge global defaults into the project layer.
 
 ## Task auto-forking
 

@@ -79,10 +79,21 @@ fn load_config(repo_root: &Path) -> Result<AutotuneConfig> {
     })
 }
 
+/// Environment variable that points autotune at a specific global config
+/// file instead of the default `~/.config/autotune/config.toml`. Used by
+/// scenario tests (which drive the compiled binary and can't reach the
+/// `#[cfg(test)]` override), and handy for running against an alternate
+/// global config without touching the home directory.
+const GLOBAL_CONFIG_ENV: &str = "AUTOTUNE_GLOBAL_CONFIG";
+
 fn global_user_config_path() -> Result<PathBuf> {
     #[cfg(test)]
     if let Some(path) = test_support::global_user_config_path_override() {
         return Ok(path);
+    }
+
+    if let Some(path) = std::env::var_os(GLOBAL_CONFIG_ENV) {
+        return Ok(PathBuf::from(path));
     }
 
     GlobalConfig::user_config_path().context("could not determine user config directory")
@@ -92,6 +103,10 @@ fn load_global_config() -> Result<GlobalConfig> {
     #[cfg(test)]
     if let Some(path) = test_support::global_user_config_path_override() {
         return GlobalConfig::load_from(&path).context("failed to load global config");
+    }
+
+    if let Some(path) = std::env::var_os(GLOBAL_CONFIG_ENV) {
+        return GlobalConfig::load_from(Path::new(&path)).context("failed to load global config");
     }
 
     GlobalConfig::load().context("failed to load global config")
@@ -201,57 +216,69 @@ fn apply_global_agent_defaults(config: &mut AutotuneConfig, global: &GlobalConfi
         }
     }
 
-    let global_defaults = agent_defaults(global_agent);
-    let project_defaults = agent_defaults(&config.agent).overlay(&global_defaults);
+    // The four precedence layers, lowest to highest:
+    //   global [agent]  <  global [agent.<role>]  <  project [agent]  <  project [agent.<role>]
+    // Capture the project's general `[agent]` *before* we overwrite it
+    // below — otherwise the global general defaults would leak into the
+    // project layer and outrank the global per-role overrides.
+    let global_general = agent_defaults(global_agent);
+    let project_general = agent_defaults(&config.agent);
 
-    config.agent.backend = project_defaults.backend.clone();
-    config.agent.model = project_defaults.model.clone();
-    config.agent.max_turns = project_defaults.max_turns;
-    config.agent.reasoning_effort = project_defaults.reasoning_effort;
-    config.agent.max_fix_attempts = project_defaults.max_fix_attempts;
-    config.agent.max_fresh_spawns = project_defaults.max_fresh_spawns;
+    // General `[agent]` fields: project wins, else fall back to global.
+    let general = project_general.clone().overlay(&global_general);
+    config.agent.backend = general.backend.clone();
+    config.agent.model = general.model.clone();
+    config.agent.max_turns = general.max_turns;
+    config.agent.reasoning_effort = general.reasoning_effort;
+    config.agent.max_fix_attempts = general.max_fix_attempts;
+    config.agent.max_fresh_spawns = general.max_fresh_spawns;
 
     fn merge_role(
         project: &mut Option<autotune_config::AgentRoleConfig>,
-        global: &Option<autotune_config::AgentRoleConfig>,
-        project_defaults: &autotune_config::AgentRoleConfig,
-        global_defaults: &autotune_config::AgentRoleConfig,
+        global_role: &Option<autotune_config::AgentRoleConfig>,
+        project_general: &autotune_config::AgentRoleConfig,
+        global_general: &autotune_config::AgentRoleConfig,
     ) {
-        let global_role = global
-            .as_ref()
-            .map(|role| role.overlay(global_defaults))
-            .unwrap_or_else(|| global_defaults.clone());
-        let project_role = project
+        // `overlay(other)` keeps self's `Some`, else takes other's, so a
+        // chain expresses descending precedence. The order below encodes:
+        //   project[role] > project[agent] > global[role] > global[agent]
+        let global_resolved = global_role
             .as_ref()
             .cloned()
             .unwrap_or_else(empty_role)
-            .overlay(project_defaults);
-        *project = Some(project_role.overlay(&global_role));
+            .overlay(global_general);
+        let resolved = project
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(empty_role)
+            .overlay(project_general)
+            .overlay(&global_resolved);
+        *project = Some(resolved);
     }
 
     merge_role(
         &mut config.agent.research,
         &global_agent.research,
-        &project_defaults,
-        &global_defaults,
+        &project_general,
+        &global_general,
     );
     merge_role(
         &mut config.agent.implementation,
         &global_agent.implementation,
-        &project_defaults,
-        &global_defaults,
+        &project_general,
+        &global_general,
     );
     merge_role(
         &mut config.agent.init,
         &global_agent.init,
-        &project_defaults,
-        &global_defaults,
+        &project_general,
+        &global_general,
     );
     merge_role(
         &mut config.agent.judge,
         &global_agent.judge,
-        &project_defaults,
-        &global_defaults,
+        &project_general,
+        &global_general,
     );
 }
 
@@ -397,7 +424,7 @@ fn run_agent_assisted_init(repo_root: &Path) -> Result<InitFlowOutcome> {
         return Ok(outcome);
     }
 
-    let global_config = GlobalConfig::load().context("failed to load global config")?;
+    let global_config = load_global_config()?;
     let agent = build_agent_from_global(&global_config, AgentRole::Init)?;
 
     let validator_root = repo_root.to_path_buf();
@@ -607,7 +634,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Merge global user config as defaults for agent role settings.
     // Project-level settings in .autotune.toml win; global config fills gaps.
-    let global_config = GlobalConfig::load().context("failed to load global config")?;
+    let global_config = load_global_config()?;
     apply_global_agent_defaults(&mut config, &global_config);
 
     // Apply task name override
@@ -2557,6 +2584,94 @@ reasoning_effort = "low"
             init.reasoning_effort,
             Some(autotune_config::ReasoningEffort::High)
         );
+    }
+
+    /// Regression: when the project's `[agent]` table is empty, a global
+    /// per-role `[agent.<role>].model` must still win over the global
+    /// general `[agent].model`. This mirrors the real-world bug where a
+    /// global config set `model = "sonnet"` + `[agent.research] model =
+    /// "opus"`, but an empty project `[agent]` table caused the research
+    /// agent to spawn as `sonnet` (the general default shadowing the
+    /// per-role override).
+    #[test]
+    fn apply_global_agent_defaults_role_model_beats_general_model_with_empty_project_agent() {
+        let mut config: AutotuneConfig = toml::from_str(
+            r#"
+[task]
+name = "demo"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[measure]]
+name = "bench"
+command = ["echo", "metric: 1"]
+adaptor = { type = "regex", patterns = [{ name = "metric", pattern = "metric: ([0-9]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric", direction = "Minimize" }]
+
+[agent]
+"#,
+        )
+        .unwrap();
+        let global = GlobalConfig {
+            agent: Some(autotune_config::AgentConfig {
+                backend: Some("claude".to_string()),
+                model: Some("sonnet".to_string()),
+                max_turns: None,
+                reasoning_effort: None,
+                max_fix_attempts: None,
+                max_fresh_spawns: None,
+                research: Some(autotune_config::AgentRoleConfig {
+                    backend: None,
+                    model: Some("opus".to_string()),
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+                implementation: Some(autotune_config::AgentRoleConfig {
+                    backend: None,
+                    model: Some("sonnet".to_string()),
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: Some(3),
+                    max_fresh_spawns: Some(1),
+                }),
+                init: Some(autotune_config::AgentRoleConfig {
+                    backend: None,
+                    model: Some("haiku".to_string()),
+                    max_turns: None,
+                    reasoning_effort: None,
+                    max_fix_attempts: None,
+                    max_fresh_spawns: None,
+                }),
+                judge: None,
+            }),
+        };
+
+        apply_global_agent_defaults(&mut config, &global);
+
+        let research = config.agent.research.as_ref().expect("research role");
+        assert_eq!(
+            research.model.as_deref(),
+            Some("opus"),
+            "global [agent.research].model must beat global [agent].model"
+        );
+        assert_eq!(research.backend.as_deref(), Some("claude"));
+
+        let implementation = config
+            .agent
+            .implementation
+            .as_ref()
+            .expect("implementation role");
+        assert_eq!(implementation.model.as_deref(), Some("sonnet"));
+
+        let init = config.agent.init.as_ref().expect("init role");
+        assert_eq!(init.model.as_deref(), Some("haiku"));
     }
 
     #[test]

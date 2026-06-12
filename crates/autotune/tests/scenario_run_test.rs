@@ -178,6 +178,74 @@ fn scenario_run_plain_plan_completes_iteration() {
     );
 }
 
+/// Regression (end-to-end): a bare project `[agent]` table must not let the
+/// global *general* `[agent].model` shadow the global per-role
+/// `[agent.research].model`. Reproduces a real bug where a global config with
+/// `model = "sonnet"` plus `[agent.research] model = "opus"` spawned the
+/// research agent as `sonnet` whenever the project's `[agent]` table was empty
+/// (the shape left by `autotune init`). Drives the compiled binary with
+/// `AUTOTUNE_GLOBAL_CONFIG` pointing at a fake global config.
+#[test]
+fn scenario_run_global_research_model_overrides_general_default() {
+    // Project config with a *bare* [agent] table — the exact shape that
+    // triggered the precedence inversion.
+    let project = Project::empty()
+        .file(".autotune.toml", format!("{CONFIG_TOML}\n[agent]\n"))
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>touch-src</approach>\
+               <hypothesis>verify the research model resolves to opus</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    // Fake global config: general default `sonnet`, research override `opus`.
+    let global_dir = tempfile::tempdir().unwrap();
+    let global_config = global_dir.path().join("config.toml");
+    std::fs::write(
+        &global_config,
+        "[agent]\nbackend = \"claude\"\nmodel = \"sonnet\"\n\n[agent.research]\nmodel = \"opus\"\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env("AUTOTUNE_GLOBAL_CONFIG", &global_config)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected clean exit.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("spawning research agent: model=opus"),
+        "research model should resolve to the global [agent.research] override \
+         'opus', not the general default 'sonnet'.\nstdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("spawning research agent: model=sonnet"),
+        "research model must not fall back to the general default 'sonnet'.\n\
+         stdout:\n{stdout}"
+    );
+}
+
 #[test]
 fn scenario_resume_repairs_testing_without_approach() {
     let project = scenario_project();
