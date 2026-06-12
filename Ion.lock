@@ -21,6 +21,12 @@ commit = "917e5f53b16b115b70a3a355ed5f4993b9f8b73d"
 checksum = "sha256:e21044ae7496fc285f1df9ff3fb518a3a20bea6f5216c1f59f4987e12c769a0a"
 
 [[skill]]
+name = "dogfooding-autotune"
+source = ""
+kind = "local"
+checksum = "sha256:bacaa1ef09eee9a74ba7440dab490d10ebe91d57db3dde73ee23c6a17f1a56cb"
+
+[[skill]]
 name = "executing-plans"
 source = "https://github.com/obra/superpowers.git"
 kind = "git"
@@ -40,7 +46,7 @@ checksum = "sha256:9edba9a38684c060fdc38290f640e1dc0c37de286723ac9be73bacacf7cd6
 name = "ion-cli"
 source = ""
 kind = "local"
-checksum = "sha256:4207f3d4f43e93120acd5fdc26c60badab389e59d1a2caab74724ab0776a49ff"
+checksum = "sha256:bd5d3a00554413b17ddca6c53aa2f639a7a0c5bdfd8d300126ea6a471d5d669c"
 
 [[skill]]
 name = "receiving-code-review"
