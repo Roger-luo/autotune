@@ -18,7 +18,7 @@
 
 use autotune_agent::aprintln;
 use autotune_agent::{AgentEvent, EventHandler};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::sync::{Arc, Mutex};
 
 /// Which kind of protocol payload (if any) to suppress once it starts.
@@ -309,6 +309,39 @@ pub fn clear_status() {
 /// upstream before reaching this type.
 pub struct TerminalToolApprover;
 
+/// How a tool-approval request should be resolved, decided from the
+/// environment at request time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalMode {
+    /// Interactively prompt the user (a terminal is attached).
+    Prompt,
+    /// Approve without prompting (`AUTOTUNE_AUTO_APPROVE` is set).
+    AutoApprove,
+    /// Deny without prompting — the safe default when stdin is not a
+    /// terminal, so the run never crashes trying to read a prompt from a
+    /// redirected/closed stdin.
+    AutoDeny,
+}
+
+/// Decide how to handle an approval request given whether stdin is a
+/// terminal and the value of `AUTOTUNE_AUTO_APPROVE`.
+///
+/// `AUTOTUNE_AUTO_APPROVE=1` (or `true`, case-insensitive) forces approval
+/// regardless of the terminal — for unattended/CI runs. Otherwise an attached
+/// terminal prompts interactively, and a non-interactive stdin auto-denies.
+fn resolve_approval_mode(stdin_is_terminal: bool, auto_approve_env: Option<&str>) -> ApprovalMode {
+    let auto_approve = auto_approve_env
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if auto_approve {
+        ApprovalMode::AutoApprove
+    } else if stdin_is_terminal {
+        ApprovalMode::Prompt
+    } else {
+        ApprovalMode::AutoDeny
+    }
+}
+
 impl autotune_plan::ToolApprover for TerminalToolApprover {
     fn approve(
         &self,
@@ -332,14 +365,33 @@ impl autotune_plan::ToolApprover for TerminalToolApprover {
             }),
         );
 
-        // Layer 1: dialoguer puts the terminal in raw mode. If interrupted,
-        // Drop on this guard restores.
-        let _terminal_guard = autotune_agent::terminal::Guard::new();
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt("Allow this tool for the rest of the task run?")
-            .default(false)
-            .interact()
-            .map_err(std::io::Error::other)?;
+        let auto_approve_env = std::env::var("AUTOTUNE_AUTO_APPROVE").ok();
+        let mode =
+            resolve_approval_mode(std::io::stdin().is_terminal(), auto_approve_env.as_deref());
+
+        let confirmed = match mode {
+            ApprovalMode::AutoApprove => {
+                aprintln!("[autotune] auto-approving (AUTOTUNE_AUTO_APPROVE is set)");
+                true
+            }
+            ApprovalMode::AutoDeny => {
+                aprintln!(
+                    "[autotune] non-interactive stdin — auto-denying tool request \
+                     (set AUTOTUNE_AUTO_APPROVE=1 to approve unattended)"
+                );
+                false
+            }
+            ApprovalMode::Prompt => {
+                // Layer 1: dialoguer puts the terminal in raw mode. If
+                // interrupted, Drop on this guard restores.
+                let _terminal_guard = autotune_agent::terminal::Guard::new();
+                dialoguer::Confirm::new()
+                    .with_prompt("Allow this tool for the rest of the task run?")
+                    .default(false)
+                    .interact()
+                    .map_err(std::io::Error::other)?
+            }
+        };
 
         let decision = if confirmed {
             autotune_plan::ApprovalDecision::Approve
@@ -360,6 +412,52 @@ impl autotune_plan::ToolApprover for TerminalToolApprover {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_mode_prompts_on_terminal_without_override() {
+        assert_eq!(resolve_approval_mode(true, None), ApprovalMode::Prompt);
+    }
+
+    #[test]
+    fn approval_mode_auto_denies_on_non_terminal_without_override() {
+        // The key fix: a non-interactive stdin must NOT try to read a prompt
+        // (which crashes the run). It auto-denies instead.
+        assert_eq!(resolve_approval_mode(false, None), ApprovalMode::AutoDeny);
+    }
+
+    #[test]
+    fn approval_mode_auto_approves_when_env_set() {
+        // The override wins regardless of terminal attachment.
+        assert_eq!(
+            resolve_approval_mode(false, Some("1")),
+            ApprovalMode::AutoApprove
+        );
+        assert_eq!(
+            resolve_approval_mode(true, Some("1")),
+            ApprovalMode::AutoApprove
+        );
+        assert_eq!(
+            resolve_approval_mode(false, Some("true")),
+            ApprovalMode::AutoApprove
+        );
+        assert_eq!(
+            resolve_approval_mode(false, Some("TRUE")),
+            ApprovalMode::AutoApprove
+        );
+    }
+
+    #[test]
+    fn approval_mode_ignores_unset_or_falsey_override() {
+        assert_eq!(resolve_approval_mode(true, Some("0")), ApprovalMode::Prompt);
+        assert_eq!(
+            resolve_approval_mode(false, Some("0")),
+            ApprovalMode::AutoDeny
+        );
+        assert_eq!(
+            resolve_approval_mode(false, Some("")),
+            ApprovalMode::AutoDeny
+        );
+    }
 
     #[test]
     fn hypothesis_markdown_includes_approach_and_files() {

@@ -88,6 +88,7 @@ impl ConfigAccumulator {
             },
             score: self.score.clone()?,
             agent: self.agent.clone().unwrap_or_default(),
+            worktree: Default::default(),
         })
     }
 
@@ -127,6 +128,7 @@ impl ConfigAccumulator {
             measure: self.measures,
             score,
             agent,
+            worktree: Default::default(),
         })
     }
 }

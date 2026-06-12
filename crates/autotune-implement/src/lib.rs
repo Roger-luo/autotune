@@ -62,6 +62,11 @@ pub enum FixOutcome {
     /// that want to keep the session alive for another turn, though in
     /// practice this is the signal to clear the session and respawn.
     NoEdits { session_id: String },
+    /// The implementer edited files but the commit was rejected (e.g. by a
+    /// project `pre-commit` hook — a license-header check, linter, etc.).
+    /// `output` carries the rejection text to feed back to the implementer so
+    /// it can fix the issues. The edits remain in the worktree.
+    HookRejected { output: String, session_id: String },
 }
 
 /// Errors that can occur during implementation.
@@ -81,6 +86,14 @@ pub enum ImplementError {
 
     #[error("implementation agent did not commit any changes")]
     NoCommit,
+
+    /// The implementer edited files but the commit was rejected by the
+    /// project's validation harness (a `pre-commit` hook). `output` is the
+    /// hook's text; the tune loop feeds it back to the implementer as a
+    /// fix-retry rather than treating the candidate as a crash. `session_id`
+    /// is the implementer's session so the fix turn can continue in-context.
+    #[error("commit rejected by project hook:\n{output}")]
+    CommitRejected { output: String, session_id: String },
 }
 
 /// Build sandboxed tool permissions for the implementation agent.
@@ -309,8 +322,26 @@ pub fn run_implementation(
         let summary =
             extract_summary(&response.text).unwrap_or_else(|| hypothesis.approach.clone());
         let message = format!("autotune: {}\n\n{}", summary, response.text.trim());
-        autotune_git::stage_all_and_commit(worktree_path, &message)?;
-        autotune_git::latest_commit_sha(worktree_path)?
+        match autotune_git::stage_all_and_commit(worktree_path, &message) {
+            Ok(()) => autotune_git::latest_commit_sha(worktree_path)?,
+            // A failed commit with edits still present means the project's
+            // validation harness (a pre-commit hook) rejected it. Surface the
+            // hook output so the loop can feed it back to the implementer.
+            Err(GitError::CommandFailed { stderr, .. }) => {
+                autotune_agent::trace::record(
+                    "implement.result",
+                    serde_json::json!({
+                        "approach": hypothesis.approach,
+                        "outcome": "commit_rejected",
+                    }),
+                );
+                return Err(ImplementError::CommitRejected {
+                    output: stderr,
+                    session_id: response.session_id.clone(),
+                });
+            }
+            Err(other) => return Err(other.into()),
+        }
     } else {
         // No commit and no uncommitted changes — the agent made no edits.
         autotune_agent::trace::record(
@@ -559,12 +590,24 @@ fn commit_if_edited(
     if autotune_git::has_uncommitted_changes(worktree_path)? {
         let summary = extract_summary(&response.text).unwrap_or_else(|| "fix".to_string());
         let message = format!("autotune(fix): {}\n\n{}", summary, response.text.trim());
-        autotune_git::stage_all_and_commit(worktree_path, &message)?;
-        let commit_sha = autotune_git::latest_commit_sha(worktree_path)?;
-        return Ok(FixOutcome::Committed {
-            commit_sha,
-            session_id,
-        });
+        match autotune_git::stage_all_and_commit(worktree_path, &message) {
+            Ok(()) => {
+                let commit_sha = autotune_git::latest_commit_sha(worktree_path)?;
+                return Ok(FixOutcome::Committed {
+                    commit_sha,
+                    session_id,
+                });
+            }
+            // Hook rejected the fix commit too — surface its output so the
+            // next fix turn (if budget remains) sees what still needs fixing.
+            Err(GitError::CommandFailed { stderr, .. }) => {
+                return Ok(FixOutcome::HookRejected {
+                    output: stderr,
+                    session_id,
+                });
+            }
+            Err(other) => return Err(other.into()),
+        }
     }
     Ok(FixOutcome::NoEdits { session_id })
 }

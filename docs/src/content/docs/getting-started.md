@@ -48,3 +48,9 @@ interrupted, resume exactly where it stopped:
 ```bash
 autotune resume
 ```
+
+During the run the research agent may ask to use additional tools (e.g.
+`Bash`); Autotune prompts you to approve each. To run unattended (CI, a
+scheduler, or piped output), set `AUTOTUNE_AUTO_APPROVE=1` so requests are
+granted without prompting. See [Tool approval](/configuration/#tool-approval)
+for the full behavior.

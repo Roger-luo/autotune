@@ -4,6 +4,43 @@ Autotune never mutates the user's canonical branch (typically `main`).
 Each task accumulates its kept iterations on a per-task **advancing branch**;
 the user PRs that branch into canonical when ready.
 
+## Project git hooks are part of the validation harness
+
+Autotune does **not** bypass the project's git hooks. The implementer commits
+its candidate through `autotune_git::stage_all_and_commit`, which runs the
+project's `pre-commit`/`commit-msg` hooks normally. The rationale (per a
+deliberate design decision): the hooks *are* the project's definition of valid
+code — license headers, linters, formatters. Bypassing them (`--no-verify` /
+`core.hooksPath=/dev/null`) would let the implementer "succeed" with code the
+project considers broken, and autotune would keep it.
+
+So a hook-rejected commit is treated like a failed test:
+
+- `stage_all_and_commit` surfaces the hook output as a `GitError::CommandFailed`.
+- `autotune-implement` maps that to `ImplementError::CommitRejected { output, .. }`
+  (initial commit) or `FixOutcome::HookRejected { output, .. }` (a fix turn),
+  carrying the implementer's session so the fix can continue in-context.
+- `machine::run_implementing` / `run_fixing` feed the hook output back to the
+  implementer via the **Fixing** loop (`route_commit_rejection` →
+  `hook_failure_feedback`), bounded by the same `max_fix_attempts` budget as
+  test failures. If the implementer can't satisfy the hooks within budget, the
+  candidate is **discarded** (not crashed).
+
+### Worktree environment setup (`[worktree] setup`)
+
+For the project's hooks to actually *run* in a fresh worktree, the environment
+sometimes needs preparation — e.g. `mise` refuses to load the worktree's
+`mise.toml` until its new path is trusted. This is **configurable, not
+hard-coded to any one tool**: `[worktree] setup` in `.autotune.toml` is a list
+of commands run (in order, in the new worktree) right after creation, before
+the implementer runs. `machine::run_worktree_setup` executes them; a non-zero
+exit aborts the run. Example:
+
+```toml
+[worktree]
+setup = [["mise", "trust"]]
+```
+
 ## Branch layout
 
 ```

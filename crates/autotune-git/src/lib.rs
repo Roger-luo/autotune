@@ -568,6 +568,43 @@ mod tests {
         assert_ne!(sha_before, sha_after, "commit should advance HEAD");
     }
 
+    /// A project `pre-commit` hook is part of the validation harness, so a
+    /// failing hook must make the commit fail, surfacing the hook's output as
+    /// the error. The tune loop relies on this to treat hook-rejected
+    /// candidates as invalid — feeding the output back to the implementer —
+    /// rather than silently committing code the project considers broken.
+    #[test]
+    fn stage_all_and_commit_surfaces_failing_pre_commit_hook() {
+        let dir = make_repo();
+        let hooks_dir = dir.path().join(".git").join("hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        let hook = hooks_dir.join("pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\necho 'license check failed' >&2\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let sha_before = latest_commit_sha(dir.path()).unwrap();
+        fs::write(dir.path().join("change.rs"), b"// no header").unwrap();
+        let err = stage_all_and_commit(dir.path(), "candidate change")
+            .expect_err("commit should fail when the pre-commit hook rejects it");
+        assert!(
+            err.to_string().contains("license check failed"),
+            "error should carry the hook output, got: {err}"
+        );
+        let sha_after = latest_commit_sha(dir.path()).unwrap();
+        assert_eq!(
+            sha_before, sha_after,
+            "HEAD must not advance when the hook rejects the commit"
+        );
+    }
+
     #[test]
     fn branch_exists_false_for_missing() {
         let dir = make_repo();

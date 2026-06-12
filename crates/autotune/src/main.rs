@@ -2182,6 +2182,7 @@ mod tests {
                 }],
             },
             agent: autotune_config::AgentConfig::default(),
+            worktree: autotune_config::WorktreeConfig::default(),
         }
     }
 

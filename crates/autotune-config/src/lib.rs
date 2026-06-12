@@ -16,6 +16,21 @@ pub struct AutotuneConfig {
     pub score: ScoreConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub worktree: WorktreeConfig,
+}
+
+/// Settings for the per-iteration git worktree the implementation agent runs in.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorktreeConfig {
+    /// Commands run, in order, in a freshly created worktree before the
+    /// implementation agent runs. Use these to prepare the environment so the
+    /// project's tooling and git hooks work at the new worktree path — for
+    /// example `["mise", "trust"]`, or any other tool-trust/setup step. Each
+    /// entry is a full command (program + args) run with the worktree as the
+    /// working directory; a non-zero exit aborts the run with an error.
+    #[serde(default)]
+    pub setup: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -779,6 +794,7 @@ max_fresh_spawns = 2
             measure,
             score,
             agent: AgentConfig::default(),
+            worktree: WorktreeConfig::default(),
         }
     }
 
@@ -1077,6 +1093,42 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             max_fresh_spawns: Some(5),
         };
         assert_eq!(role.effective_max_fresh_spawns(), 5);
+    }
+
+    #[test]
+    fn worktree_setup_parses_from_toml() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+
+[worktree]
+setup = [["mise", "trust"], ["echo", "ready"]]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.worktree.setup,
+            vec![
+                vec!["mise".to_string(), "trust".to_string()],
+                vec!["echo".to_string(), "ready".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn worktree_setup_defaults_to_empty_when_absent() {
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        assert!(config.worktree.setup.is_empty());
     }
 
     #[test]

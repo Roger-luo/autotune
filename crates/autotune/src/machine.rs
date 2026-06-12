@@ -314,6 +314,48 @@ fn wait_duration(now: DateTime<Utc>, until: DateTime<Utc>) -> Duration {
     (until - now).to_std().unwrap_or_default()
 }
 
+/// Run the configured `[worktree] setup` commands, in order, in a freshly
+/// created worktree. These prepare the environment so the project's tooling
+/// and git hooks work at the new worktree path (e.g. `["mise", "trust"]`).
+/// A command that fails to spawn or exits non-zero aborts the run.
+fn run_worktree_setup(config: &AutotuneConfig, worktree_path: &Path) -> Result<()> {
+    for cmd in &config.worktree.setup {
+        let Some((program, args)) = cmd.split_first() else {
+            continue; // skip empty entries rather than spawn nothing
+        };
+        aprintln!("[autotune] worktree setup: {}", cmd.join(" "));
+        let output = std::process::Command::new(program)
+            .args(args)
+            .current_dir(worktree_path)
+            .output()
+            .with_context(|| {
+                format!("failed to spawn worktree setup command: {}", cmd.join(" "))
+            })?;
+        autotune_agent::trace::record(
+            "worktree.setup",
+            serde_json::json!({
+                "command": cmd,
+                "exit_code": output.status.code(),
+                "success": output.status.success(),
+            }),
+        );
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "worktree setup command failed ({}): {}\n{}",
+                output
+                    .status
+                    .code()
+                    .map(|c| format!("exit {c}"))
+                    .unwrap_or_else(|| "terminated by signal".to_string()),
+                cmd.join(" "),
+                stderr.trim()
+            );
+        }
+    }
+    Ok(())
+}
+
 fn run_planning(
     config: &AutotuneConfig,
     agent: &dyn Agent,
@@ -384,6 +426,8 @@ fn run_planning(
             .display(),
         branch_name
     );
+
+    run_worktree_setup(config, &worktree_path)?;
 
     state.current_approach = Some(ApproachState {
         name: hypothesis.approach.clone(),
@@ -483,29 +527,103 @@ fn run_implementing(
             store.save_state(state)?;
         }
         Err(e) if e.downcast_ref::<ImplementError>().is_some() => {
-            let reason = match e.downcast_ref::<ImplementError>().unwrap() {
-                ImplementError::NoCommit => "implementation produced no commit".to_string(),
-                ImplementError::Git { source } => format!("git error: {source}"),
-                ImplementError::Agent { source } => format!("agent error: {source}"),
-            };
-            aprintln!(
-                "[autotune] iteration {} — {}, recording as crash",
-                state.current_iteration,
-                reason
-            );
-            autotune_agent::trace::record(
-                "phase.decision",
-                serde_json::json!({
-                    "phase": "Implementing",
-                    "branch": "crash",
-                    "reason": reason,
-                }),
-            );
-            record_crash(state, store)?;
+            match e.downcast_ref::<ImplementError>().unwrap() {
+                // The project's validation harness (a pre-commit hook)
+                // rejected the candidate. Treat it like a failed test: feed
+                // the hook output back to the implementer for a fix-retry, or
+                // discard if the fix budget is spent. Keep the implementer's
+                // session so the fix turn can continue in-context.
+                ImplementError::CommitRejected { output, session_id } => {
+                    let output = output.clone();
+                    let session_id = session_id.clone();
+                    let approach_mut = state.current_approach.as_mut().unwrap();
+                    approach_mut.impl_session_id = Some(session_id);
+                    route_commit_rejection(config, store, state, output)?;
+                }
+                other => {
+                    let reason = match other {
+                        ImplementError::NoCommit => "implementation produced no commit".to_string(),
+                        ImplementError::Git { source } => format!("git error: {source}"),
+                        ImplementError::Agent { source } => format!("agent error: {source}"),
+                        ImplementError::CommitRejected { .. } => unreachable!(),
+                    };
+                    aprintln!(
+                        "[autotune] iteration {} — {}, recording as crash",
+                        state.current_iteration,
+                        reason
+                    );
+                    autotune_agent::trace::record(
+                        "phase.decision",
+                        serde_json::json!({
+                            "phase": "Implementing",
+                            "branch": "crash",
+                            "reason": reason,
+                        }),
+                    );
+                    record_crash(state, store)?;
+                }
+            }
         }
         Err(e) => return Err(e).context("implementation failed"),
     }
     Ok(())
+}
+
+/// Build the fix-retry prompt fed to the implementer when a commit is rejected
+/// by the project's git hooks (validation harness).
+fn hook_failure_feedback(hook_output: &str) -> String {
+    format!(
+        "Your commit was rejected by the project's git hooks (the validation \
+         harness — license-header checks, linters, formatters, etc.). The \
+         change is NOT valid until these pass. Fix the reported issues so the \
+         commit succeeds; do not disable or skip the hooks.\n\nHook output:\n{hook_output}"
+    )
+}
+
+/// Route a hook-rejected implementation commit into the implementer fix-retry
+/// loop, or discard if the fix budget is exhausted. Mirrors `run_testing`'s
+/// failed-test branch: the hook output becomes a `fix_history` entry the
+/// Fixing phase feeds back to the implementer.
+fn route_commit_rejection(
+    config: &AutotuneConfig,
+    store: &TaskStore,
+    state: &mut TaskState,
+    hook_output: String,
+) -> Result<()> {
+    let (max_fix, _max_fresh) = fix_budget(config);
+    let iteration = state.current_iteration;
+    autotune_agent::trace::record(
+        "phase.decision",
+        serde_json::json!({
+            "phase": "Implementing",
+            "branch": "hook_rejected",
+        }),
+    );
+    let approach_mut = state.current_approach.as_mut().unwrap();
+    if max_fix == 0 || approach_mut.fix_attempts >= max_fix {
+        let reason = if max_fix == 0 {
+            "commit rejected by project hooks".to_string()
+        } else {
+            format!(
+                "commit rejected by project hooks after {} fix attempt(s); budget exhausted",
+                approach_mut.fix_attempts
+            )
+        };
+        aprintln!("[autotune] iteration {iteration} — {reason}, discarding");
+        record_discard(state, store, &reason)
+    } else {
+        approach_mut
+            .fix_history
+            .push(hook_failure_feedback(&hook_output));
+        aprintln!(
+            "[autotune] iteration {iteration} — commit rejected by project hooks, entering Fixing (attempt {}/{})",
+            approach_mut.fix_attempts + 1,
+            max_fix
+        );
+        state.current_phase = Phase::Fixing;
+        store.save_state(state)?;
+        Ok(())
+    }
 }
 
 fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState) -> Result<()> {
@@ -827,6 +945,43 @@ fn run_fixing(
                 );
                 return record_discard(state, store, &reason);
             }
+        }
+        FixOutcome::HookRejected { output, session_id } => {
+            // The implementer edited (productive session) but the commit is
+            // still rejected by the project's hooks. Stash the latest hook
+            // output, keep the session for another in-context fix, and retry
+            // unless the budget is spent.
+            let (fix_attempts, fresh_spawns) = {
+                let approach_mut = state.current_approach.as_mut().unwrap();
+                approach_mut.impl_session_id = Some(session_id);
+                approach_mut
+                    .fix_history
+                    .push(hook_failure_feedback(&output));
+                (approach_mut.fix_attempts, approach_mut.fresh_spawns)
+            };
+            autotune_agent::trace::record(
+                "phase.decision",
+                serde_json::json!({
+                    "phase": "Fixing",
+                    "branch": "hook_rejected",
+                    "fix_attempts": fix_attempts,
+                    "fresh_spawns": fresh_spawns,
+                }),
+            );
+            if fix_attempts >= max_fix {
+                let reason = format!(
+                    "commit rejected by project hooks after {fix_attempts} fix attempt(s); budget exhausted"
+                );
+                aprintln!("[autotune] iteration {iteration} — {reason}");
+                return record_discard(state, store, &reason);
+            }
+            aprintln!(
+                "[autotune] iteration {iteration} — commit still rejected by project hooks, retrying (attempt {}/{})",
+                fix_attempts + 1,
+                max_fix
+            );
+            state.current_phase = Phase::Fixing;
+            store.save_state(state)?;
         }
     }
     Ok(())
@@ -1475,6 +1630,7 @@ mod tests {
                 guardrail_metrics: vec![],
             },
             agent: autotune_config::AgentConfig::default(),
+            worktree: autotune_config::WorktreeConfig::default(),
         }
     }
 
@@ -1590,6 +1746,63 @@ mod tests {
         fn calculate(&self, _input: &ScoreInput) -> std::result::Result<ScoreOutput, ScoreError> {
             Ok(self.output.clone())
         }
+    }
+
+    #[test]
+    fn hook_failure_feedback_carries_output_and_forbids_skipping() {
+        let fb = hook_failure_feedback("license header missing in src/x.rs");
+        assert!(fb.contains("license header missing in src/x.rs"));
+        assert!(fb.contains("validation harness"));
+        // Must instruct the implementer to fix, not bypass, the hooks.
+        assert!(fb.to_lowercase().contains("do not disable"));
+    }
+
+    #[test]
+    fn route_commit_rejection_enters_fixing_when_budget_available() {
+        let (tmp, store) = make_store();
+        let mut config = make_minimal_config(Some(autotune_config::StopValue::Finite(5)), None);
+        // Default budget => fixing available.
+        config.agent.implementation = None;
+        let mut state =
+            make_state_with_approach(Phase::Implementing, 1, tmp.path().join("worktree"));
+
+        route_commit_rejection(&config, &store, &mut state, "HOOK: bad header".to_string())
+            .unwrap();
+
+        assert_eq!(state.current_phase, Phase::Fixing);
+        let approach = state.current_approach.as_ref().unwrap();
+        assert_eq!(approach.fix_history.len(), 1);
+        assert!(approach.fix_history[0].contains("HOOK: bad header"));
+    }
+
+    #[test]
+    fn route_commit_rejection_discards_when_fix_budget_is_zero() {
+        let (tmp, store) = make_store();
+        let mut config = make_minimal_config(Some(autotune_config::StopValue::Finite(5)), None);
+        config.agent.implementation = Some(autotune_config::AgentRoleConfig {
+            backend: None,
+            model: None,
+            max_turns: None,
+            reasoning_effort: None,
+            max_fix_attempts: Some(0),
+            max_fresh_spawns: Some(0),
+        });
+        let mut state =
+            make_state_with_approach(Phase::Implementing, 1, tmp.path().join("worktree"));
+
+        route_commit_rejection(&config, &store, &mut state, "HOOK: bad header".to_string())
+            .unwrap();
+
+        // No fix budget => discard the candidate (not crash, not Fixing).
+        let ledger = store.load_ledger().unwrap();
+        let last = ledger.last().unwrap();
+        assert_eq!(last.status, IterationStatus::Discarded);
+        assert!(
+            last.reason
+                .as_ref()
+                .unwrap()
+                .contains("rejected by project hooks")
+        );
     }
 
     #[test]

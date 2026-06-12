@@ -490,6 +490,107 @@ fn scenario_run_request_tool_prompts_user_for_approval() {
     );
 }
 
+/// Regression: a *soft* tool request (e.g. `Bash`) under non-interactive
+/// stdin must NOT crash the run trying to read an approval prompt. It should
+/// auto-deny (the safe default) and continue. Before the fix, `dialoguer`
+/// errored on the closed/redirected stdin and aborted the whole run — exactly
+/// what blocked unattended `autotune run` once the research agent asked for
+/// Bash.
+#[test]
+fn scenario_run_soft_tool_request_auto_denies_when_non_interactive() {
+    let project = scenario_project();
+    let script = write_script(
+        &project,
+        &[
+            "<request-tool>\
+               <tool>Bash</tool>\
+               <scope>cargo tree:*</scope>\
+               <reason>need dep graph for analysis</reason>\
+             </request-tool>",
+            "Ok, proceeding without Bash.",
+            "<plan>\
+               <approach>no-bash</approach>\
+               <hypothesis>proceed with read-only tools</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !combined.contains("panicked"),
+        "must not panic on non-interactive approval.\noutput:\n{combined}"
+    );
+    assert!(
+        combined.contains("auto-denying tool request"),
+        "should announce the non-interactive auto-deny.\noutput:\n{combined}"
+    );
+    assert!(
+        output.status.success(),
+        "run should complete through the auto-deny.\noutput:\n{combined}"
+    );
+}
+
+/// With `AUTOTUNE_AUTO_APPROVE=1`, a soft tool request is granted without a
+/// prompt even under non-interactive stdin — the unattended/CI path.
+#[test]
+fn scenario_run_auto_approve_env_grants_soft_tool() {
+    let project = scenario_project();
+    let script = write_script(
+        &project,
+        &[
+            "<request-tool>\
+               <tool>Bash</tool>\
+               <scope>cargo tree:*</scope>\
+               <reason>need dep graph for analysis</reason>\
+             </request-tool>",
+            "Thanks, got the dep graph.",
+            "<plan>\
+               <approach>with-bash</approach>\
+               <hypothesis>used the approved tool</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env("AUTOTUNE_AUTO_APPROVE", "1")
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        combined.contains("auto-approving"),
+        "should announce auto-approval.\noutput:\n{combined}"
+    );
+    assert!(
+        output.status.success(),
+        "run should complete with the tool approved.\noutput:\n{combined}"
+    );
+}
+
 /// A hard-denied tool (`Edit` / `Write` / `Agent`) should be auto-denied
 /// by the CLI without prompting the user at all.
 #[test]
