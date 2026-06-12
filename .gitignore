@@ -46,3 +46,7 @@ CLAUDE.md
 .claude/skills/writing-plans
 .agents/skills/writing-skills
 .claude/skills/writing-skills
+
+# Local skill: source (.agents/skills/dogfooding-autotune) is tracked; the
+# .claude/skills symlink is a reconstruction artifact (recreated by `ion add`).
+.claude/skills/dogfooding-autotune
