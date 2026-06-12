@@ -26,6 +26,16 @@ So a hook-rejected commit is treated like a failed test:
   test failures. If the implementer can't satisfy the hooks within budget, the
   candidate is **discarded** (not crashed).
 
+### Candidate commits exclude transient artifacts
+
+`stage_all_and_commit` does not blindly `git add -A`. It excludes a built-in set
+of never-commit globs (`NEVER_COMMIT_GLOBS`: `*.snap.new`, `*.orig`, `*.rej`)
+via `:(exclude,glob)` pathspecs. These are written by test/tooling runs (insta
+pending snapshots, patch/merge rejects), not source edits; staging them polluted
+candidate commits and — when a later step deleted a committed `.snap.new` — left
+the worktree dirty enough to break the integration rebase. They stay in the
+worktree as untracked files; `reset_to_head` cleans them before the rebase.
+
 ### Worktree environment setup (`[worktree] setup`)
 
 For the project's hooks to actually *run* in a fresh worktree, the environment

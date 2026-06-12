@@ -10,6 +10,14 @@
    drive the compiled binary, since the `#[cfg(test)]` override can't reach it).
 3. **Task name override** from the CLI (`autotune run <name>`), if any.
 
+`autotune run` then snapshots the **merged, effective** config to
+`config_snapshot.toml` (via `toml::to_string_pretty(&config)`), *not* the raw
+`.autotune.toml`. `autotune resume` reloads that snapshot verbatim and does
+**not** re-merge global defaults — so the snapshot must already contain them, or
+resume silently falls back to built-in defaults (this bit the implementation
+fix-retry budget once). Net effect: the effective config is frozen at task
+start and stays stable across resumes even if the global config changes later.
+
 For agent role settings specifically (`[agent.research]`, `[agent.implementation]`,
 `[agent.init]`), `None` fields in project config fall back to the global config.
 This lets a user set `model = "sonnet"` globally without editing every project.

@@ -80,3 +80,32 @@ Current behavior is the strictest supported approximation:
 
 This is intentionally narrower than Claude's explicit tool allowlisting, not
 equivalent to it.
+
+## Subprocess lifecycle: process groups & shutdown teardown
+
+Agent CLIs are long-lived and spawn their own descendants (the node `claude`
+binary, MCP servers, Bash-tool subprocesses). If autotune is interrupted while
+an agent call is in flight, those would otherwise be reparented to init and keep
+running — orphaned, still spending the LLM budget. (Observed: SIGTERM to the
+autotune PID left a `claude -p` agent alive for minutes.)
+
+Mechanism (`crates/autotune-agent/src/child.rs`, wired into `claude.rs`/`codex.rs`):
+
+- Each agent subprocess is spawned as its **own process-group leader**
+  (`CommandExt::process_group(0)`), and its pid (== pgid) is tracked via a
+  `ChildGuard` for the duration of the call.
+- The CLI's shutdown handler (`ctrlc`, with the `termination` feature so it
+  also catches **SIGTERM**, not just SIGINT) calls `terminate_active_children()`,
+  which `killpg`s each tracked group with SIGINT — taking down the CLI *and* its
+  descendants without touching autotune's own group.
+- Because the child is now in its own group, the terminal's Ctrl-C no longer
+  reaches it directly; the handler is the single path that tears agents down,
+  for both Ctrl-C and SIGTERM.
+- `terminate_active_children()` also sets a sticky `is_shutting_down()` flag.
+  After a child exits, the backends check it and return `AgentError::Interrupted`
+  regardless of the child's exit status — a SIGINT'd `claude` often exits 0 with
+  empty/partial output, which would otherwise look like an unparseable response
+  and trip the planning/fix **retry** loop, re-spawning agents *after* a shutdown
+  was requested. Reporting `Interrupted` makes `classify_phase_failure` exit
+  cleanly instead. Net: SIGTERM mid-run kills the agent, leaves no orphan, does
+  no retries, and exits in ~1s.
