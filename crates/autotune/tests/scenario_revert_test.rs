@@ -235,3 +235,88 @@ fn scenario_revert_middle_iteration_no_conflict() {
     assert_eq!(last["status"], "reverted", "ledger:\n{ledger_after:#}");
     assert_eq!(last["reverted_iteration"], 1, "ledger:\n{ledger_after:#}");
 }
+
+#[test]
+fn scenario_revert_conflict_unresolved_aborts_and_leaves_ledger_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn v() -> i32 { 1 }\n").unwrap();
+    std::fs::write(root.join(".autotune.toml"), CONFIG_TOML).unwrap();
+    std::fs::write(root.join(".gitignore"), ".autotune/\ntarget/\n").unwrap();
+    git(root, &["init"]);
+    git(root, &["config", "user.email", "t@t.com"]);
+    git(root, &["config", "user.name", "T"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-m", "initial"]);
+    git(root, &["branch", "-M", "main"]);
+
+    // Advancing branch: iter1 sets v=2, iter2 sets v=3 (SAME line → reverting
+    // iter1 conflicts with iter2).
+    git(root, &["checkout", "-b", "autotune/revert-task-main"]);
+    std::fs::write(root.join("src/lib.rs"), "pub fn v() -> i32 { 2 }\n").unwrap();
+    git(root, &["commit", "-am", "autotune: iteration 1"]);
+    let sha1 = rev_parse_head(root);
+    std::fs::write(root.join("src/lib.rs"), "pub fn v() -> i32 { 3 }\n").unwrap();
+    git(root, &["commit", "-am", "autotune: iteration 2"]);
+    let sha2 = rev_parse_head(root);
+
+    let task_dir = root.join(".autotune/tasks/revert-task");
+    std::fs::create_dir_all(task_dir.join("iterations")).unwrap();
+    std::fs::write(task_dir.join("config_snapshot.toml"), CONFIG_TOML).unwrap();
+    std::fs::write(
+        task_dir.join("state.json"),
+        r#"{"task_name":"revert-task","canonical_branch":"main","advancing_branch":"autotune/revert-task-main","research_session_id":"sid","research_backend":"claude","current_iteration":3,"current_phase":"planning","current_approach":null}"#,
+    ).unwrap();
+    let ledger_before = format!(
+        r#"[{{"iteration":0,"approach":"baseline","status":"baseline","metrics":{{"metric_value":50.0}},"rank":0.0,"timestamp":"2026-04-15T00:00:00Z"}},
+{{"iteration":1,"approach":"v=2","status":"kept","metrics":{{"metric_value":42.0}},"rank":0.1,"commit_sha":"{sha1}","timestamp":"2026-04-15T00:00:01Z"}},
+{{"iteration":2,"approach":"v=3","status":"kept","metrics":{{"metric_value":40.0}},"rank":0.1,"commit_sha":"{sha2}","timestamp":"2026-04-15T00:00:02Z"}}]"#
+    );
+    std::fs::write(task_dir.join("ledger.json"), &ledger_before).unwrap();
+
+    // Mock research agent that NEVER resolves the conflict (returns canned prose,
+    // edits nothing). It will be re-sent every conflict round and repeat this
+    // response, so resolve_conflicts exhausts its rounds and gives up.
+    let mock_script = root.join(".mock-research");
+    std::fs::write(&mock_script, "I am unable to resolve these conflicts.").unwrap();
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .args(["revert", "1", "--task", "revert-task"])
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &mock_script)
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // Command must FAIL (conflict unresolved → abort).
+    assert!(
+        !output.status.success(),
+        "expected revert to fail on unresolved conflict.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The revert was aborted: working tree restored to iter2 state, no conflict markers.
+    let src = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    assert_eq!(
+        src, "pub fn v() -> i32 { 3 }\n",
+        "revert should have been aborted to HEAD"
+    );
+    assert!(!src.contains("<<<<<<<"), "conflict markers must not remain");
+
+    // Ledger is UNCHANGED: no Reverted row appended.
+    let ledger_after = std::fs::read_to_string(task_dir.join("ledger.json")).unwrap();
+    let rows: serde_json::Value = serde_json::from_str(&ledger_after).unwrap();
+    assert_eq!(
+        rows.as_array().unwrap().len(),
+        3,
+        "no row should be appended on abort"
+    );
+    assert!(
+        !ledger_after.contains("\"reverted\""),
+        "no Reverted row on abort"
+    );
+}

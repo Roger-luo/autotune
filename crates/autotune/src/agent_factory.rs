@@ -24,6 +24,20 @@ pub fn resolve_backend_name(config: &AgentConfig, role: AgentRole) -> Option<&st
 }
 
 pub fn build_agent_for_backend(backend: &str) -> Result<Box<dyn Agent>> {
+    #[cfg(feature = "mock")]
+    if std::env::var("AUTOTUNE_MOCK").is_ok() {
+        let mut builder = autotune_mock::MockAgent::builder();
+        if let Ok(path) = std::env::var("AUTOTUNE_MOCK_RESEARCH_SCRIPT")
+            && let Ok(content) = std::fs::read_to_string(&path)
+        {
+            for entry in content.split("\n---\n") {
+                let entry = entry.strip_suffix('\n').unwrap_or(entry);
+                builder = builder.research_response(entry);
+            }
+        }
+        return Ok(Box::new(builder.build()));
+    }
+
     match backend {
         "claude" => Ok(Box::new(ClaudeAgent::new())),
         "codex" => Ok(Box::new(CodexAgent::new())),
