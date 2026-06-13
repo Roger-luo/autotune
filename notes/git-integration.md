@@ -126,6 +126,25 @@ commit SHA is already reachable from the advancing branch. If yes, it moves
 straight to `Recorded`. Otherwise it retries the rebase. See
 `crates/autotune/src/resume.rs`.
 
+## Reverting an iteration
+
+`autotune revert <iteration>` undoes a kept iteration via a **non-destructive
+`git revert`** (inverse commit) on the advancing branch, then re-measures the
+branch and appends a `Reverted` checkpoint row to the ledger. Because revert
+produces a new commit rather than rewriting history, the advancing branch stays
+linear and safe to share. Conflicts (when a later kept iteration touched the
+same code) reuse the research-agent conflict-resolution loop
+(`machine::resolve_conflicts`), with the same `MAX_CONFLICT_ROUNDS` budget; if
+the agent cannot resolve them, the revert is aborted cleanly (`git revert
+--abort`) and the ledger is left untouched. To support targeting the right
+commit, kept ledger rows now carry the post-integration advancing-branch HEAD
+SHA (`commit_sha`); the command looks that SHA up by iteration number.
+
+```bash
+# Undo iteration 3, re-measure, and record a Reverted row
+autotune revert 3 --task my-task --reason "regression in edge case"
+```
+
 ## Test fixtures that touch branches
 
 Integration tests (`crates/autotune/tests/integration_test.rs`) create the

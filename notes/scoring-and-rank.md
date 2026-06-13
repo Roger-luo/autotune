@@ -96,21 +96,23 @@ and nothing reconciles it:
   code — it may re-propose the reverted change or build on a false premise.
 
 `resume` does **not** re-measure the advancing-branch HEAD or diff it against the
-recorded commits; the ledger doesn't even store per-iteration commit SHAs. This
-was observed first-hand dogfooding ppvm's `trotter-perf-3`: iteration 5 ("drop
-the `contains_with` probe") was recorded `Kept`, then reverted by hand on the
-branch, and the resumed iteration 6 was still told iter 5 was applied and was
-still scored against iter 5's metrics.
+recorded commits to detect manual surgery (kept rows now carry a `commit_sha`,
+but nothing reconciles a hand-edit against it). This was observed first-hand
+dogfooding ppvm's `trotter-perf-3` (before per-iteration SHAs were recorded):
+iteration 5 ("drop the `contains_with` probe") was recorded `Kept`, then
+reverted by hand on the branch, and the resumed iteration 6 was still told iter
+5 was applied and was still scored against iter 5's metrics.
 
-Recommendations until this is reconciled in code:
+The supported way to undo a kept iteration is **`autotune revert <iteration>`**.
+It records the inverse commit's SHA, re-measures the advancing branch, and
+appends a `Reverted` checkpoint row. `best_metrics_from_ledger` counts
+`Kept | Baseline | Reverted` rows (skipping empty-metrics rows), so after a
+revert `best` is refreshed to the last non-reverted kept result — no false
+discards, no stale planning context.
 
-- Prefer letting autotune discard an iteration over hand-reverting a kept
-  commit. If you must revert, expect the next iteration to be scored against a
-  stale `best`.
-- A proper fix would record each kept iteration's commit SHA in the ledger,
-  detect on `resume` when `HEAD` != the last kept SHA, and re-measure to refresh
-  `best` (and mark reverted rows so the planning prompt stops advertising them
-  as applied).
+A *manual* `git revert` outside autotune is still unreconciled: the ledger
+won't know the branch changed and the issues described above still apply. Use
+the command instead.
 
 See:
 

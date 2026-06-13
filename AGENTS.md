@@ -86,7 +86,7 @@ Leaf crates have no internal workspace dependencies. This means you can work on 
 1. `.autotune.toml` → `AutotuneConfig` (parsed by `autotune-config`)
 2. Config → `Agent`, `ScoreCalculator`, task/test commands (wired in `main.rs`)
 3. State machine drives the loop, persisting `TaskState` to `.autotune/tasks/<name>/state.json`
-4. Results accumulate in `ledger.json` (append-only)
+4. Results accumulate in `ledger.json` (append-only); kept rows carry a `commit_sha` (post-integration advancing-branch HEAD) and the ledger may contain `Reverted` checkpoint rows produced by `autotune revert <iteration>`
 5. On exit, research agent session ID is printed for handover
 
 ### Task Storage (gitignored)
