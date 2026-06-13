@@ -1278,7 +1278,11 @@ fn format_scoring_status_lines(
     )
 }
 
-fn build_kept_record(iteration: usize, approach: &ApproachState) -> IterationRecord {
+fn build_kept_record(
+    iteration: usize,
+    approach: &ApproachState,
+    commit_sha: Option<String>,
+) -> IterationRecord {
     IterationRecord {
         iteration,
         approach: approach.name.clone(),
@@ -1290,7 +1294,7 @@ fn build_kept_record(iteration: usize, approach: &ApproachState) -> IterationRec
         reason: approach.score_reason.clone(),
         fix_attempts: approach.fix_attempts,
         fresh_spawns: approach.fresh_spawns,
-        commit_sha: None,
+        commit_sha,
         reverted_iteration: None,
         timestamp: Utc::now(),
     }
@@ -1368,13 +1372,18 @@ fn run_integrating(
     autotune_git::merge_ff_only(repo_root, &approach.branch_name)
         .context("fast-forward advancing branch failed")?;
 
+    // The SHA now on the advancing branch — what `autotune revert` targets.
+    // Equals approach.commit_sha in the no-conflict case; differs when a
+    // conflict-rebase replayed the commit into a new SHA.
+    let advancing_sha = autotune_git::latest_commit_sha(repo_root).ok();
+
     let metrics = approach.metrics.clone().unwrap_or_default();
 
     // Save iteration metrics
     let _ = store.save_iteration_metrics(state.current_iteration, &approach.name, &metrics);
 
     // Record as kept in ledger
-    let record = build_kept_record(state.current_iteration, approach);
+    let record = build_kept_record(state.current_iteration, approach, advancing_sha);
     store.append_ledger(&record)?;
 
     state.current_phase = Phase::Recorded;
@@ -2701,11 +2710,14 @@ mod tests {
             score_reason: Some("coverage improved".to_string()),
         };
 
-        let record = build_kept_record(2, &approach);
+        // build_kept_record now takes the post-integration advancing SHA.
+        let record = build_kept_record(2, &approach, Some("abc123advancing".to_string()));
 
         assert_eq!(record.iteration, 2);
         assert_eq!(record.score.as_deref(), Some("keep"));
         assert_eq!(record.reason.as_deref(), Some("coverage improved"));
         assert_eq!(record.metrics.get("line_coverage"), Some(&78.9));
+        assert_eq!(record.commit_sha.as_deref(), Some("abc123advancing"));
+        assert_eq!(record.reverted_iteration, None);
     }
 }
