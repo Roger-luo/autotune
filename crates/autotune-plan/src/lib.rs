@@ -3,7 +3,7 @@ use autotune_agent::protocol::{ToolRequest, parse_tool_requests};
 use autotune_agent::{
     Agent, AgentError, AgentResponse, AgentSession, EventHandler, ToolPermission,
 };
-use autotune_state::{IterationRecord, StateError, TaskStore};
+use autotune_state::{IterationRecord, IterationStatus, StateError, TaskStore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -199,13 +199,25 @@ pub fn build_planning_prompt(
     if !ledger.is_empty() {
         prompt.push_str("# Ledger History\n\n");
         for record in &ledger {
-            prompt.push_str(&format!(
-                "- Iteration {}: approach={}, status={:?}, rank={}\n",
-                record.iteration,
-                summarize_approach(&record.approach),
-                record.status,
-                record.rank
-            ));
+            if record.status == IterationStatus::Reverted {
+                let undid = record
+                    .reverted_iteration
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let reason = record.reason.as_deref().unwrap_or("no reason given");
+                prompt.push_str(&format!(
+                    "- Iteration {}: reverted iteration {} ({}), status=Reverted\n",
+                    record.iteration, undid, reason
+                ));
+            } else {
+                prompt.push_str(&format!(
+                    "- Iteration {}: approach={}, status={:?}, rank={}\n",
+                    record.iteration,
+                    summarize_approach(&record.approach),
+                    record.status,
+                    record.rank
+                ));
+            }
         }
         prompt.push('\n');
     }
@@ -648,6 +660,35 @@ This should give us a 10% improvement."#;
         assert!(
             matches!(err, PlanError::ParseHypothesis { ref message } if message.contains("hypothesis")),
             "unexpected error: {err}"
+        );
+    }
+
+    /// A Reverted row must tell the research agent the change was undone (which
+    /// iteration, and why) so it doesn't plan on top of a reverted optimization.
+    #[test]
+    fn ledger_history_marks_reverted_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let rec: IterationRecord = serde_json::from_str(
+            r#"{
+                "iteration": 6,
+                "approach": "revert of iteration 5",
+                "status": "reverted",
+                "metrics": {},
+                "rank": 0.0,
+                "reason": "broke truncation fidelity test",
+                "reverted_iteration": 5,
+                "timestamp": "2026-04-15T00:00:00Z"
+            }"#,
+        )
+        .unwrap();
+        store.append_ledger(&rec).unwrap();
+
+        let prompt = build_planning_prompt(&store, None, 7, "task desc").unwrap();
+        assert!(prompt.contains("reverted iteration 5"), "prompt:\n{prompt}");
+        assert!(
+            prompt.contains("broke truncation fidelity test"),
+            "prompt:\n{prompt}"
         );
     }
 
