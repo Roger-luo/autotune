@@ -1406,7 +1406,7 @@ fn run_integrating(
 /// Drive the research agent to resolve in-progress merge conflicts (from a
 /// rebase or revert), calling `continue_op` after each agent turn. Returns
 /// `Ok(())` when conflicts clear, `Err` if unresolved within MAX_CONFLICT_ROUNDS.
-pub(crate) fn resolve_conflicts(
+pub fn resolve_conflicts(
     agent: &dyn Agent,
     dir: &Path,
     research_session: &AgentSession,

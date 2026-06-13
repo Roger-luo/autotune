@@ -52,6 +52,12 @@ fn main() -> Result<()> {
         Commands::Ff { task } => cmd_ff(task),
         Commands::Config(sub) => cmd_config(sub),
         Commands::Export { task, output } => cmd_export(task, output),
+        Commands::Revert {
+            iteration,
+            task,
+            reason,
+            no_measure,
+        } => cmd_revert(iteration, task, reason, no_measure),
     }
 }
 
@@ -1933,6 +1939,177 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
     Ok(())
 }
 
+/// Validate that iteration `n` can be reverted; return its commit SHA.
+fn validate_revert_target(ledger: &[IterationRecord], n: usize) -> Result<String> {
+    let row = ledger
+        .iter()
+        .find(|r| r.iteration == n)
+        .with_context(|| format!("no iteration {n} in ledger"))?;
+    if row.status != IterationStatus::Kept {
+        anyhow::bail!(
+            "iteration {n} is {:?}, only kept iterations can be reverted",
+            row.status
+        );
+    }
+    if let Some(by) = ledger
+        .iter()
+        .find(|r| r.status == IterationStatus::Reverted && r.reverted_iteration == Some(n))
+    {
+        anyhow::bail!(
+            "iteration {n} was already reverted (see iteration {})",
+            by.iteration
+        );
+    }
+    row.commit_sha.clone().with_context(|| {
+        format!("iteration {n} predates SHA tracking; revert it with git and PR the branch")
+    })
+}
+
+/// Build the `Reverted` checkpoint ledger row.
+fn build_reverted_record(
+    index: usize,
+    reverted_iteration: usize,
+    revert_sha: String,
+    metrics: autotune_state::Metrics,
+    reason: Option<String>,
+) -> IterationRecord {
+    IterationRecord {
+        iteration: index,
+        approach: format!("revert of iteration {reverted_iteration}"),
+        status: IterationStatus::Reverted,
+        hypothesis: None,
+        metrics,
+        rank: 0.0,
+        score: None,
+        reason,
+        fix_attempts: 0,
+        fresh_spawns: 0,
+        commit_sha: Some(revert_sha),
+        reverted_iteration: Some(reverted_iteration),
+        timestamp: Utc::now(),
+    }
+}
+
+fn cmd_revert(
+    iteration: usize,
+    task: Option<String>,
+    reason: Option<String>,
+    no_measure: bool,
+) -> Result<()> {
+    let repo_root = find_repo_root()?;
+    let autotune_dir = repo_root.join(".autotune");
+
+    // Resolve task: --task, else the config's task name (mirrors cmd_report).
+    let task_name = match task {
+        Some(t) => t,
+        None => load_config(&repo_root)?.task.name,
+    };
+    let task_dir = autotune_dir.join("tasks").join(&task_name);
+    let store = TaskStore::open(&task_dir).with_context(|| {
+        format!(
+            "task '{task_name}' not found at {}",
+            rel(&task_dir, &repo_root)
+        )
+    })?;
+
+    // Frozen config (measures, adaptors, advancing branch) — same as resume.
+    let config_snapshot = store
+        .load_config_snapshot()
+        .context("failed to load config snapshot")?;
+    let config: AutotuneConfig =
+        toml::from_str(&config_snapshot).context("failed to parse frozen config")?;
+
+    let mut state = store.load_state().context("failed to load task state")?;
+
+    // Clean-state guard: no in-progress approach.
+    if state.current_approach.is_some() {
+        anyhow::bail!(
+            "iteration {} is in progress (phase {:?}); finish or discard it before reverting",
+            state.current_iteration,
+            state.current_phase
+        );
+    }
+
+    // Validate target and get the SHA on the advancing branch.
+    let ledger = store.load_ledger()?;
+    let target_sha = validate_revert_target(&ledger, iteration)?;
+
+    aprintln!(
+        "[autotune] reverting iteration {iteration} ({target_sha}) on '{}'",
+        state.advancing_branch
+    );
+
+    // Ensure the advancing branch is checked out at the repo root.
+    autotune_git::checkout(&repo_root, &state.advancing_branch)
+        .context("failed to checkout advancing branch")?;
+
+    // git revert; resolve conflicts via the research agent, else abort cleanly.
+    let clean = autotune_git::revert(&repo_root, &target_sha).context("git revert failed")?;
+    if !clean {
+        let agent = build_agent_for_backend(&state.research_backend)?;
+        let research_session = autotune_agent::AgentSession {
+            session_id: state.research_session_id.clone(),
+            backend: state.research_backend.clone(),
+        };
+        agent.hydrate_session(
+            &research_session,
+            &research_agent_session_config(&config, &repo_root),
+        )?;
+        if let Err(e) = machine::resolve_conflicts(
+            agent.as_ref(),
+            &repo_root,
+            &research_session,
+            "revert",
+            autotune_git::revert_continue,
+        ) {
+            let _ = autotune_git::revert_abort(&repo_root);
+            anyhow::bail!("revert conflict resolution failed: {e}; aborted, ledger unchanged");
+        }
+    }
+
+    let revert_sha = autotune_git::latest_commit_sha(&repo_root)?;
+
+    // Re-measure the branch (unless skipped) so scoring's best reflects reality.
+    let new_index = ledger.iter().map(|r| r.iteration).max().unwrap_or(0) + 1;
+    // The revert commit is already on the branch, so a re-measure failure must
+    // NOT abort silently — record the row with empty metrics and warn.
+    let metrics = if no_measure {
+        aprintln!("[autotune] --no-measure: recording revert without fresh metrics");
+        Default::default()
+    } else {
+        match autotune_benchmark::run_all_measures_with_output(
+            &config.measure,
+            &repo_root,
+            &format!("revert-{iteration}"),
+            new_index as u32,
+            None, // judge adaptors during revert re-measure are future work
+        ) {
+            Ok((metrics, _reports)) => metrics,
+            Err(e) => {
+                aeprintln!(
+                    "[autotune] re-measure failed ({e}); recording the revert with empty \
+                     metrics — scoring 'best' falls back to the prior measured row"
+                );
+                Default::default()
+            }
+        }
+    };
+
+    // Append the Reverted checkpoint row (counts toward budget like a discard;
+    // its metrics feed best-selection).
+    let record = build_reverted_record(new_index, iteration, revert_sha, metrics, reason);
+    store.append_ledger(&record)?;
+
+    state.current_iteration = new_index + 1;
+    state.current_phase = autotune_state::Phase::Planning;
+    store.save_state(&state)?;
+
+    aprintln!(
+        "[autotune] reverted iteration {iteration}; recorded checkpoint iteration {new_index}"
+    );
+    Ok(())
+}
+
 fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
     let repo_root = find_repo_root()?;
 
@@ -3703,6 +3880,39 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         let name = next_available_task_name(repo.path(), "demo").unwrap();
 
         assert_eq!(name, "demo-4");
+    }
+
+    #[test]
+    fn validate_revert_target_rejects_non_kept_and_missing_sha() {
+        use autotune_state::{IterationRecord, IterationStatus};
+        let mk = |it, status, sha: Option<&str>, reverted: Option<usize>| IterationRecord {
+            iteration: it,
+            approach: format!("a{it}"),
+            status,
+            hypothesis: None,
+            metrics: Default::default(),
+            rank: 0.0,
+            score: None,
+            reason: None,
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            commit_sha: sha.map(String::from),
+            reverted_iteration: reverted,
+            timestamp: chrono::Utc::now(),
+        };
+        let ledger = vec![
+            mk(0, IterationStatus::Baseline, None, None),
+            mk(1, IterationStatus::Kept, Some("sha1"), None),
+            mk(2, IterationStatus::Discarded, None, None),
+            mk(3, IterationStatus::Kept, None, None), // legacy, no SHA
+            mk(4, IterationStatus::Reverted, Some("revsha"), Some(1)), // reverts iter1
+        ];
+        assert!(validate_revert_target(&ledger, 1).is_err()); // already reverted by row 4
+        assert!(validate_revert_target(&ledger, 2).is_err()); // discarded
+        assert!(validate_revert_target(&ledger, 3).is_err()); // no SHA (legacy)
+        assert!(validate_revert_target(&ledger, 9).is_err()); // unknown
+        let ok = validate_revert_target(&[mk(1, IterationStatus::Kept, Some("sha1"), None)], 1);
+        assert_eq!(ok.unwrap(), "sha1");
     }
 
     #[test]

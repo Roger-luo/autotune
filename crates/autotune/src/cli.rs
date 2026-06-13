@@ -104,6 +104,20 @@ pub enum Commands {
         #[arg(long)]
         output: String,
     },
+    /// Revert a kept iteration's change on the advancing branch
+    Revert {
+        /// Iteration number to revert
+        iteration: usize,
+        /// Task name (defaults to the task in .autotune.toml)
+        #[arg(long)]
+        task: Option<String>,
+        /// Why it's being reverted (recorded + shown to the research agent)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Skip re-measuring the branch after the revert
+        #[arg(long)]
+        no_measure: bool,
+    },
 }
 
 #[derive(Subcommand)]
