@@ -147,9 +147,12 @@ Recognize recurrences fast — these have each been fixed once already:
 | `.snap.new`/`.orig` committed into candidate commits | `git add -A` staged transient artifacts | `autotune-git` `stage_all_and_commit` excludes them |
 | orphaned `claude` after killing autotune | child not in its own process group | `autotune-agent::child` (process groups + SIGTERM teardown) |
 | `resume` behaves differently from `run` (e.g. fix budget) | snapshot stored the raw, not merged, config | `main.rs` snapshots the merged config |
+| iteration dirs nested/garbled (`NNN-...rx/rzz` with `metrics.json` under a child dir) | `iteration_dir` used the raw approach name (often multi-line prose with `/`) instead of a slug | `autotune-state` `slug_component` sanitizes the approach into one path component |
+| `iterations/<n>/prompt.md` missing though CLAUDE.md documents it | `save_iteration_prompt` was never called | `machine.rs` `run_implementing` persists `autotune_implement::full_implementation_prompt` before the spawn |
+| resumed iteration scored against / planned on top of a kept commit you reverted by hand | ledger `best`/planning echo diverge from the advancing branch after manual git ops | see `notes/scoring-and-rank.md` "manual edits diverge from the ledger" (not yet reconciled in code) |
 
 See `notes/` (git-integration, agent-subprocess, config-and-tasks,
-live-tail-rendering) for the detailed rationale behind each.
+live-tail-rendering, scoring-and-rank) for the detailed rationale behind each.
 
 ## Guidelines
 

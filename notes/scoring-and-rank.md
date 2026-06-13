@@ -71,3 +71,48 @@ See:
 If future work wants a baseline-relative score throughout the run, either the
 scorer must use `input.baseline` for rank, or the system must record both
 "delta vs baseline" and "delta vs best" separately.
+
+## Footgun: manual edits to the advancing branch diverge from the ledger
+
+The ledger is autotune's source of truth in two places that both assume the
+advancing branch contains *exactly* the kept commits the ledger records:
+
+- **Scoring** (`run_scoring`) takes `best` = the most recent `Kept` ledger row's
+  metrics.
+- **Planning** (`build_planning_prompt`) echoes each iteration's approach +
+  `status` + metrics, so the research agent's mental model of "what is already
+  applied" comes from the ledger, not the working tree.
+
+If you rewrite the advancing branch *outside* autotune — e.g. `git revert` a
+commit a kept iteration produced, or hand-add commits — that assumption breaks
+and nothing reconciles it:
+
+- Scoring still treats the reverted iteration's metrics as `best`, even though
+  the branch no longer performs that way. The next candidate is built on the
+  (now slower) post-revert branch but judged against the unreachable old `best`,
+  so it is likely discarded as "no improvement" — a **false discard**.
+- Planning tells the agent the reverted iteration was `Kept` with its old
+  metrics, so the agent plans on top of an optimization that is no longer in the
+  code — it may re-propose the reverted change or build on a false premise.
+
+`resume` does **not** re-measure the advancing-branch HEAD or diff it against the
+recorded commits; the ledger doesn't even store per-iteration commit SHAs. This
+was observed first-hand dogfooding ppvm's `trotter-perf-3`: iteration 5 ("drop
+the `contains_with` probe") was recorded `Kept`, then reverted by hand on the
+branch, and the resumed iteration 6 was still told iter 5 was applied and was
+still scored against iter 5's metrics.
+
+Recommendations until this is reconciled in code:
+
+- Prefer letting autotune discard an iteration over hand-reverting a kept
+  commit. If you must revert, expect the next iteration to be scored against a
+  stale `best`.
+- A proper fix would record each kept iteration's commit SHA in the ledger,
+  detect on `resume` when `HEAD` != the last kept SHA, and re-measure to refresh
+  `best` (and mark reverted rows so the planning prompt stops advertising them
+  as applied).
+
+See:
+
+- `crates/autotune/src/machine.rs` — `run_scoring()` (`best` selection)
+- `crates/autotune-plan/src/lib.rs` — `build_planning_prompt()` (ledger echo)
