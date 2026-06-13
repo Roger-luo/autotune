@@ -493,6 +493,18 @@ fn run_implementing(
             .and_then(|c| c.reasoning_effort),
     );
 
+    // Persist the exact prompt the implementer receives so the iteration is
+    // inspectable after the fact (CLAUDE.md documents iterations/<n>/prompt.md).
+    // Written before the spawn so it survives an agent crash, and built through
+    // the same helper run_implementation uses so the saved copy matches.
+    let impl_prompt = autotune_implement::full_implementation_prompt(
+        &approach.worktree_path,
+        &impl_hypothesis,
+        &log_content,
+        &config.paths.denied,
+    );
+    let _ = store.save_iteration_prompt(state.current_iteration, &approach.name, &impl_prompt);
+
     let impl_stream = crate::stream_ui::Stream::implementation(&format!(
         "iteration {} — implementing '{}'...",
         state.current_iteration, approach.name

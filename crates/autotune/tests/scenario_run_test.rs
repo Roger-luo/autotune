@@ -176,6 +176,78 @@ fn scenario_run_plain_plan_completes_iteration() {
         text.contains("touch-src"),
         "ledger should record the planned approach.\nledger:\n{text}"
     );
+
+    // The exact implementer prompt must be persisted to prompt.md (CLAUDE.md
+    // documents this artifact; it was previously never written).
+    let prompt_md = project
+        .path()
+        .join(".autotune/tasks/scenario-task/iterations/001-touch-src/prompt.md");
+    assert!(prompt_md.exists(), "prompt.md should be persisted");
+    let prompt = std::fs::read_to_string(&prompt_md).unwrap();
+    assert!(
+        prompt.contains("# Approach: touch-src"),
+        "prompt.md should contain the implementer prompt.\nprompt:\n{prompt}"
+    );
+}
+
+/// Regression (end-to-end): a research-agent approach name with a `/`
+/// (e.g. "rx/rzz") must not split the iteration directory into accidental
+/// nested subdirectories — `metrics.json`/`prompt.md` must land in a single
+/// slugified `NNN-<slug>` dir. Reproduces the real ppvm run where approaches
+/// like "Speed up rehash in rx/rzz (map_insert)" produced a nested `rzz`
+/// child dir holding the artifacts.
+#[test]
+fn scenario_run_slash_approach_does_not_nest_iteration_dir() {
+    let project = scenario_project();
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>speed up foo/bar in baz</approach>\
+               <hypothesis>a harmless edit to verify slug sanitization</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected clean exit.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let iterations = project
+        .path()
+        .join(".autotune/tasks/scenario-task/iterations");
+    // The slugified single-component dir must exist and hold the artifacts.
+    let slug_dir = iterations.join("001-speed-up-foo-bar-in-baz");
+    assert!(
+        slug_dir.is_dir(),
+        "expected slugified iteration dir at {slug_dir:?}; iterations contained: {:?}",
+        std::fs::read_dir(&iterations)
+            .map(|rd| rd
+                .filter_map(|e| e.ok().map(|e| e.file_name()))
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+    // The buggy raw name would have created `001-speed up foo/` with a `bar`
+    // child — assert no such partial-name parent leaked.
+    assert!(
+        !iterations.join("001-speed up foo").exists(),
+        "approach '/' split the iteration dir into nested subdirectories"
+    );
 }
 
 /// Regression (end-to-end): a bare project `[agent]` table must not let the

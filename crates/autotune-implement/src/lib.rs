@@ -188,6 +188,35 @@ pub fn build_implementation_prompt(
     prompt
 }
 
+/// Assemble the complete prompt sent to the implementation agent: the
+/// worktree's project instructions (AGENTS.md, CLAUDE.md fallback) followed by
+/// the approach/hypothesis/rules body from [`build_implementation_prompt`].
+///
+/// This is the single source of truth for the implementer prompt — both
+/// [`run_implementation`] (to spawn the agent) and the orchestrator (to persist
+/// `prompt.md` for later inspection) build it through here so the saved copy
+/// matches exactly what the agent received.
+pub fn full_implementation_prompt(
+    worktree_path: &Path,
+    hypothesis: &Hypothesis,
+    log_content: &str,
+    denied_paths: &[String],
+) -> String {
+    let mut prompt = String::new();
+    // We read instructions from the worktree since `--bare` skips CLAUDE.md
+    // auto-discovery.
+    if let Some(instructions) = load_project_instructions(worktree_path) {
+        prompt.push_str(&instructions);
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str(&build_implementation_prompt(
+        hypothesis,
+        log_content,
+        denied_paths,
+    ));
+    prompt
+}
+
 /// Turn an arbitrary approach name into a valid git branch component.
 ///
 /// Lowercases, replaces non-alphanumeric runs with a single hyphen,
@@ -257,21 +286,11 @@ pub fn run_implementation(
     reasoning_effort: Option<&str>,
     event_handler: Option<EventHandler>,
 ) -> Result<ImplementResult, ImplementError> {
-    let mut prompt = String::new();
-
-    // Load project instructions (AGENTS.md first, CLAUDE.md fallback) so the
-    // implementation agent follows the same conventions as a human developer.
-    // We read from the worktree since --bare skips CLAUDE.md auto-discovery.
-    if let Some(instructions) = load_project_instructions(worktree_path) {
-        prompt.push_str(&instructions);
-        prompt.push_str("\n\n");
-    }
-
-    prompt.push_str(&build_implementation_prompt(
-        hypothesis,
-        log_content,
-        denied_paths,
-    ));
+    // Project instructions (AGENTS.md first, CLAUDE.md fallback) prepended so
+    // the implementation agent follows the same conventions as a human
+    // developer. Built through the shared helper so the orchestrator persists
+    // an identical `prompt.md`.
+    let prompt = full_implementation_prompt(worktree_path, hypothesis, log_content, denied_paths);
 
     // Resolve tunable globs to absolute paths anchored at the worktree.
     // The Claude CLI matches `--allowedTools Edit:<glob>` against the
@@ -899,5 +918,42 @@ mod tests {
         };
         let prompt = build_implementation_prompt(&hyp, "", &[]);
         assert!(!prompt.contains("Prior findings from log.md"));
+    }
+
+    /// `full_implementation_prompt` is the single source of truth for the
+    /// exact prompt sent to the implementer (used both to spawn the agent and
+    /// to persist `prompt.md`). It must prepend the worktree's project
+    /// instructions to the approach body.
+    #[test]
+    fn full_implementation_prompt_prepends_project_instructions() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "PROJECT RULES HERE").unwrap();
+        let hyp = Hypothesis {
+            approach: "cache-inline".to_string(),
+            hypothesis: "inline the cache".to_string(),
+            files_to_modify: vec!["src/cache.rs".to_string()],
+        };
+        let prompt = full_implementation_prompt(tmp.path(), &hyp, "", &[]);
+        assert!(
+            prompt.starts_with("PROJECT RULES HERE"),
+            "instructions must come first, got: {}",
+            &prompt[..prompt.len().min(60)]
+        );
+        assert!(prompt.contains("# Approach: cache-inline"));
+        assert!(prompt.contains("inline the cache"));
+    }
+
+    /// With no AGENTS.md/CLAUDE.md, the full prompt equals the body alone.
+    #[test]
+    fn full_implementation_prompt_without_instructions_is_body_only() {
+        let tmp = tempdir().unwrap();
+        let hyp = Hypothesis {
+            approach: "test".to_string(),
+            hypothesis: "h".to_string(),
+            files_to_modify: vec![],
+        };
+        let full = full_implementation_prompt(tmp.path(), &hyp, "", &[]);
+        let body = build_implementation_prompt(&hyp, "", &[]);
+        assert_eq!(full, body);
     }
 }

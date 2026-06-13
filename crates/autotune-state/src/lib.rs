@@ -270,7 +270,7 @@ impl TaskStore {
     pub fn iteration_dir(&self, iteration: usize, approach: &str) -> PathBuf {
         self.root
             .join("iterations")
-            .join(format!("{:03}-{}", iteration, approach))
+            .join(format!("{:03}-{}", iteration, slug_component(approach)))
     }
 
     pub fn save_iteration_metrics(
@@ -365,6 +365,43 @@ impl TaskStore {
         }
         names.sort();
         Ok(names)
+    }
+}
+
+/// Collapse a free-form approach name into a single filesystem-safe path
+/// component for iteration directories. An approach name is research-agent
+/// prose — it can carry spaces, slashes, newlines, em-dashes, backticks —
+/// and a raw `/` would split the iteration dir into accidental nested
+/// subdirectories (orphaning `metrics.json` under a child dir).
+///
+/// The algorithm mirrors `autotune_implement::slugify` so an iteration's
+/// on-disk `NNN-<slug>` directory correlates with its `autotune/<task>/<slug>`
+/// worktree branch. Keep the two in sync if either changes. Empty results
+/// (an approach with no alphanumerics) fall back to `approach` so the dir
+/// never degenerates to a bare `NNN-`.
+fn slug_component(name: &str) -> String {
+    let mapped: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let mut out = String::new();
+    for ch in mapped.chars() {
+        if ch == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(ch);
+    }
+    let out = out.trim_matches('-');
+    let out = if out.len() > 60 {
+        out[..60].trim_end_matches('-')
+    } else {
+        out
+    };
+    if out.is_empty() {
+        "approach".to_string()
+    } else {
+        out.to_string()
     }
 }
 
@@ -541,6 +578,70 @@ mod tests {
         let prompt_path = store.iteration_dir(1, "opt").join("prompt.md");
         let content = fs::read_to_string(prompt_path).unwrap();
         assert_eq!(content, "my prompt");
+    }
+
+    /// A research-agent approach name is free-form prose: it can contain
+    /// spaces, slashes, newlines, em-dashes, parentheses. Used raw, a `/`
+    /// silently splits the iteration directory into nested subdirectories
+    /// (so `metrics.json` lands under an accidental child dir) and a newline
+    /// produces an un-listable name. `iteration_dir` must collapse the
+    /// approach into a single filesystem-safe component.
+    #[test]
+    fn iteration_dir_sanitizes_approach_with_slashes_and_newlines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let messy = "Speed up Foo::bar() — the cost in rx/rzz\n(map_insert) path";
+        let dir = store.iteration_dir(1, messy);
+
+        // Exactly one component below `iterations/` — no nesting from `/`.
+        let rel = dir.strip_prefix(tmp.path().join("iterations")).unwrap();
+        assert_eq!(
+            rel.components().count(),
+            1,
+            "approach with '/' must not create nested dirs, got {rel:?}"
+        );
+
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("001-"), "got {name}");
+        assert!(!name.contains('/'), "slug leaked a slash: {name}");
+        assert!(!name.contains('\n'), "slug leaked a newline: {name}");
+        assert!(!name.contains(' '), "slug leaked a space: {name}");
+    }
+
+    /// The iteration-dir slug should match the branch slug
+    /// (`autotune-implement::slugify`) so artifacts on disk correlate with
+    /// the worktree branch name for the same approach.
+    #[test]
+    fn iteration_dir_slug_matches_branch_slug_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let dir = store.iteration_dir(2, "Specialize `rzz` on PauliSum");
+        assert_eq!(dir.file_name().unwrap(), "002-specialize-rzz-on-paulisum");
+    }
+
+    /// The baseline approach name is already clean and must be preserved
+    /// verbatim — downstream code and tests reference `000-baseline`.
+    #[test]
+    fn iteration_dir_preserves_clean_baseline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let dir = store.iteration_dir(0, "baseline");
+        assert_eq!(dir.file_name().unwrap(), "000-baseline");
+    }
+
+    /// Metrics for a messy approach name must round-trip back from the same
+    /// `iteration_dir` — i.e. the write and the read agree on the sanitized
+    /// path, and the file is a direct child (not nested under a `/` split).
+    #[test]
+    fn save_iteration_metrics_roundtrips_for_messy_approach() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let messy = "Drop the contains_with probe in map_insert/merge";
+        let mut metrics = Metrics::new();
+        metrics.insert("x".to_string(), 1.0);
+        store.save_iteration_metrics(3, messy, &metrics).unwrap();
+        let path = store.iteration_dir(3, messy).join("metrics.json");
+        assert!(path.exists(), "metrics.json not at {path:?}");
     }
 
     #[test]
