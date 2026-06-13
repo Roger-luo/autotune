@@ -1403,12 +1403,15 @@ fn run_integrating(
     Ok(())
 }
 
-/// Resolve rebase conflicts by repeatedly asking the research agent to fix
-/// conflicted files and continuing the rebase until it completes or fails.
-fn resolve_rebase_conflicts(
+/// Drive the research agent to resolve in-progress merge conflicts (from a
+/// rebase or revert), calling `continue_op` after each agent turn. Returns
+/// `Ok(())` when conflicts clear, `Err` if unresolved within MAX_CONFLICT_ROUNDS.
+pub(crate) fn resolve_conflicts(
     agent: &dyn Agent,
-    repo_root: &Path,
+    dir: &Path,
     research_session: &AgentSession,
+    op_label: &str, // "rebase" or "revert", used only in prompt/messages
+    mut continue_op: impl FnMut(&Path) -> Result<bool, autotune_git::GitError>,
 ) -> Result<()> {
     // Grant Edit so the research agent can resolve conflict markers.
     if let Err(e) = agent.grant_session_permission(
@@ -1418,43 +1421,60 @@ fn resolve_rebase_conflicts(
         aprintln!("[autotune] warning: could not grant Edit to research session: {e}");
     }
 
-    // A rebase may hit multiple conflict steps (one per commit being replayed).
-    // Loop until the rebase completes or we give up.
+    // A rebase/revert may hit multiple conflict steps (one per commit being replayed).
+    // Loop until the operation completes or we give up.
     const MAX_CONFLICT_ROUNDS: usize = 10;
     for round in 0..MAX_CONFLICT_ROUNDS {
-        let conflicted = autotune_git::list_conflicted_files(repo_root).unwrap_or_default();
+        let conflicted = autotune_git::list_conflicted_files(dir).unwrap_or_default();
         if conflicted.is_empty() {
             break;
         }
         aprintln!(
-            "[autotune] rebase conflict round {} — {} file(s)",
+            "[autotune] {op_label} conflict round {} — {} file(s)",
             round + 1,
             conflicted.len()
         );
 
-        let prompt = build_conflict_resolution_prompt(&conflicted, repo_root);
-        let stream = crate::stream_ui::Stream::research("resolving rebase conflicts...");
+        let prompt = build_conflict_resolution_prompt(&conflicted, dir);
+        let stream_msg = format!("resolving {op_label} conflicts...");
+        let stream = crate::stream_ui::Stream::research(&stream_msg);
         let handler = stream.handler();
         let result = agent.send_streaming(research_session, &prompt, Some(&handler));
         stream.finish();
         result.context("research agent failed during conflict resolution")?;
 
         // Check the agent actually resolved the conflicts.
-        if autotune_git::has_merge_conflicts(repo_root).unwrap_or(true) {
+        if autotune_git::has_merge_conflicts(dir).unwrap_or(true) {
             anyhow::bail!(
                 "research agent did not resolve all conflicts (round {})",
                 round + 1
             );
         }
 
-        // Continue the rebase — may hit the next commit's conflicts.
-        match autotune_git::rebase_continue(repo_root)? {
-            true => return Ok(()), // Rebase completed.
+        // Continue the operation — may hit the next commit's conflicts.
+        match continue_op(dir)? {
+            true => return Ok(()), // Operation completed.
             false => continue,     // Another conflict to resolve.
         }
     }
 
     anyhow::bail!("exceeded {MAX_CONFLICT_ROUNDS} conflict resolution rounds");
+}
+
+/// Resolve rebase conflicts by repeatedly asking the research agent to fix
+/// conflicted files and continuing the rebase until it completes or fails.
+fn resolve_rebase_conflicts(
+    agent: &dyn Agent,
+    repo_root: &Path,
+    research_session: &AgentSession,
+) -> Result<()> {
+    resolve_conflicts(
+        agent,
+        repo_root,
+        research_session,
+        "rebase",
+        autotune_git::rebase_continue,
+    )
 }
 
 fn build_conflict_resolution_prompt(conflicted_files: &[String], repo_root: &Path) -> String {
