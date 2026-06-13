@@ -1439,7 +1439,7 @@ pub fn resolve_conflicts(
             conflicted.len()
         );
 
-        let prompt = build_conflict_resolution_prompt(&conflicted, dir);
+        let prompt = build_conflict_resolution_prompt(&conflicted, dir, op_label);
         let stream_msg = format!("resolving {op_label} conflicts...");
         let stream = crate::stream_ui::Stream::research(&stream_msg);
         let handler = stream.handler();
@@ -1481,10 +1481,16 @@ fn resolve_rebase_conflicts(
     )
 }
 
-fn build_conflict_resolution_prompt(conflicted_files: &[String], repo_root: &Path) -> String {
+fn build_conflict_resolution_prompt(
+    conflicted_files: &[String],
+    repo_root: &Path,
+    op_label: &str,
+) -> String {
     let mut prompt = String::new();
     prompt.push_str("# Merge Conflict Resolution\n\n");
-    prompt.push_str("The iteration's branch is being merged into the canonical branch, but there are merge conflicts.\n\n");
+    prompt.push_str(&format!(
+        "A git {op_label} on the advancing branch hit merge conflicts. Resolve the conflict markers in the files below so the {op_label} can continue.\n\n"
+    ));
     prompt.push_str("## Conflicted files\n\n");
     for f in conflicted_files {
         prompt.push_str(&format!("- `{f}`\n"));
@@ -1615,12 +1621,18 @@ fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
         }
     }
 
-    // Check target_improvement
+    // Check target_improvement. Skip kept rows that have since been reverted:
+    // a Reverted checkpoint row with reverted_iteration == r.iteration means
+    // that kept commit is no longer on the advancing branch, so its rank no
+    // longer reflects the branch state and must not trigger the stop condition.
     if let Some(target) = config.task.target_improvement
-        && let Some(last_kept) = ledger
-            .iter()
-            .rev()
-            .find(|r| r.status == IterationStatus::Kept)
+        && let Some(last_kept) = ledger.iter().rev().find(|r| {
+            r.status == IterationStatus::Kept
+                && !ledger.iter().any(|x| {
+                    x.status == IterationStatus::Reverted
+                        && x.reverted_iteration == Some(r.iteration)
+                })
+        })
         && last_kept.rank >= target
     {
         aprintln!(
@@ -1980,6 +1992,119 @@ mod tests {
             store.append_ledger(&make_kept_record(0.0)).unwrap();
         }
         assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    #[test]
+    fn should_stop_ignores_reverted_kept_for_target_improvement() {
+        // target_improvement must NOT count a kept iteration that has since been
+        // reverted — its rank no longer reflects the branch, so the loop should
+        // keep going rather than stop on a goal that was undone.
+        let config = make_minimal_config(None, Some(0.5));
+
+        // Case 1: baseline + kept iter1 (rank 0.9) + Reverted row that reverted
+        // iter1. The only kept row is reverted, so should_stop must return false.
+        let tmp1 = tempfile::tempdir().unwrap();
+        let store1 = autotune_state::TaskStore::new(tmp1.path()).unwrap();
+        // Baseline
+        store1
+            .append_ledger(&autotune_state::IterationRecord {
+                iteration: 0,
+                approach: "baseline".to_string(),
+                status: autotune_state::IterationStatus::Baseline,
+                hypothesis: None,
+                metrics: std::collections::HashMap::new(),
+                rank: 0.0,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        // Kept iter1 with rank 0.9 (above target 0.5)
+        store1
+            .append_ledger(&autotune_state::IterationRecord {
+                iteration: 1,
+                approach: "approach-a".to_string(),
+                status: autotune_state::IterationStatus::Kept,
+                hypothesis: None,
+                metrics: std::collections::HashMap::new(),
+                rank: 0.9,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: Some("sha-a".to_string()),
+                reverted_iteration: None,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        // Reverted checkpoint that reverts iteration 1
+        store1
+            .append_ledger(&autotune_state::IterationRecord {
+                iteration: 2,
+                approach: "revert".to_string(),
+                status: autotune_state::IterationStatus::Reverted,
+                hypothesis: None,
+                metrics: std::collections::HashMap::new(),
+                rank: 0.0,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: Some(1),
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        assert!(
+            !should_stop(&config, &store1).unwrap(),
+            "should NOT stop when the only kept row has been reverted"
+        );
+
+        // Control: a non-reverted kept row at the target rank DOES stop.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let store2 = autotune_state::TaskStore::new(tmp2.path()).unwrap();
+        store2
+            .append_ledger(&autotune_state::IterationRecord {
+                iteration: 0,
+                approach: "baseline".to_string(),
+                status: autotune_state::IterationStatus::Baseline,
+                hypothesis: None,
+                metrics: std::collections::HashMap::new(),
+                rank: 0.0,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        store2
+            .append_ledger(&autotune_state::IterationRecord {
+                iteration: 1,
+                approach: "approach-b".to_string(),
+                status: autotune_state::IterationStatus::Kept,
+                hypothesis: None,
+                metrics: std::collections::HashMap::new(),
+                rank: 0.9,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: Some("sha-b".to_string()),
+                reverted_iteration: None,
+                timestamp: Utc::now(),
+            })
+            .unwrap();
+        assert!(
+            should_stop(&config, &store2).unwrap(),
+            "SHOULD stop when a non-reverted kept row meets the target"
+        );
     }
 
     #[test]
@@ -2454,7 +2579,7 @@ mod tests {
     fn build_conflict_resolution_prompt_contains_files() {
         let files = vec!["src/foo.rs".to_string(), "src/bar.rs".to_string()];
         let repo = PathBuf::from("/tmp/repo");
-        let prompt = build_conflict_resolution_prompt(&files, &repo);
+        let prompt = build_conflict_resolution_prompt(&files, &repo, "rebase");
         assert!(
             prompt.contains("src/foo.rs"),
             "prompt should mention foo.rs"
@@ -2467,13 +2592,41 @@ mod tests {
             prompt.contains("RESOLVED"),
             "prompt should contain RESOLVED marker"
         );
+        assert!(
+            prompt.contains("rebase"),
+            "prompt should mention the operation label"
+        );
+    }
+
+    #[test]
+    fn build_conflict_resolution_prompt_uses_op_label() {
+        let files = vec!["src/foo.rs".to_string()];
+        let repo = PathBuf::from("/tmp/repo");
+        let rebase_prompt = build_conflict_resolution_prompt(&files, &repo, "rebase");
+        let revert_prompt = build_conflict_resolution_prompt(&files, &repo, "revert");
+        assert!(
+            rebase_prompt.contains("rebase"),
+            "rebase prompt should say rebase"
+        );
+        assert!(
+            !rebase_prompt.contains("revert"),
+            "rebase prompt should not say revert"
+        );
+        assert!(
+            revert_prompt.contains("revert"),
+            "revert prompt should say revert"
+        );
+        assert!(
+            !revert_prompt.contains("rebase"),
+            "revert prompt should not say rebase"
+        );
     }
 
     #[test]
     fn build_conflict_resolution_prompt_with_empty_files() {
         let files: Vec<String> = vec![];
         let repo = PathBuf::from("/tmp/repo");
-        let prompt = build_conflict_resolution_prompt(&files, &repo);
+        let prompt = build_conflict_resolution_prompt(&files, &repo, "rebase");
         assert!(
             !prompt.is_empty(),
             "prompt should be non-empty even with no files"
