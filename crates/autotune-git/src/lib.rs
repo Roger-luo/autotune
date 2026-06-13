@@ -477,6 +477,59 @@ pub fn rebase_abort(dir: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Append a commit that undoes `sha` (`git revert --no-edit <sha>`).
+/// Returns `Ok(true)` if it applied cleanly, `Ok(false)` if it stopped on a
+/// conflict (the caller resolves or calls [`revert_abort`]). A non-conflict
+/// failure is returned as `Err` so the real git message is preserved.
+pub fn revert(dir: &Path, sha: &str) -> Result<bool, GitError> {
+    let result = git(
+        dir,
+        &[
+            OsStr::new("revert"),
+            OsStr::new("--no-edit"),
+            OsStr::new(sha),
+        ],
+    );
+    match result {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if has_merge_conflicts(dir)? {
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Stage resolved files and continue an in-progress revert.
+/// `Ok(true)` if it completed, `Ok(false)` if another conflict was hit.
+pub fn revert_continue(dir: &Path) -> Result<bool, GitError> {
+    // `git revert --continue` opens an editor by default; `GIT_EDITOR=true`
+    // accepts the existing message non-interactively.
+    let result = git_with_env(
+        dir,
+        &[OsStr::new("revert"), OsStr::new("--continue")],
+        &[("GIT_EDITOR", "true")],
+    );
+    match result {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if has_merge_conflicts(dir)? {
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Abort an in-progress revert, restoring the pre-revert HEAD.
+pub fn revert_abort(dir: &Path) -> Result<(), GitError> {
+    git(dir, &[OsStr::new("revert"), OsStr::new("--abort")])?;
+    Ok(())
+}
+
 /// Delete a local branch (force delete — equivalent to `git branch -D`).
 pub fn delete_branch(dir: &Path, branch_name: &str) -> Result<(), GitError> {
     git(
@@ -1014,5 +1067,87 @@ mod tests {
                 "autotune/my-task/approach-b".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn revert_creates_inverse_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path(), "file.txt", "original\n");
+        std::fs::write(dir.path().join("file.txt"), "changed\n").unwrap();
+        git(
+            dir.path(),
+            &[
+                OsStr::new("commit"),
+                OsStr::new("-am"),
+                OsStr::new("change"),
+            ],
+        )
+        .unwrap();
+        let target = latest_commit_sha(dir.path()).unwrap();
+
+        let clean = revert(dir.path(), &target).unwrap();
+        assert!(clean, "no-conflict revert should report clean");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt")).unwrap(),
+            "original\n"
+        );
+        assert_ne!(latest_commit_sha(dir.path()).unwrap(), target);
+    }
+
+    #[test]
+    fn revert_reports_conflict_without_erroring() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path(), "file.txt", "v1\n");
+        std::fs::write(dir.path().join("file.txt"), "v2\n").unwrap();
+        git(
+            dir.path(),
+            &[OsStr::new("commit"), OsStr::new("-am"), OsStr::new("v2")],
+        )
+        .unwrap();
+        let target = latest_commit_sha(dir.path()).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "v3\n").unwrap();
+        git(
+            dir.path(),
+            &[OsStr::new("commit"), OsStr::new("-am"), OsStr::new("v3")],
+        )
+        .unwrap();
+
+        let clean = revert(dir.path(), &target).unwrap();
+        assert!(
+            !clean,
+            "conflicting revert should report Ok(false), not Err"
+        );
+        assert!(has_merge_conflicts(dir.path()).unwrap());
+
+        revert_abort(dir.path()).unwrap();
+        assert!(!has_merge_conflicts(dir.path()).unwrap());
+    }
+
+    /// Set up a minimal git repo with a single commit on `main`.
+    /// Used by revert tests that need a fresh repo without the `make_repo` helper's
+    /// initial `README.md` file (to keep the test setup self-contained).
+    fn init_repo_with_commit(dir: &Path, filename: &str, content: &str) {
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("git command");
+            assert!(
+                status.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&status.stderr)
+            );
+        };
+
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+
+        std::fs::write(dir.join(filename), content).expect("write file");
+
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "initial commit"]);
     }
 }
