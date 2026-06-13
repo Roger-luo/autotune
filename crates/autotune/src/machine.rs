@@ -16,7 +16,7 @@ use autotune_implement::{FixOutcome, ImplementError};
 use autotune_plan::ToolApprover;
 use autotune_score::{ScoreCalculator, ScoreInput, ScoreOutput};
 use autotune_state::{
-    ApproachState, IterationRecord, IterationStatus, Phase, TaskState, TaskStore,
+    ApproachState, IterationRecord, IterationStatus, Metrics, Phase, TaskState, TaskStore,
 };
 
 pub type ShutdownFlag = AtomicBool;
@@ -1171,6 +1171,24 @@ fn run_measuring(
     Ok(())
 }
 
+/// The metrics that represent the advancing branch's current state, used as
+/// scoring's `best`. Rows that reflect an integrated branch state count:
+/// `Kept`, `Baseline`, and `Reverted` (post-revert re-measure). `Discarded`
+/// and `Crash` rows never reached the branch and are ignored.
+fn best_metrics_from_ledger(ledger: &[IterationRecord]) -> Metrics {
+    ledger
+        .iter()
+        .rev()
+        .find(|r| {
+            matches!(
+                r.status,
+                IterationStatus::Kept | IterationStatus::Baseline | IterationStatus::Reverted
+            )
+        })
+        .map(|r| r.metrics.clone())
+        .unwrap_or_default()
+}
+
 fn run_scoring(
     scorer: &dyn ScoreCalculator,
     store: &TaskStore,
@@ -1200,13 +1218,7 @@ fn run_scoring(
         .map(|r| r.metrics.clone())
         .unwrap_or_default();
 
-    // Best = last kept iteration's metrics, or baseline
-    let best_metrics = ledger
-        .iter()
-        .rev()
-        .find(|r| r.status == IterationStatus::Kept || r.status == IterationStatus::Baseline)
-        .map(|r| r.metrics.clone())
-        .unwrap_or_else(|| baseline_metrics.clone());
+    let best_metrics = best_metrics_from_ledger(&ledger);
 
     let score_input = ScoreInput {
         baseline: baseline_metrics,
@@ -2685,6 +2697,50 @@ mod tests {
         // Append a record with empty metrics — the target_metric check should not fire
         store.append_ledger(&make_kept_record(0.5)).unwrap();
         assert!(!should_stop(&config, &store).unwrap());
+    }
+
+    fn rec(iteration: usize, status: IterationStatus, metric: f64) -> IterationRecord {
+        IterationRecord {
+            iteration,
+            approach: format!("a{iteration}"),
+            status,
+            hypothesis: None,
+            metrics: std::collections::HashMap::from([("m".to_string(), metric)]),
+            rank: 0.0,
+            score: None,
+            reason: None,
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            commit_sha: None,
+            reverted_iteration: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn best_metrics_uses_latest_kept_or_baseline() {
+        let ledger = vec![
+            rec(0, IterationStatus::Baseline, 100.0),
+            rec(1, IterationStatus::Kept, 90.0),
+            rec(2, IterationStatus::Discarded, 95.0),
+        ];
+        // Discarded is ignored; latest Kept (iter1) wins.
+        assert_eq!(best_metrics_from_ledger(&ledger)["m"], 90.0);
+    }
+
+    #[test]
+    fn best_metrics_uses_revert_checkpoint_after_middle_revert() {
+        // kept 1,2,3 then a Reverted checkpoint (re-measured) at row 4.
+        let ledger = vec![
+            rec(0, IterationStatus::Baseline, 100.0),
+            rec(1, IterationStatus::Kept, 90.0),
+            rec(2, IterationStatus::Kept, 80.0),
+            rec(3, IterationStatus::Kept, 70.0),
+            rec(4, IterationStatus::Reverted, 85.0), // post-revert re-measure
+        ];
+        // The Reverted checkpoint's fresh metrics are the new best — NOT iter3's
+        // stale 70.0 which still included the reverted change.
+        assert_eq!(best_metrics_from_ledger(&ledger)["m"], 85.0);
     }
 
     #[test]
