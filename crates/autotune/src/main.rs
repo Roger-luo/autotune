@@ -1999,6 +1999,9 @@ fn cmd_revert(
     let repo_root = find_repo_root()?;
     let autotune_dir = repo_root.join(".autotune");
 
+    // Capture the branch the user is on so we can restore it at the end.
+    let original_branch = autotune_git::current_branch(&repo_root).ok();
+
     // Resolve task: --task, else the config's task name (mirrors cmd_report).
     let task_name = match task {
         Some(t) => t,
@@ -2091,6 +2094,27 @@ fn cmd_revert(
 
     // Re-measure the branch (unless skipped) so scoring's best reflects reality.
     let new_index = ledger.iter().map(|r| r.iteration).max().unwrap_or(0) + 1;
+
+    // Build a judge agent for measures that need it (mirrors cmd_run).
+    let judge_agent = if !no_measure && has_judge_measure(&config) {
+        Some(build_agent(&config, AgentRole::Judge)?)
+    } else {
+        None
+    };
+    let judge_agent_cfg = judge_agent_session_config(&config, &repo_root);
+    let judge_ctx = judge_agent
+        .as_ref()
+        .map(|a| autotune_benchmark::JudgeContext {
+            agent: a.as_ref(),
+            agent_config: judge_agent_cfg,
+            make_stream: Some(Box::new(|status: &str| {
+                let stream = autotune::stream_ui::Stream::judge(status);
+                let handler = stream.handler();
+                let finish: Box<dyn FnOnce()> = Box::new(move || stream.finish());
+                (handler, finish)
+            })),
+        });
+
     // The revert commit is already on the branch, so a re-measure failure must
     // NOT abort silently — record the row with empty metrics and warn.
     let metrics = if no_measure {
@@ -2105,7 +2129,7 @@ fn cmd_revert(
             &repo_root,
             &format!("revert-{iteration}"),
             new_index as u32,
-            None, // judge adaptors during revert re-measure are future work
+            judge_ctx.as_ref(),
         ) {
             Ok((metrics, _reports)) => metrics,
             Err(e) => {
@@ -2130,6 +2154,16 @@ fn cmd_revert(
     aprintln!(
         "[autotune] reverted iteration {iteration}; recorded checkpoint iteration {new_index}"
     );
+
+    // Restore the branch the user was on before the revert (the revert is
+    // committed, so the working tree is clean to switch away from).
+    if let Some(orig) = original_branch
+        && orig != state.advancing_branch
+    {
+        autotune_git::checkout(&repo_root, &orig)
+            .with_context(|| format!("failed to restore branch '{orig}' after revert"))?;
+    }
+
     Ok(())
 }
 
