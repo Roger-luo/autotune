@@ -618,8 +618,19 @@ fn build_initial_task_state(
     }
 }
 
-fn completion_messages(task_name: &str, resumed: bool, handover_command: &str) -> (String, String) {
-    let status = if resumed {
+fn completion_messages(
+    task_name: &str,
+    resumed: bool,
+    interrupted: bool,
+    handover_command: &str,
+) -> (String, String) {
+    // `interrupted` (shutdown flag set by Ctrl+C / SIGTERM) takes precedence:
+    // the loop stopped mid-flight, so claiming "complete" would be misleading.
+    let status = if interrupted {
+        format!(
+            "\n[autotune] task '{task_name}' interrupted — state saved; resume with `autotune resume --task {task_name}`"
+        )
+    } else if resumed {
         format!("\n[autotune] task '{task_name}' resumed and complete")
     } else {
         format!("\n[autotune] task '{task_name}' complete")
@@ -839,6 +850,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let (status_line, handover_line) = completion_messages(
         &config.task.name,
         false,
+        shutdown.load(Ordering::SeqCst),
         &agent.handover_command(&research_session),
     );
     aprintln!("{status_line}");
@@ -951,8 +963,12 @@ fn cmd_resume(
         session_id: final_state.research_session_id.clone(),
         backend: final_state.research_backend.clone(),
     };
-    let (status_line, handover_line) =
-        completion_messages(&task_name, true, &agent.handover_command(&research_session));
+    let (status_line, handover_line) = completion_messages(
+        &task_name,
+        true,
+        shutdown.load(Ordering::SeqCst),
+        &agent.handover_command(&research_session),
+    );
     aprintln!("{status_line}");
     aprintln!("{handover_line}");
 
@@ -1281,6 +1297,7 @@ fn build_research_agent_prompt(
     p.push_str("- Use Read/Glob/Grep to understand the code that produces the target metric(s).\n");
     p.push_str("- When the CLI asks you to plan the next iteration, propose a concrete, scoped hypothesis with specific files to modify.\n");
     p.push_str("- Your planning response format is an XML `<plan>` fragment with `<approach>`, `<hypothesis>`, and a `<files-to-modify>` list of `<file>` entries. The CLI will tell you when to emit one.\n");
+    p.push_str("- `<approach>` is a SHORT label — a few words, e.g. `specialize-rzz-fast-path` or `reuse-scratch-buffer`. It names the git branch and the iteration directory, so keep it terse; do NOT put a full sentence or paragraph there. All the detail goes in `<hypothesis>`.\n");
     p.push_str("- The `hypothesis` string is the main prompt passed to the implementation agent, along with the `files_to_modify` list. Write it as concrete instructions: what to change and why. Anything you want the implementer to know must go there.\n");
 
     p.push_str("\n# Requesting additional tools\n\n");
@@ -2991,6 +3008,20 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         assert!(!prompt.contains("Baseline raw measure output"));
     }
 
+    /// The spawn prompt must instruct the agent to keep `<approach>` a short
+    /// label (it names the branch + iteration dir). Without this, agents fill
+    /// `<approach>` with a multi-line paragraph — observed dogfooding ppvm,
+    /// where it produced unwieldy branch names and bloated planning prompts.
+    #[test]
+    fn build_research_agent_prompt_asks_for_short_approach_label() {
+        let prompt =
+            build_research_agent_prompt(&sample_config(), &HashMap::new(), &[], Path::new(""));
+        assert!(
+            prompt.contains("`<approach>` is a SHORT label"),
+            "spawn prompt should tell the agent to keep <approach> short"
+        );
+    }
+
     #[test]
     fn build_research_agent_prompt_forbids_test_edits_by_default() {
         let prompt =
@@ -3274,9 +3305,9 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
     #[test]
     fn completion_messages_render_run_and_resume_variants() {
         let (run_status, run_handover) =
-            completion_messages("coverage-task", false, "codex resume");
+            completion_messages("coverage-task", false, false, "codex resume");
         let (resume_status, resume_handover) =
-            completion_messages("coverage-task", true, "codex resume");
+            completion_messages("coverage-task", true, false, "codex resume");
 
         assert_eq!(run_status, "\n[autotune] task 'coverage-task' complete");
         assert_eq!(
@@ -3291,6 +3322,31 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             resume_handover,
             "[autotune] research agent handover: codex resume"
         );
+    }
+
+    /// When the loop exits because of a shutdown/interrupt (Ctrl+C, SIGTERM)
+    /// the status line must NOT claim the task is "complete" — it was stopped
+    /// mid-flight and the user needs the resume hint. Regression: an
+    /// interrupted `resume` printed "resumed and complete".
+    #[test]
+    fn completion_messages_interrupted_does_not_say_complete() {
+        let (run_status, _) = completion_messages("coverage-task", false, true, "codex resume");
+        let (resume_status, _) = completion_messages("coverage-task", true, true, "codex resume");
+
+        for status in [&run_status, &resume_status] {
+            assert!(
+                !status.contains("complete"),
+                "interrupted status must not say complete: {status}"
+            );
+            assert!(
+                status.contains("interrupted"),
+                "interrupted status should say so: {status}"
+            );
+            assert!(
+                status.contains("resume --task coverage-task"),
+                "interrupted status should give the resume hint: {status}"
+            );
+        }
     }
 
     #[test]

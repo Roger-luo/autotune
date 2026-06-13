@@ -135,6 +135,27 @@ fn format_request_label(req: &ToolRequest) -> String {
 }
 
 /// Builds the planning prompt for the research agent.
+/// Condense an approach name to a single terse line for the running ledger
+/// history. The history re-emits every iteration on every planning turn, so a
+/// multi-line / paragraph-length approach (which agents sometimes produce
+/// despite the "short label" guidance) would grow the prompt without bound.
+/// Full detail still lives in each iteration's hypothesis. Takes the first
+/// non-empty line and caps its length.
+fn summarize_approach(approach: &str) -> String {
+    const MAX: usize = 100;
+    let first = approach
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if first.chars().count() > MAX {
+        let head: String = first.chars().take(MAX).collect();
+        format!("{}…", head.trim_end())
+    } else {
+        first.to_string()
+    }
+}
+
 pub fn build_planning_prompt(
     store: &TaskStore,
     last_iteration: Option<&IterationRecord>,
@@ -180,7 +201,10 @@ pub fn build_planning_prompt(
         for record in &ledger {
             prompt.push_str(&format!(
                 "- Iteration {}: approach={}, status={:?}, rank={}\n",
-                record.iteration, record.approach, record.status, record.rank
+                record.iteration,
+                summarize_approach(&record.approach),
+                record.status,
+                record.rank
             ));
         }
         prompt.push('\n');
@@ -624,6 +648,39 @@ This should give us a 10% improvement."#;
         assert!(
             matches!(err, PlanError::ParseHypothesis { ref message } if message.contains("hypothesis")),
             "unexpected error: {err}"
+        );
+    }
+
+    /// The Ledger History list re-emits every iteration on every planning turn,
+    /// so a multi-line / paragraph-length approach name (observed dogfooding
+    /// ppvm) bloats the prompt without bound as iterations accumulate. The
+    /// running list must summarize each approach to a single terse line; full
+    /// detail still lives in the per-iteration hypothesis.
+    #[test]
+    fn ledger_history_summarizes_multiline_approach() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let rec: IterationRecord = serde_json::from_str(
+            r#"{
+                "iteration": 1,
+                "approach": "Speed up rehash via byte-slice hashing\n    SECRET_SECOND_LINE detail that should be dropped",
+                "status": "kept",
+                "metrics": {},
+                "rank": 0.5,
+                "timestamp": "2026-04-15T00:00:00Z"
+            }"#,
+        )
+        .unwrap();
+        store.append_ledger(&rec).unwrap();
+
+        let prompt = build_planning_prompt(&store, None, 2, "task desc").unwrap();
+        assert!(
+            prompt.contains("Speed up rehash via byte-slice hashing"),
+            "ledger history should keep the first line.\nprompt:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("SECRET_SECOND_LINE"),
+            "ledger history should summarize multi-line approaches.\nprompt:\n{prompt}"
         );
     }
 }
