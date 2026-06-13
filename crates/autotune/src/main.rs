@@ -2034,6 +2034,20 @@ fn cmd_revert(
     let ledger = store.load_ledger()?;
     let target_sha = validate_revert_target(&ledger, iteration)?;
 
+    if !autotune_git::branch_exists(&repo_root, &state.advancing_branch)
+        .context("failed to check advancing branch")?
+    {
+        anyhow::bail!(
+            "advancing branch '{}' does not exist",
+            state.advancing_branch
+        );
+    }
+    if autotune_git::has_uncommitted_changes(&repo_root).context("failed to check working tree")? {
+        anyhow::bail!(
+            "working tree has uncommitted changes; commit or stash them before reverting"
+        );
+    }
+
     aprintln!(
         "[autotune] reverting iteration {iteration} ({target_sha}) on '{}'",
         state.advancing_branch
@@ -2046,6 +2060,12 @@ fn cmd_revert(
     // git revert; resolve conflicts via the research agent, else abort cleanly.
     let clean = autotune_git::revert(&repo_root, &target_sha).context("git revert failed")?;
     if !clean {
+        ctrlc::set_handler(|| {
+            aprintln!("\n[autotune] received shutdown signal, terminating agent...");
+            autotune_agent::child::terminate_active_children();
+        })
+        .context("failed to set shutdown signal handler")?;
+
         let agent = build_agent_for_backend(&state.research_backend)?;
         let research_session = autotune_agent::AgentSession {
             session_id: state.research_session_id.clone(),
@@ -2074,7 +2094,10 @@ fn cmd_revert(
     // The revert commit is already on the branch, so a re-measure failure must
     // NOT abort silently — record the row with empty metrics and warn.
     let metrics = if no_measure {
-        aprintln!("[autotune] --no-measure: recording revert without fresh metrics");
+        aprintln!(
+            "[autotune] --no-measure: recording revert without fresh metrics — scoring 'best' \
+             falls back to the prior measured row; the next iteration re-establishes metrics"
+        );
         Default::default()
     } else {
         match autotune_benchmark::run_all_measures_with_output(

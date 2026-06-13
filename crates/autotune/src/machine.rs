@@ -1175,6 +1175,10 @@ fn run_measuring(
 /// scoring's `best`. Rows that reflect an integrated branch state count:
 /// `Kept`, `Baseline`, and `Reverted` (post-revert re-measure). `Discarded`
 /// and `Crash` rows never reached the branch and are ignored.
+///
+/// Empty-metrics rows are skipped: a `--no-measure` or failed-remeasure revert
+/// checkpoint has no metrics to offer, so `best` transparently falls back to
+/// the prior measured row rather than poisoning the next iteration's scorer.
 fn best_metrics_from_ledger(ledger: &[IterationRecord]) -> Metrics {
     ledger
         .iter()
@@ -1183,7 +1187,7 @@ fn best_metrics_from_ledger(ledger: &[IterationRecord]) -> Metrics {
             matches!(
                 r.status,
                 IterationStatus::Kept | IterationStatus::Baseline | IterationStatus::Reverted
-            )
+            ) && !r.metrics.is_empty()
         })
         .map(|r| r.metrics.clone())
         .unwrap_or_default()
@@ -2761,6 +2765,24 @@ mod tests {
         // The Reverted checkpoint's fresh metrics are the new best — NOT iter3's
         // stale 70.0 which still included the reverted change.
         assert_eq!(best_metrics_from_ledger(&ledger)["m"], 85.0);
+    }
+
+    /// A `--no-measure` / failed-remeasure revert appends an empty-metrics Reverted
+    /// row. best-selection must skip it and fall back to the prior measured row,
+    /// NOT return empty metrics (which would crash the next iteration's scorer).
+    #[test]
+    fn best_metrics_skips_empty_metrics_revert_row() {
+        let empty_revert = {
+            let mut r = rec(2, IterationStatus::Reverted, 0.0);
+            r.metrics.clear();
+            r
+        };
+        let ledger = vec![
+            rec(0, IterationStatus::Baseline, 100.0),
+            rec(1, IterationStatus::Kept, 90.0),
+            empty_revert,
+        ];
+        assert_eq!(best_metrics_from_ledger(&ledger)["m"], 90.0);
     }
 
     #[test]
