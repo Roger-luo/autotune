@@ -114,6 +114,8 @@ fn seed_resume_task(project: &Project, state: TaskState) {
             reason: None,
             fix_attempts: 0,
             fresh_spawns: 0,
+            commit_sha: None,
+            reverted_iteration: None,
             timestamp: Utc::now(),
         })
         .unwrap();

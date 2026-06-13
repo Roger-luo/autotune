@@ -164,6 +164,17 @@ pub struct IterationRecord {
     pub fix_attempts: u32,
     #[serde(default)]
     pub fresh_spawns: u32,
+    /// The commit this row corresponds to on the advancing branch:
+    /// - `Kept` rows: the post-integration advancing-branch HEAD.
+    /// - `Reverted` rows: the `git revert` (inverse) commit.
+    ///
+    /// `None` on rows written before SHA tracking existed (and on
+    /// discarded/crash rows, which were never integrated).
+    #[serde(default)]
+    pub commit_sha: Option<String>,
+    /// Set only on `Reverted` rows: the iteration number this revert undid.
+    #[serde(default)]
+    pub reverted_iteration: Option<usize>,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -174,6 +185,7 @@ pub enum IterationStatus {
     Kept,
     Discarded,
     Crash,
+    Reverted,
 }
 
 #[derive(Debug, Clone)]
@@ -719,5 +731,51 @@ mod tests {
             names,
             vec!["alpha-task".to_string(), "beta-task".to_string()]
         );
+    }
+
+    /// New revert fields default to None so ledgers written before this feature
+    /// still deserialize. Pins backward compatibility.
+    #[test]
+    fn legacy_iteration_record_without_revert_fields_deserializes() {
+        let legacy_json = r#"{
+            "iteration": 1,
+            "approach": "a",
+            "status": "kept",
+            "metrics": {},
+            "rank": 0.0,
+            "timestamp": "2026-04-15T00:00:00Z"
+        }"#;
+        let record: IterationRecord = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(record.commit_sha, None);
+        assert_eq!(record.reverted_iteration, None);
+    }
+
+    /// The new `Reverted` status round-trips through serde in snake_case.
+    #[test]
+    fn reverted_status_roundtrips_snake_case() {
+        let json = serde_json::to_string(&IterationStatus::Reverted).unwrap();
+        assert_eq!(json, "\"reverted\"");
+        let back: IterationStatus = serde_json::from_str("\"reverted\"").unwrap();
+        assert_eq!(back, IterationStatus::Reverted);
+    }
+
+    /// A fully-populated reverted row round-trips, carrying the inverse-commit SHA
+    /// and the iteration it undid.
+    #[test]
+    fn reverted_record_roundtrips_with_fields() {
+        let json = r#"{
+            "iteration": 6,
+            "approach": "revert of iteration 5",
+            "status": "reverted",
+            "metrics": {"x": 1.0},
+            "rank": 0.0,
+            "commit_sha": "deadbeef",
+            "reverted_iteration": 5,
+            "timestamp": "2026-04-15T00:00:00Z"
+        }"#;
+        let record: IterationRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.status, IterationStatus::Reverted);
+        assert_eq!(record.commit_sha.as_deref(), Some("deadbeef"));
+        assert_eq!(record.reverted_iteration, Some(5));
     }
 }

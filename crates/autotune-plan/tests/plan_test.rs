@@ -149,6 +149,8 @@ fn build_planning_prompt_includes_last_iteration() {
         reason: Some("first attempt".to_string()),
         fix_attempts: 0,
         fresh_spawns: 0,
+        commit_sha: None,
+        reverted_iteration: None,
         timestamp: Utc::now(),
     };
 

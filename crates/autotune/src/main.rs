@@ -596,6 +596,8 @@ fn build_baseline_record(
         reason: None,
         fix_attempts: 0,
         fresh_spawns: 0,
+        commit_sha: None,
+        reverted_iteration: None,
         timestamp,
     }
 }
@@ -2262,6 +2264,8 @@ mod tests {
                 reason: None,
                 fix_attempts: 0,
                 fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
                 timestamp: Utc::now(),
             },
             IterationRecord {
@@ -2275,6 +2279,8 @@ mod tests {
                 reason: Some("coverage improved".to_string()),
                 fix_attempts: 1,
                 fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
                 timestamp: Utc::now(),
             },
         ]

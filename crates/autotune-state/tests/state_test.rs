@@ -62,6 +62,8 @@ fn sample_record(iteration: usize, approach: &str) -> IterationRecord {
         reason: Some("better runtime".to_string()),
         fix_attempts: 0,
         fresh_spawns: 0,
+        commit_sha: None,
+        reverted_iteration: None,
         timestamp: Utc.with_ymd_and_hms(2026, 4, 11, 12, 0, 0).unwrap(),
     }
 }

@@ -1290,6 +1290,8 @@ fn build_kept_record(iteration: usize, approach: &ApproachState) -> IterationRec
         reason: approach.score_reason.clone(),
         fix_attempts: approach.fix_attempts,
         fresh_spawns: approach.fresh_spawns,
+        commit_sha: None,
+        reverted_iteration: None,
         timestamp: Utc::now(),
     }
 }
@@ -1492,6 +1494,8 @@ fn record_crash(state: &mut TaskState, store: &TaskStore) -> Result<()> {
         reason: Some("implementation produced no commit".to_string()),
         fix_attempts: approach.fix_attempts,
         fresh_spawns: approach.fresh_spawns,
+        commit_sha: None,
+        reverted_iteration: None,
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -1528,6 +1532,8 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
         reason: Some(reason.to_string()),
         fix_attempts: approach.fix_attempts,
         fresh_spawns: approach.fresh_spawns,
+        commit_sha: None,
+        reverted_iteration: None,
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -1678,6 +1684,8 @@ mod tests {
             reason: None,
             fix_attempts: 0,
             fresh_spawns: 0,
+            commit_sha: None,
+            reverted_iteration: None,
             timestamp: Utc::now(),
         }
     }
@@ -2124,6 +2132,8 @@ mod tests {
                 reason: None,
                 fix_attempts: 0,
                 fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2166,6 +2176,8 @@ mod tests {
                 reason: None,
                 fix_attempts: 0,
                 fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2601,6 +2613,8 @@ mod tests {
             reason: None,
             fix_attempts: 0,
             fresh_spawns: 0,
+            commit_sha: None,
+            reverted_iteration: None,
             timestamp: Utc::now(),
         }
     }
