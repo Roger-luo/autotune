@@ -270,7 +270,7 @@ impl TaskStore {
     pub fn iteration_dir(&self, iteration: usize, approach: &str) -> PathBuf {
         self.root
             .join("iterations")
-            .join(format!("{:03}-{}", iteration, approach))
+            .join(format!("{:03}-{}", iteration, sanitize_approach(approach)))
     }
 
     pub fn save_iteration_metrics(
@@ -368,6 +368,36 @@ impl TaskStore {
     }
 }
 
+/// Convert an LLM-supplied approach string into a single filesystem path
+/// component.
+///
+/// Replaces characters that the filesystem (or downstream tooling that
+/// expects one directory per iteration) treats specially: directory
+/// separators (`/`, `\`), Windows-reserved characters (`:*?"<>|`), the
+/// NUL byte, and any ASCII control characters. Caps the output at 120
+/// chars so the resulting filename stays well under typical
+/// 255-char filesystem limits when prefixed with the iteration counter.
+///
+/// Without this, an approach text like `"edit policies/foo/bar.star to
+/// add backtracking"` causes the slash to be interpreted as a directory
+/// separator: `iteration_dir` returns
+/// `iterations/001-edit policies/foo/bar.star to add backtracking`, which
+/// `create_dir_all` happily creates as a *nested* tree. Downstream tooling
+/// (e.g. `save_measure_output`) writes to the resulting deep path, and
+/// any code that lists `iterations/001*/measure_output` silently finds
+/// nothing.
+fn sanitize_approach(approach: &str) -> String {
+    approach
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .take(120)
+        .collect()
+}
+
 fn atomic_write(path: &Path, content: &str) -> Result<(), StateError> {
     let dir = parent_directory(path);
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
@@ -461,6 +491,47 @@ mod tests {
     #[test]
     fn phase_fixing_display_matches_variant() {
         assert_eq!(Phase::Fixing.to_string(), "Fixing");
+    }
+
+    #[test]
+    fn sanitize_approach_replaces_path_separators() {
+        // Slashes (the main offender) and backslashes get replaced.
+        assert_eq!(
+            sanitize_approach("edit policies/foo/bar.star"),
+            "edit policies_foo_bar.star"
+        );
+        assert_eq!(sanitize_approach(r"a\b\c"), "a_b_c");
+    }
+
+    #[test]
+    fn sanitize_approach_replaces_windows_reserved_and_control_chars() {
+        assert_eq!(sanitize_approach("a:b*c?d\"e<f>g|h"), "a_b_c_d_e_f_g_h");
+        assert_eq!(sanitize_approach("ab\tcd\nef"), "ab_cd_ef");
+        assert_eq!(sanitize_approach("with\0null"), "with_null");
+    }
+
+    #[test]
+    fn sanitize_approach_caps_length() {
+        let long = "x".repeat(500);
+        let out = sanitize_approach(&long);
+        assert_eq!(out.len(), 120);
+    }
+
+    #[test]
+    fn iteration_dir_uses_sanitized_approach() {
+        // Hits the live `iteration_dir` API end-to-end so this test
+        // also pins the integration: a `/` in the approach text
+        // produces a flat single-component child of `iterations/`,
+        // not a nested path that downstream tooling would miss.
+        let temp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(temp.path()).unwrap();
+        let dir = store.iteration_dir(7, "edit policies/foo/bar.star");
+        let rel = dir.strip_prefix(temp.path().join("iterations")).unwrap();
+        assert_eq!(rel.components().count(), 1, "expected single component, got {rel:?}");
+        assert_eq!(
+            rel.to_str().unwrap(),
+            "007-edit policies_foo_bar.star"
+        );
     }
 
     /// Old state.json files written before the Fixing phase existed must
