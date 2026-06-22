@@ -718,6 +718,15 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         aprintln!("[autotune] sanity tests passed");
     }
 
+    // Verify the canonical branch can pass its own commit hooks for the file
+    // types this task modifies, before spending iterations the harness would
+    // reject anyway (skippable via AUTOTUNE_SKIP_HOOK_PREFLIGHT).
+    autotune::preflight::check_commit_harness(
+        &repo_root,
+        &config.paths.tunable,
+        &config.paths.denied,
+    )?;
+
     // Take baseline measurements
     aprintln!("[autotune] collecting baseline metrics...");
     let (baseline_metrics, baseline_reports) = autotune_benchmark::run_all_measures_with_output(

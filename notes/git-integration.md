@@ -26,6 +26,53 @@ So a hook-rejected commit is treated like a failed test:
   test failures. If the implementer can't satisfy the hooks within budget, the
   candidate is **discarded** (not crashed).
 
+### Commit-harness preflight (before any iteration)
+
+The fix-retry loop above only helps when the hook failure is *the implementer's
+fault* — something it can fix inside the tunable paths. But if the **canonical
+branch itself** can't pass its own hooks (e.g. pre-existing `cargo fmt`/`clippy`
+drift in a file outside the tuning scope, or a non-idempotent rustfmt macro),
+then worktrees branch off that dirty base and the whole-workspace hooks
+(`cargo fmt --all`, `cargo clippy --workspace`, `pass_filenames = false`) reject
+*every* candidate commit no matter how good the change is. The implementer can't
+fix files outside its scope, so every iteration burns research + implementation
+and then discards on an unfixable, misleadingly-attributed "commit rejected".
+
+`crate::preflight::check_commit_harness` (called by `cmd_run` after the sanity
+tests, before baseline) catches this up front:
+
+- It detects the project's pre-commit framework — preferring **`prek`**, falling
+  back to **`pre-commit`** — by config presence (`prek.toml` /
+  `.pre-commit-config.yaml`) plus the runner being on `PATH`. No framework ⇒
+  no-op.
+- It runs the framework **scoped to the task's tunable file types**, not
+  `--all-files`: it lists the tunable files with `git ls-files -- :(glob)…
+  :(exclude,glob)…` and passes them to `<runner> run --files …`. The
+  `pass_filenames = false` hooks (fmt/clippy/check) then run workspace-wide
+  anyway, while the *type-gated* hooks only fire for the file types a candidate
+  commit would actually stage.
+- A non-zero exit aborts the whole run with an actionable message; a green run
+  is a no-op that lets tuning proceed.
+
+**Why scoped, not `--all-files`:** a candidate commit only ever stages files in
+the tunable paths, so it only triggers the hooks gated on *those* file types. A
+repo can have a totally broken hook for an unrelated file type and a rust-only
+tuning task would never hit it. Real example (ppvm dogfooding): `main` failed
+four hooks — `cargo fmt` (non-idempotent `#[pyo3(signature=…)]` macro) and
+`cargo clippy` (rust, gate rust commits) **and** `ruff format` + `ty` (Python,
+72 diagnostics; only gate Python commits). A Rust tuning task must be blocked by
+the first two but **not** the last two, which `--all-files` could not
+distinguish. The rust hooks were fixed in a PR; the Python debt was correctly
+left alone.
+
+Escape hatch: `AUTOTUNE_SKIP_HOOK_PREFLIGHT=1` skips the check (for repos whose
+runner can't run headlessly, or a known false positive).
+
+See `crates/autotune/src/preflight.rs` and its tests; the scenario coverage is
+`scenario_run_aborts_when_canonical_fails_precommit_hooks` /
+`scenario_run_proceeds_when_precommit_hooks_pass` in
+`crates/autotune/tests/scenario_run_test.rs`.
+
 ### Candidate commits exclude transient artifacts
 
 `stage_all_and_commit` does not blindly `git add -A`. It excludes a built-in set
