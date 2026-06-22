@@ -118,3 +118,41 @@ See:
 
 - `crates/autotune/src/machine.rs` — `run_scoring()` (`best` selection)
 - `crates/autotune-plan/src/lib.rs` — `build_planning_prompt()` (ledger echo)
+
+## Criterion adaptor: config `group` is the benchmark id, not the on-disk path
+
+`[measure.adaptor] type = "criterion"` takes a `group` per metric. The natural
+thing for a user to write there is the benchmark id exactly as `cargo bench`
+prints it — e.g. `gates/two-qubit/cnot` or `sparse-vec/u128/add_or_insert/existing`.
+That is **not** the on-disk directory.
+
+Criterion sanitizes the path-separator `/` *within* each id component (the group
+name and the function id) into `_` when it builds the report directory, keeping
+only the single `/` between group and function. So:
+
+| benchmark id (`cargo bench` / config `group`) | on-disk `target/criterion/<dir>/new/estimates.json` |
+|---|---|
+| `gates/two-qubit/cnot` | `gates_two-qubit/cnot` |
+| `sparse-vec/u128/add_or_insert/existing` | `sparse-vec/u128_add_or_insert_existing` |
+| `msd/msd-0` | `msd/msd-0` (no inner `/`, unchanged) |
+
+You cannot reconstruct the directory from the `group` string alone (you'd have to
+know where the group ends and the function begins). The adaptor therefore:
+
+1. tries the literal path `criterion_dir/<group>/new/estimates.json` first
+   (fast path, and what already-working configs with slash-free groups rely on);
+2. on a miss, walks `target/criterion/**/new/benchmark.json` once, reads each
+   file's logical `full_id`, and matches `group` against it — then reads the
+   `estimates.json` next to the matching `benchmark.json`.
+
+This was a real dogfooding malfunction: a perfectly reasonable ppvm config using
+`gates/two-qubit/cnot` failed baseline with `CriterionNotFound` even though the
+bench had just run, because the adaptor only tried the literal path. Note that
+Criterion does **not** sanitize spaces/commas (only path separators), which is
+why the older `trotter-scaling` config — group `"ByteF64FxIndexMap_8, …"`, no
+inner `/` — resolved fine as a literal path and never hit this.
+
+See:
+
+- `crates/autotune-adaptor/src/criterion.rs` — `estimates_path()` (literal) and
+  `build_full_id_index()` (the `benchmark.json` `full_id` fallback)
