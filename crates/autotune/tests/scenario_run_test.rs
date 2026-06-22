@@ -1305,3 +1305,145 @@ primary_metrics = [
         "ledger should record correctness score 5.\nledger:\n{ledger}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Commit-harness preflight
+// ---------------------------------------------------------------------------
+
+/// `autotune run` aborts at the commit-harness preflight when the canonical
+/// branch can't pass its own pre-commit hooks — before spending any iteration
+/// (so the loop never burns research/implementation on commits the harness
+/// would reject for reasons the implementer can't fix).
+#[cfg(unix)]
+#[test]
+fn scenario_run_aborts_when_canonical_fails_precommit_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = Project::empty()
+        .file(".autotune.toml", CONFIG_TOML)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        // A pre-commit config is what makes autotune look for a runner.
+        .file("prek.toml", "# stand-in prek config\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    // A fake `prek` on PATH that always fails — stands in for a canonical tree
+    // that can't pass its own hooks (e.g. pre-existing fmt/clippy drift).
+    let bin_dir = project.path().join(".fakebin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_prek = bin_dir.join("prek");
+    std::fs::write(
+        &fake_prek,
+        "#!/bin/sh\necho 'cargo clippy.....Failed' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_prek, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // The plan is never reached (the preflight aborts first), but provide one
+    // so agent construction is happy.
+    let script = write_script(
+        &project,
+        &[
+            "<plan><approach>x</approach><hypothesis>h</hypothesis><files-to-modify><file>src/lib.rs</file></files-to-modify></plan>",
+        ],
+    );
+
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .current_dir(project.path())
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "run should abort at the commit-harness preflight"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("does not pass its own pre-commit hooks"),
+        "expected the preflight abort message, got:\n{combined}"
+    );
+    // It must abort before measuring the baseline.
+    assert!(
+        !combined.contains("collecting baseline metrics"),
+        "preflight must abort before baseline, got:\n{combined}"
+    );
+}
+
+/// The preflight is a no-op when the runner reports success: `autotune run`
+/// proceeds past it (here it goes on to fail later for an unrelated reason,
+/// proving only that the preflight itself didn't block a green harness).
+#[cfg(unix)]
+#[test]
+fn scenario_run_proceeds_when_precommit_hooks_pass() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = Project::empty()
+        .file(".autotune.toml", CONFIG_TOML)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .file("prek.toml", "# stand-in prek config\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let bin_dir = project.path().join(".fakebin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_prek = bin_dir.join("prek");
+    // A green runner: ignores args, exits 0.
+    std::fs::write(&fake_prek, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&fake_prek, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let script = write_script(
+        &project,
+        &[
+            "<plan><approach>x</approach><hypothesis>h</hypothesis><files-to-modify><file>src/lib.rs</file></files-to-modify></plan>",
+        ],
+    );
+
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .current_dir(project.path())
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The preflight passed (green runner), so the run advanced to the baseline
+    // rather than aborting with the harness error.
+    assert!(
+        !combined.contains("does not pass its own pre-commit hooks"),
+        "a green harness must not trip the preflight, got:\n{combined}"
+    );
+    assert!(
+        combined.contains("collecting baseline metrics"),
+        "run should proceed past the preflight to baseline, got:\n{combined}"
+    );
+}

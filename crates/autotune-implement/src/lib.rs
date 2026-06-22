@@ -399,13 +399,15 @@ pub fn run_implementation(
 /// implementer's context is finite.
 pub fn build_fix_prompt(fix_history: &[String], latest_test_output: &str) -> String {
     let mut prompt = String::new();
-    prompt.push_str("# Fix required — tests failed after your last edit\n\n");
+    prompt.push_str("# Fix required — a check failed after your last edit\n\n");
     prompt.push_str(
-        "The tests configured for this task did not pass against your latest \
-         changes. Diagnose the failure and edit the same files (or add edits \
-         within the tunable paths) to make them pass. The project's scope \
-         rules, tunable paths, and tool permissions are unchanged — keep using \
-         Edit/Write as before, do NOT run Bash.\n\n",
+        "A check configured for this task did not pass against your latest \
+         changes — this may be a failing test or the project's commit hooks \
+         (the validation harness) rejecting the commit; the details are below. \
+         Diagnose the failure and edit the same files (or add edits within the \
+         tunable paths) to make it pass. The project's scope rules, tunable \
+         paths, and tool permissions are unchanged — keep using Edit/Write as \
+         before, do NOT run Bash.\n\n",
     );
     if !fix_history.is_empty() {
         prompt.push_str("## Prior failure history (oldest → newest)\n\n");
@@ -419,7 +421,7 @@ pub fn build_fix_prompt(fix_history: &[String], latest_test_output: &str) -> Str
             prompt.push_str("```\n\n");
         }
     }
-    prompt.push_str("## Latest test output\n\n```\n");
+    prompt.push_str("## Latest failure output\n\n```\n");
     prompt.push_str(latest_test_output);
     if !latest_test_output.ends_with('\n') {
         prompt.push('\n');
@@ -658,9 +660,11 @@ mod tests {
         // test output verbatim — the implementer's existing session already
         // knows the hypothesis and file list.
         let prompt = build_fix_prompt(&[], "TEST FAIL: expected 42, got 41\n");
-        assert!(prompt.contains("tests failed"));
+        // Neutral wording: covers both failing tests and hook rejections.
+        assert!(prompt.contains("a check failed"));
+        assert!(prompt.contains("commit hooks"));
         assert!(prompt.contains("TEST FAIL: expected 42, got 41"));
-        assert!(prompt.contains("Latest test output"));
+        assert!(prompt.contains("Latest failure output"));
         assert!(!prompt.contains("Prior failure history"));
     }
 
