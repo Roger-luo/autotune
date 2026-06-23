@@ -134,6 +134,13 @@ pub enum PrecommitOutcome {
 
 /// Run `<runner> run --files <files…>` in `repo_root`, returning whether all
 /// hooks passed and (on failure) the captured output.
+///
+/// `no-commit-to-branch` is skipped (via the `SKIP` env both `prek` and
+/// `pre-commit` honor): the preflight runs on the canonical branch — which is
+/// usually exactly the branch that hook protects, so it fails here — but every
+/// candidate commit lands on a worktree branch off canonical and so never trips
+/// it. It's a branch-target guard, not a code-validity check, so it's
+/// categorically inapplicable to "would a candidate commit pass the hooks?".
 pub fn run_precommit_check(
     repo_root: &Path,
     runner: &str,
@@ -143,6 +150,7 @@ pub fn run_precommit_check(
     cmd.arg("run").arg("--files");
     cmd.args(files);
     cmd.current_dir(repo_root);
+    cmd.env("SKIP", "no-commit-to-branch");
     let out = cmd
         .output()
         .with_context(|| format!("failed to run pre-commit runner '{runner}'"))?;

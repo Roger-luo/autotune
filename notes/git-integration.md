@@ -62,6 +62,13 @@ tests, before baseline) catches this up front:
   > (i.e. all real configs). It still "passed" tests because the small
   > temp-repo fixtures didn't reproduce the quirk. Lesson: don't trust git
   > exclude pathspecs to compose with `:(glob)` positives across git versions.
+- It runs the framework with `SKIP=no-commit-to-branch`. That hook is a
+  **branch-target guard**, not a code-validity check: the preflight runs on the
+  canonical branch (usually the very branch that hook protects, so it fails
+  there), but every candidate commit lands on a worktree branch off canonical
+  and so never trips it. Without skipping it the preflight aborted ppvm with
+  *"You are not allowed to commit to branch 'main'"* — a false positive, since
+  no candidate ever commits to `main`.
 - A non-zero exit aborts the whole run with an actionable message; a green run
   is a no-op that lets tuning proceed.
 
