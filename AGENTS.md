@@ -120,7 +120,8 @@ Detailed notes on non-obvious mechanics live in [notes/](notes/):
 - [agent-protocol.md](notes/agent-protocol.md) — XML fragment protocol, MockAgent format requirements.
 - [git-integration.md](notes/git-integration.md) — Advancing branch, rebase integration, worktree branch namespacing.
 - [config-and-tasks.md](notes/config-and-tasks.md) — Global vs project config merge, task auto-forking, how the implementation agent receives AGENTS.md/CLAUDE.md.
-- [scoring-and-rank.md](notes/scoring-and-rank.md) — Current `rank` semantics, baseline-vs-best scoring behavior, and why report `Rank` is an improvement score rather than the raw metric.
+- [scoring-and-rank.md](notes/scoring-and-rank.md) — Current `rank` semantics, baseline-vs-best scoring behavior, why report `Rank` is an improvement score rather than the raw metric, plus guardrail metrics and per-metric causal attribution.
+- [metric-aware-guidance.md](notes/metric-aware-guidance.md) — Why perf-vs-generic research/planning guidance derives from the declared measures (the `optimizes_runtime_perf` classifier), not a task-kind flag — "specialize by declaration, not by a mode flag".
 - [analysis-artifact.md](notes/analysis-artifact.md) — The self-contained JSON from `autotune analyze` / `autotune export`: metric×iteration matrix, structured per-metric score breakdowns, per-iteration changed-files. Schema field-by-field.
 - [live-tail-rendering.md](notes/live-tail-rendering.md) — Dimmed rolling-tail rendering of subprocess/agent output, the cursor-up erase footgun, and the height-based line budget.
 - [docs-site.md](notes/docs-site.md) — The Astro docs site under `docs/`; API reference generated from rustdoc JSON via a live content loader, pinned to `format_version: 57`.

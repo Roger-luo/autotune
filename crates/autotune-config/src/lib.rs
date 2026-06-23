@@ -650,6 +650,30 @@ impl AutotuneConfig {
     pub fn task_dir(&self, root: &Path) -> PathBuf {
         root.join(".autotune").join("tasks").join(&self.task.name)
     }
+
+    /// Whether this task optimizes a RUNTIME-PERFORMANCE benchmark, inferred
+    /// purely from how its measures are declared — there is no task-kind flag.
+    ///
+    /// AutoTune is a general metric-driven loop (perf, coverage, binary size,
+    /// model accuracy, …). Performance-specific agent guidance ("profile the
+    /// hot path", "the smallest change that removes wasted work", profiler tool
+    /// access) is only appropriate when the objective is a timing benchmark;
+    /// firing it for a coverage or size task is actively misleading. Rather than
+    /// add a mode switch, we DERIVE the answer from the declarations, exactly
+    /// like the noise gate self-gates on whether variance is present.
+    ///
+    /// A task counts as runtime-performance when any measure uses the
+    /// [`AdaptorConfig::Criterion`] adaptor: criterion is a wall-clock
+    /// micro-benchmark harness whose whole purpose is timing, and it is the one
+    /// built-in adaptor that emits per-metric variance (CI / stddev). Regex,
+    /// script, and judge measures could extract anything (coverage %, byte
+    /// count, accuracy, a rubric score), so they do NOT imply a perf task on
+    /// their own.
+    pub fn optimizes_runtime_perf(&self) -> bool {
+        self.measure
+            .iter()
+            .any(|m| matches!(m.adaptor, AdaptorConfig::Criterion { .. }))
+    }
 }
 
 #[cfg(test)]
@@ -1245,6 +1269,78 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             config.measure[0].sources,
             vec!["src/clifford.rs".to_string(), "src/gates/**".to_string()]
         );
+    }
+
+    #[test]
+    fn optimizes_runtime_perf_true_for_criterion_measure() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "bench"
+command = ["cargo", "bench"]
+adaptor = { type = "criterion", benchmarks = [{ name = "sort_ns", group = "sort/random" }] }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "sort_ns", direction = "Minimize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        assert!(config.optimizes_runtime_perf());
+    }
+
+    #[test]
+    fn optimizes_runtime_perf_false_for_coverage_regex_only() {
+        // A coverage-style task (regex over `cargo llvm-cov`) is NOT a runtime
+        // benchmark — no criterion measure, so the classifier returns false and
+        // the research prompt must stay metric-agnostic.
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "coverage"
+command = ["cargo", "llvm-cov"]
+adaptor = { type = "regex", patterns = [{ name = "line_coverage", pattern = "coverage: ([0-9.]+)" }] }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "line_coverage", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        assert!(!config.optimizes_runtime_perf());
+    }
+
+    #[test]
+    fn optimizes_runtime_perf_true_when_any_measure_is_criterion() {
+        // Mixed config: a coverage regex measure AND a criterion bench. The
+        // presence of ANY criterion measure makes it a perf task.
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "coverage"
+command = ["cargo", "llvm-cov"]
+adaptor = { type = "regex", patterns = [{ name = "line_coverage", pattern = "coverage: ([0-9.]+)" }] }
+[[measure]]
+name = "bench"
+command = ["cargo", "bench"]
+adaptor = { type = "criterion", benchmarks = [{ name = "sort_ns", group = "sort/random" }] }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "line_coverage", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        assert!(config.optimizes_runtime_perf());
     }
 
     #[test]

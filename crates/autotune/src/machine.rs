@@ -389,6 +389,7 @@ fn run_planning(
         last_iteration,
         state.current_iteration,
         description,
+        config.optimizes_runtime_perf(),
         Some(&planning_handler),
         approver,
     )

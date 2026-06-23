@@ -126,7 +126,7 @@ fn research_denylist_allows_read_and_bash() {
 fn build_planning_prompt_includes_description() {
     let tmp = tempfile::tempdir().unwrap();
     let store = TaskStore::new(tmp.path()).unwrap();
-    let prompt = build_planning_prompt(&store, None, 1, "Optimize compile times").unwrap();
+    let prompt = build_planning_prompt(&store, None, 1, "Optimize compile times", true).unwrap();
     assert!(prompt.contains("Optimize compile times"));
 }
 
@@ -157,7 +157,8 @@ fn build_planning_prompt_includes_last_iteration() {
         timestamp: Utc::now(),
     };
 
-    let prompt = build_planning_prompt(&store, Some(&record), 2, "Optimize compile times").unwrap();
+    let prompt =
+        build_planning_prompt(&store, Some(&record), 2, "Optimize compile times", true).unwrap();
     assert!(prompt.contains("baseline"));
     assert!(prompt.contains("initial run"));
     assert!(prompt.contains("first attempt"));
@@ -173,7 +174,7 @@ fn build_planning_prompt_includes_log_content() {
         .append_log("## Iteration 0\nBaseline established.")
         .unwrap();
 
-    let prompt = build_planning_prompt(&store, None, 1, "Speed up tests").unwrap();
+    let prompt = build_planning_prompt(&store, None, 1, "Speed up tests", true).unwrap();
     assert!(prompt.contains("Baseline established."));
 }
 
@@ -195,7 +196,7 @@ fn plan_next_retries_on_malformed_xml_then_succeeds() {
     let agent = ScriptedAgent::new(vec![bad, good]);
     let session = scripted_session();
 
-    let h = plan_next(&agent, &session, &store, None, 1, "task", None, None).unwrap();
+    let h = plan_next(&agent, &session, &store, None, 1, "task", true, None, None).unwrap();
     assert_eq!(h.approach, "cache-warm");
     // Initial send + one retry.
     assert_eq!(agent.send_count(), 2);
@@ -218,7 +219,7 @@ fn plan_next_retries_on_missing_hypothesis_children() {
     let agent = ScriptedAgent::new(vec![bad, good]);
     let session = scripted_session();
 
-    let h = plan_next(&agent, &session, &store, None, 1, "task", None, None).unwrap();
+    let h = plan_next(&agent, &session, &store, None, 1, "task", true, None, None).unwrap();
     assert_eq!(h.approach, "fix");
     assert_eq!(agent.send_count(), 2);
 }
@@ -234,7 +235,7 @@ fn plan_next_gives_up_after_max_attempts() {
     let agent = ScriptedAgent::new(vec![bad]);
     let session = scripted_session();
 
-    let err = plan_next(&agent, &session, &store, None, 1, "task", None, None).unwrap_err();
+    let err = plan_next(&agent, &session, &store, None, 1, "task", true, None, None).unwrap_err();
     assert!(
         matches!(err, PlanError::ParseHypothesis { .. }),
         "expected ParseHypothesis, got {err:?}"

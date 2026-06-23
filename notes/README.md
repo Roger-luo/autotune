@@ -21,8 +21,14 @@ took you a while to figure out and would not be obvious from reading the code.
   rules, task auto-forking, how the implementation agent receives project
   instructions (AGENTS.md / CLAUDE.md).
 - [scoring-and-rank.md](scoring-and-rank.md) — What `rank` means today, why the
-  baseline row is always `0.0`, and how weighted-sum scoring compares against
-  the current best kept result rather than the raw metric value.
+  baseline row is always `0.0`, how weighted-sum scoring compares against the
+  current best kept result rather than the raw metric value, plus the
+  guardrail-metric and per-metric causal-attribution semantics.
+- [metric-aware-guidance.md](metric-aware-guidance.md) — Why the research /
+  planning prompts specialize perf-vs-generic guidance by *deriving* from the
+  declared measures (the `optimizes_runtime_perf` classifier) instead of a
+  task-kind flag — the "specialize by declaration, not by a mode flag"
+  principle.
 - [analysis-artifact.md](analysis-artifact.md) — The self-contained,
   machine-readable JSON emitted by `autotune analyze` (and embedded in
   `autotune export`): metric × iteration matrix, structured per-metric score
