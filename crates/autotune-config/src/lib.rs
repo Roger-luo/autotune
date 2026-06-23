@@ -296,6 +296,23 @@ pub struct PrimaryMetric {
     pub direction: Direction,
     #[serde(default = "default_weight")]
     pub weight: f64,
+    /// Mark this metric as a noise-tolerant GUARDRAIL/constraint rather than an
+    /// optimization target (Part C / option 4). A guardrail metric:
+    ///
+    /// 1. never contributes to the weighted objective/rank (its `weight` is
+    ///    ignored),
+    /// 2. can only VETO a candidate (force discard) when it regresses by MORE
+    ///    than its noise envelope (the `[score].noise_*` / per-metric variance
+    ///    envelope, reused from #15),
+    /// 3. ignores within-noise moves.
+    ///
+    /// This is "declaring how a metric participates" — consistent with deriving
+    /// behavior from declarations. Unlike `[[score.guardrail_metrics]]` (which
+    /// needs an explicit `max_regression`), a guardrail's veto threshold is the
+    /// measured noise envelope, so a guardrail never trips on jitter. Default
+    /// `false` ⇒ a normal weighted primary, identical to today.
+    #[serde(default)]
+    pub guardrail: bool,
 }
 
 fn default_weight() -> f64 {
@@ -580,6 +597,16 @@ impl AutotuneConfig {
                 if primary_metrics.is_empty() {
                     return Err(ConfigError::Validation {
                         message: "weighted_sum score must contain at least one primary metric"
+                            .to_string(),
+                    });
+                }
+                // A weighted_sum needs at least one real optimization target;
+                // if every primary is marked `guardrail = true` there's nothing
+                // to maximize/minimize and the rank is always 0.
+                if primary_metrics.iter().all(|pm| pm.guardrail) {
+                    return Err(ConfigError::Validation {
+                        message: "weighted_sum score must contain at least one non-guardrail \
+                                  primary metric (an optimization target)"
                             .to_string(),
                     });
                 }
@@ -992,6 +1019,7 @@ max_fresh_spawns = 2
                 name: metric_name.to_string(),
                 direction: Direction::Maximize,
                 weight: 1.0,
+                guardrail: false,
             }],
             guardrail_metrics: vec![],
             noise_threshold: 0.0,
@@ -1174,6 +1202,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                     name: "nonexistent".to_string(),
                     direction: Direction::Maximize,
                     weight: 1.0,
+                    guardrail: false,
                 }],
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
@@ -1217,6 +1246,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                     name: "val".to_string(),
                     direction: Direction::Maximize,
                     weight: 1.0,
+                    guardrail: false,
                 }],
                 guardrail_metrics: vec![GuardrailMetric {
                     name: "missing-guard".to_string(),
@@ -1424,6 +1454,83 @@ primary_metrics = [{ name = "line_coverage", direction = "Maximize" }]
     }
 
     #[test]
+    fn guardrail_primary_parses_and_defaults_false() {
+        // Absent → false (a normal weighted primary).
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        config.validate().unwrap();
+        let ScoreConfig::WeightedSum {
+            primary_metrics, ..
+        } = &config.score
+        else {
+            panic!("expected weighted_sum");
+        };
+        assert!(!primary_metrics[0].guardrail);
+
+        // Explicit guardrail flag round-trips, alongside an objective metric.
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "m"
+command = ["echo"]
+adaptor = { type = "regex", patterns = [
+  { name = "val", pattern = "v([0-9]+)" },
+  { name = "mem", pattern = "m([0-9]+)" },
+] }
+[score]
+type = "weighted_sum"
+primary_metrics = [
+  { name = "val", direction = "Maximize" },
+  { name = "mem", direction = "Minimize", guardrail = true },
+]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let ScoreConfig::WeightedSum {
+            primary_metrics, ..
+        } = &config.score
+        else {
+            panic!("expected weighted_sum");
+        };
+        assert!(!primary_metrics[0].guardrail);
+        assert!(primary_metrics[1].guardrail);
+    }
+
+    #[test]
+    fn validate_rejects_all_guardrail_primaries() {
+        // Every primary is a guardrail → no optimization target → rejected.
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![regex_measure("m", "val")],
+            ScoreConfig::WeightedSum {
+                primary_metrics: vec![PrimaryMetric {
+                    name: "val".to_string(),
+                    direction: Direction::Maximize,
+                    weight: 1.0,
+                    guardrail: true,
+                }],
+                guardrail_metrics: vec![],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
+            },
+        );
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("non-guardrail"), "error: {err}");
+    }
+
+    #[test]
     fn metric_sources_empty_when_nothing_declared() {
         let config = make_config_direct(
             default_task_with_stop(),
@@ -1488,6 +1595,7 @@ primary_metrics = [{ name = "line_coverage", direction = "Maximize" }]
                     name: "micro_cnot".to_string(),
                     direction: Direction::Minimize,
                     weight: 1.0,
+                    guardrail: false,
                 }],
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
