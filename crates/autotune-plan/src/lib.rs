@@ -255,9 +255,14 @@ pub fn build_planning_prompt(
 
     prompt.push_str(
         "# Instructions\n\n\
-         Propose the next approach. Emit a `<plan>` fragment in the schema \
-         you were given at session start. If you need a tool you don't yet \
-         have, emit `<request-tool>` and end your turn.\n",
+         Propose the next approach, grounded in the results above. If the last \
+         approach regressed a metric (see its Reason), diagnose why and pick a \
+         different, evidence-backed lever — do not re-propose a tried approach or \
+         repeat a regressing class of change (e.g. adding indirection/generality \
+         to a hot path). Prefer the smallest change that targets the measured \
+         hot path. Emit a `<plan>` fragment in the schema you were given at \
+         session start. If you need a tool you don't yet have (e.g. `Bash` to \
+         profile the hot path), emit `<request-tool>` and end your turn.\n",
     );
 
     Ok(prompt)

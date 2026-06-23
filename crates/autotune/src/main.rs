@@ -1308,14 +1308,49 @@ fn build_research_agent_prompt(
 
     p.push_str("\n# What to do\n\n");
     p.push_str(
-        "- Do NOT run the measure, test, or build commands listed above. The CLI owns that.\n",
+        "- The CLI owns the official scoring: do NOT run the configured measure/test commands to score, and do NOT re-collect the baseline. (You MAY run a profiler or a quick exploratory bench under Bash to find the hot path — see \"Forming a high-value hypothesis\" below.)\n",
     );
-    p.push_str("- Do NOT re-collect the baseline — it's already done.\n");
     p.push_str("- Use Read/Glob/Grep to understand the code that produces the target metric(s).\n");
     p.push_str("- When the CLI asks you to plan the next iteration, propose a concrete, scoped hypothesis with specific files to modify.\n");
     p.push_str("- Your planning response format is an XML `<plan>` fragment with `<approach>`, `<hypothesis>`, and a `<files-to-modify>` list of `<file>` entries. The CLI will tell you when to emit one.\n");
     p.push_str("- `<approach>` is a SHORT label — a few words, e.g. `specialize-rzz-fast-path` or `reuse-scratch-buffer`. It names the git branch and the iteration directory, so keep it terse; do NOT put a full sentence or paragraph there. All the detail goes in `<hypothesis>`.\n");
     p.push_str("- The `hypothesis` string is the main prompt passed to the implementation agent, along with the `files_to_modify` list. Write it as concrete instructions: what to change and why. Anything you want the implementer to know must go there.\n");
+
+    p.push_str("\n# Forming a high-value hypothesis\n\n");
+    p.push_str(
+        "Assume the codebase is already reasonably optimized: generic \"best \
+         practice\" changes usually REGRESS. Proposals that just presize a \
+         collection that's already sized, add caching/abstraction, or route a \
+         hot single-element path through a general or batched API tend to add \
+         indirection and get *slower*. To propose changes that actually move the \
+         metrics:\n\n",
+    );
+    p.push_str(
+        "- Find the real hot path FIRST — don't guess. Read the benchmark to see \
+         exactly what it exercises, then trace which functions/loops dominate. \
+         When you can, PROFILE: request `Bash` and use the project's own \
+         profiling tooling if it has any (look for scripts, `cargo flamegraph`, \
+         `samply`, `perf`), or build the relevant bench in release and sample it. \
+         A hypothesis grounded in a measured hot spot beats one from intuition.\n",
+    );
+    p.push_str(
+        "- Target that bottleneck with the SMALLEST change that removes wasted \
+         work — a redundant allocation, clone, hash, recomputation, or bounds \
+         check in the hottest loop. Prefer a surgical edit over a broad rewrite \
+         or a new abstraction.\n",
+    );
+    p.push_str(
+        "- Respect the scoring weights: the highest-weighted metrics dominate the \
+         rank. A change that speeds up a low-weight micro-op but slows a \
+         high-weight end-to-end metric is a net loss and will be discarded.\n",
+    );
+    p.push_str(
+        "- Learn from the ledger: each past iteration shows its approach, status, \
+         rank, and (for the last one) a per-metric Reason. If an approach \
+         regressed a metric, do NOT repeat that class of change — diagnose WHY it \
+         regressed and pick a different lever. Don't re-propose something already \
+         tried.\n",
+    );
 
     p.push_str("\n# Requesting additional tools\n\n");
     p.push_str("You start with read-only tools (Read, Glob, Grep). If you need a tool that isn't available — for example `Bash` to run `cargo tree`, `cargo metadata`, or `git log` — you can request it by emitting an XML fragment in your response:\n\n");
@@ -3225,6 +3260,16 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         assert!(prompt.contains("Do NOT re-run the measure commands"));
         assert!(prompt.contains("<request-tool>"));
         assert!(prompt.contains(&format!("- `{}`", baseline_output_files[0].display())));
+
+        // Hypothesis-quality guidance: profile the hot path, make small changes,
+        // respect weights, and learn from prior regressions.
+        assert!(prompt.contains("Forming a high-value hypothesis"));
+        assert!(prompt.contains("Find the real hot path FIRST"));
+        assert!(prompt.contains("PROFILE"));
+        assert!(prompt.contains("SMALLEST change"));
+        assert!(prompt.contains("Learn from the ledger"));
+        // Profiling must be explicitly permitted despite the "CLI owns scoring" rule.
+        assert!(prompt.contains("You MAY run a profiler"));
     }
 
     #[test]
