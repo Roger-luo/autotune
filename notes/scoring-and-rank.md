@@ -132,6 +132,100 @@ on the `weighted_sum` and `threshold` score types. `ScoreConfig::noise_params()`
 returns `(threshold, k)`; script/command scorers own their full decision and get
 the identity.
 
+## Measurement robustness: cross-build envelope + two-phase confirmation (opt-in)
+
+Within-run criterion CIs only see **within-build** sampling jitter. They do NOT
+capture **cross-build** codegen/layout noise — the thing that swung unrelated
+ppvm #149 benches ±35% between rebuilds. Two opt-in `[score]` knobs harden the
+loop against this, both gated on `AutotuneConfig::optimizes_runtime_perf()` (any
+criterion measure declared) so deterministic tasks (coverage/size) pay ZERO
+extra cost, and both OFF by default (identical to the prior behavior).
+
+### Within-run vs cross-build noise (the model)
+
+- **Within-run**: re-sampling the *same compiled binary* (criterion's CI /
+  stddev). Sizes the existing envelope.
+- **Cross-build**: re-*compiling* and re-running. Codegen and binary layout
+  change, so an unrelated bench can shift well beyond its within-run CI. This is
+  the honest, usually larger envelope — and the real ppvm #149 failure mode.
+
+`noise_envelope(best, cand_var, best_var, empirical, &NoiseConfig)` now takes the
+**MAX** of the within-run component and a per-metric `empirical` cross-build
+floor. The MAX (never a sum, never a min) means the cross-build floor can only
+*widen* the envelope, and a genuinely wide within-run CI is never shrunk.
+
+### Option 1: `[score] baseline_replicates = N` (default `0` = off)
+
+When a perf task sets `N > 0`, baseline measurement is repeated `N` extra times
+at task start. The original baseline value plus the `N` replicates form a series;
+`empirical_cross_build_envelope(&[f64])` takes the **half-range** `(max-min)/2`
+(a radius comparable to a CI half-width). The per-metric map is persisted to
+`.autotune/tasks/<name>/noise_envelope.json` (`TaskStore::save/load_empirical_envelope`)
+and folded into EVERY iteration's scoring via `ScoreInput.empirical_envelope`.
+
+`[score] replicate_rebuild` (default `true`): the rebuild between replicates is
+the POINT — it re-rolls codegen/layout. AutoTune forces it build-system-agnostically
+by setting a distinct, inert `RUSTFLAGS="--cfg autotune_baseline_replicate=\"K\""`
+per replicate, which changes Cargo's build fingerprint so the project recompiles.
+Set `false` for a cheaper no-rebuild spread (captures only re-run jitter — much
+weaker, but free of recompiles). Deterministic tasks ignore `N` entirely.
+
+### Option 5: `[score] confirm_significant = true` (default `false`)
+
+When a perf task enables it, after the first scoring pass any metric that DROVE
+the keep/discard decision **and** was significant (delta beyond the envelope) is
+re-confirmed: the candidate is re-measured ONCE (rebuild + re-run via the same
+`RUSTFLAGS` cfg trick), and each driving metric's significance is re-checked
+against the freshly-measured value. A driving metric that no longer reproduces as
+significant is added to `excluded_metrics` (treated as noise) and the candidate
+is re-scored, so a **one-off swing never flips a decision**. A metric that
+reproduces stands. Cost is bounded to one extra full measurement pass — the
+measure command emits all metrics together, so the targeting is in *which
+metrics' significance we re-check* (only the drivers via `significant_driving_metrics`),
+not in isolating a single bench. The re-measured candidate values + variances
+replace the one-off measurement on the recorded row; the ledger `reason` and the
+`phase.decision` trace record that a confirmation pass ran and its outcome.
+
+### Backward-compat pins
+
+- `empty_empirical_envelope_reproduces_legacy_rank_exactly` (`weighted_sum.rs`):
+  an empty empirical map + no variances ⇒ the documented #18 rank/decision,
+  bit-for-bit.
+- `noise_envelope_zero_empirical_is_identity` (`lib.rs`): `empirical == 0.0`
+  leaves the within-run envelope untouched.
+- Scenario `scenario_within_noise_regression_is_not_counted` runs with the knobs
+  at their defaults and still asserts the #18 outcome.
+
+### Cost implications
+
+- `baseline_replicates = N` ⇒ `N` extra full baseline measurements ONCE at task
+  start (each a rebuild + bench run). A one-time cost amortized over the run.
+- `confirm_significant` ⇒ at most one extra measurement pass per iteration, and
+  only when a significant metric drove the decision (the common no-significant
+  iteration pays nothing).
+- Both are no-ops for deterministic (non-criterion) tasks.
+
+### Determinism / isolation recommendations (option 3)
+
+Replication (option 1) is the real mitigation for cross-build noise, but reduce
+the noise at the source too:
+
+- **Isolate bench binaries** so unrelated metrics don't share a process — a
+  layout change in one shouldn't perturb another's measurement.
+- **`codegen-units = 1`** (and a fixed `opt-level`) in the bench profile so
+  codegen is more reproducible build-to-build.
+- **Pin CPU frequency** (disable turbo / set a fixed governor) and quiesce the
+  machine; thermal/frequency drift is a large noise source.
+- Remember the **within-run-vs-cross-build distinction**: criterion's CI will
+  look tight even while cross-build swings are huge. Don't trust a tight CI as
+  proof a delta is real on a perf task — that's exactly what option 1 measures.
+
+A measure can already set its own build environment by putting it in the measure
+`command` (e.g. `["sh","-c","RUSTFLAGS=… cargo bench …"]`), and AutoTune passes
+per-replicate/confirmation env through `run_all_measures_with_output_env`. No
+dedicated per-measure `env`/`RUSTFLAGS` config key was added — the command-level
+escape hatch covers it.
+
 ## Causal attribution (opt-in)
 
 `[[measure]] sources = ["glob/**", …]` declares which source paths a measure
@@ -201,13 +295,23 @@ See:
   `with_noise_guardrails`, the veto loop in `calculate`.
 
 - `crates/autotune-score/src/lib.rs` — `MetricVariance`, `NoiseConfig`,
-  `noise_envelope`, `within_noise`, `ScoreInput.{candidate_variances,
-  best_variances, noise, excluded_metrics}`.
+  `noise_envelope` (now MAX of within-run and `empirical`), `within_noise`,
+  `empirical_cross_build_envelope`, `ScoreInput.{candidate_variances,
+  best_variances, noise, excluded_metrics, empirical_envelope}`.
 - `crates/autotune-adaptor/src/criterion.rs` — `extract_variances`,
   `estimates_files`.
+- `crates/autotune-config/src/lib.rs` — `ScoreConfig::{baseline_replicates,
+  replicate_rebuild, confirm_significant}`.
+- `crates/autotune-benchmark/src/lib.rs` — `run_all_measures_with_output_env`
+  (per-replicate/confirmation `RUSTFLAGS` passthrough).
+- `crates/autotune-state/src/lib.rs` — `TaskStore::{save,load}_empirical_envelope`
+  (the persisted `noise_envelope.json`).
+- `crates/autotune/src/main.rs` — `collect_baseline_replicate_envelope` (option 1).
 - `crates/autotune/src/machine.rs` — `run_measuring` (variance capture + copy),
-  `best_variances_from_ledger`, `run_scoring`, `build_score_breakdown`,
-  `metric_sources`, `causally_unrelated_metrics`.
+  `best_variances_from_ledger`, `run_scoring` (loads the empirical envelope,
+  runs confirmation), `run_confirmation_pass` + `significant_driving_metrics`
+  (option 5), `build_score_breakdown`, `metric_sources`,
+  `causally_unrelated_metrics`.
 
 ## Footgun: manual edits to the advancing branch diverge from the ledger
 
