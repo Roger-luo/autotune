@@ -534,6 +534,9 @@ fn parse_measure(reader: &mut Reader<&[u8]>) -> Result<MeasureConfig, AgentError
         command,
         timeout: timeout.unwrap_or(600),
         adaptor,
+        // `sources` (causal-attribution globs) are opt-in and hand-edited into
+        // `.autotune.toml`; the init XML protocol doesn't emit them yet.
+        sources: Vec::new(),
     })
 }
 
@@ -732,8 +735,16 @@ fn parse_score(reader: &mut Reader<&[u8]>) -> Result<ScoreConfig, AgentError> {
         "weighted_sum" => Ok(ScoreConfig::WeightedSum {
             primary_metrics,
             guardrail_metrics,
+            // Noise-gate tuning is opt-in and hand-edited into `.autotune.toml`;
+            // the init XML protocol uses the backward-compatible identity.
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         }),
-        "threshold" => Ok(ScoreConfig::Threshold { conditions }),
+        "threshold" => Ok(ScoreConfig::Threshold {
+            conditions,
+            noise_threshold: 0.0,
+            noise_k: 2.0,
+        }),
         "script" => Ok(ScoreConfig::Script { command }),
         "command" => Ok(ScoreConfig::Command { command }),
         other => Err(AgentError::ParseFailed {
@@ -1161,7 +1172,7 @@ mod tests {
         let xml = r#"<score><type>threshold</type><condition><metric>latency_ms</metric><direction>Minimize</direction><threshold>5.0</threshold></condition></score>"#;
         let frags = parse_agent_response(xml).unwrap();
         match &frags[0] {
-            AgentFragment::Score(ScoreConfig::Threshold { conditions }) => {
+            AgentFragment::Score(ScoreConfig::Threshold { conditions, .. }) => {
                 assert_eq!(conditions.len(), 1);
                 assert_eq!(conditions[0].metric, "latency_ms");
                 assert!(matches!(conditions[0].direction, Direction::Minimize));
@@ -1217,6 +1228,7 @@ mod tests {
             AgentFragment::Score(ScoreConfig::WeightedSum {
                 primary_metrics,
                 guardrail_metrics,
+                ..
             }) => {
                 assert_eq!(primary_metrics[0].direction, Direction::Minimize);
                 assert_eq!(primary_metrics[0].weight, 2.0);

@@ -11,6 +11,27 @@ use std::cell::RefCell;
 
 pub type Metrics = HashMap<String, f64>;
 
+/// A per-metric noise estimate persisted on the ledger so the `best` row's
+/// variance can be recovered at scoring time (the iteration worktree is gone by
+/// then). Mirrors `autotune_adaptor::MetricVariance` / `autotune_score::
+/// MetricVariance` — the three are mapped at the `main.rs`/`benchmark`
+/// boundaries, like the parallel `Direction` enums, so each crate stays a leaf.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct MetricVariance {
+    /// Standard deviation of the metric's samples, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stddev: Option<f64>,
+    /// Lower bound of the metric's confidence interval, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_lower: Option<f64>,
+    /// Upper bound of the metric's confidence interval, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_upper: Option<f64>,
+}
+
+/// Per-metric noise estimates keyed by metric name.
+pub type Variances = HashMap<String, MetricVariance>;
+
 fn default_backend() -> String {
     "claude".to_string()
 }
@@ -99,6 +120,12 @@ pub struct ApproachState {
     pub commit_sha: Option<String>,
     pub test_results: Vec<TestResult>,
     pub metrics: Option<Metrics>,
+    /// Per-metric noise estimates measured alongside `metrics` (criterion CI /
+    /// stddev). Carried so the Scoring phase can feed the candidate's variance
+    /// to the noise gate, and so the kept row can persist it for the next
+    /// iteration's `best` envelope. Empty when the adaptor supplied none.
+    #[serde(default)]
+    pub variances: Variances,
     pub rank: Option<f64>,
     /// Files the research agent proposed for the implementation agent to
     /// modify. Persisted on the approach so a crash between Planning and
@@ -197,6 +224,13 @@ pub struct IterationRecord {
     /// written before this feature, and on rows that never produced a commit.
     #[serde(default)]
     pub changed_files: Option<Vec<String>>,
+    /// Per-metric noise estimates measured for this iteration (criterion CI /
+    /// stddev). Persisted so a later iteration can recover this row's variance
+    /// when it is selected as `best`, sizing the noise envelope. Empty when no
+    /// adaptor supplied variance. `#[serde(default)]` keeps older ledgers
+    /// loadable.
+    #[serde(default)]
+    pub variances: Variances,
     pub timestamp: DateTime<Utc>,
 }
 
@@ -242,6 +276,25 @@ pub struct MetricBreakdown {
     /// `weight * improvement_vs_best` — this metric's contribution to the rank,
     /// if available from the scorer (weighted-sum).
     pub contribution: Option<f64>,
+    /// Per-metric noise estimate (criterion confidence interval / stddev) used
+    /// to size the significance envelope. `None` when the adaptor supplied no
+    /// variance (regex/script). `#[serde(default)]` keeps older ledgers
+    /// loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variance: Option<MetricVariance>,
+    /// True when this metric's raw delta did NOT exceed the noise envelope and
+    /// was therefore excluded from the rank/weighted-sum contribution AND from
+    /// regression accounting (the change is indistinguishable from re-run
+    /// jitter). `#[serde(default)]` (= `false`) keeps older ledgers loadable.
+    #[serde(default)]
+    pub within_noise: bool,
+    /// True when the iteration's `changed_files` do not intersect this metric's
+    /// configured `sources` globs — the change cannot causally explain a delta
+    /// in code it never touched, so the metric is excluded from regression
+    /// accounting. `false` (the default) when no `sources` are configured or
+    /// they do intersect. `#[serde(default)]` keeps older ledgers loadable.
+    #[serde(default)]
+    pub causally_unrelated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -898,9 +951,24 @@ mod tests {
                     weight: Some(1.0),
                     improvement_vs_best: Some(0.2),
                     contribution: Some(0.2),
+                    variance: Some(MetricVariance {
+                        stddev: Some(0.5),
+                        ci_lower: Some(7.5),
+                        ci_upper: Some(8.5),
+                    }),
+                    within_noise: false,
+                    causally_unrelated: false,
                 }],
             }),
             changed_files: Some(vec!["src/lib.rs".to_string()]),
+            variances: HashMap::from([(
+                "latency".to_string(),
+                MetricVariance {
+                    stddev: Some(0.5),
+                    ci_lower: Some(7.5),
+                    ci_upper: Some(8.5),
+                },
+            )]),
             timestamp: Utc::now(),
         };
 
@@ -911,6 +979,67 @@ mod tests {
         assert_eq!(bd.decision, "keep");
         assert_eq!(bd.metrics[0].direction.as_deref(), Some("lower"));
         assert_eq!(bd.metrics[0].contribution, Some(0.2));
+        assert_eq!(
+            bd.metrics[0].variance.unwrap().ci_lower,
+            Some(7.5),
+            "variance must round-trip on the breakdown"
+        );
+        assert!(!bd.metrics[0].within_noise);
+        assert!(!bd.metrics[0].causally_unrelated);
         assert_eq!(back.changed_files.unwrap(), vec!["src/lib.rs".to_string()]);
+        assert_eq!(back.variances["latency"].ci_upper, Some(8.5));
+    }
+
+    /// A ledger written before noise-aware scoring (no `variances` on the row,
+    /// no `variance`/`within_noise`/`causally_unrelated` on the breakdown) must
+    /// still deserialize, with the new fields defaulting. Pins the
+    /// backward-compatibility guarantee for the noise feature.
+    #[test]
+    fn legacy_breakdown_without_noise_fields_deserializes() {
+        let legacy_json = r#"{
+            "iteration": 2,
+            "approach": "trim-allocs",
+            "status": "kept",
+            "metrics": {"latency": 8.0},
+            "rank": 0.2,
+            "score": "keep",
+            "score_breakdown": {
+                "decision": "keep",
+                "metrics": [{
+                    "name": "latency",
+                    "baseline": 10.0,
+                    "candidate": 8.0,
+                    "best": 10.0,
+                    "delta_vs_baseline": -2.0,
+                    "delta_vs_best": -2.0,
+                    "direction": "lower",
+                    "weight": 1.0,
+                    "improvement_vs_best": 0.2,
+                    "contribution": 0.2
+                }]
+            },
+            "timestamp": "2026-04-15T00:00:00Z"
+        }"#;
+        let record: IterationRecord = serde_json::from_str(legacy_json).unwrap();
+        assert!(record.variances.is_empty());
+        let bd = record.score_breakdown.unwrap();
+        assert_eq!(bd.metrics[0].variance, None);
+        assert!(!bd.metrics[0].within_noise);
+        assert!(!bd.metrics[0].causally_unrelated);
+    }
+
+    /// A `MetricVariance` with only a stddev (no CI) round-trips, and the CI
+    /// fields are omitted from the serialized form (`skip_serializing_if`).
+    #[test]
+    fn metric_variance_partial_roundtrips_and_omits_none() {
+        let v = MetricVariance {
+            stddev: Some(3.0),
+            ci_lower: None,
+            ci_upper: None,
+        };
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, r#"{"stddev":3.0}"#);
+        let back: MetricVariance = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, v);
     }
 }

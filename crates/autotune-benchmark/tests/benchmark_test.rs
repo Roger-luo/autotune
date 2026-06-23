@@ -20,6 +20,7 @@ fn make_regex_measure(name: &str, command_output: &str, metric_name: &str) -> Me
                 pattern: r"([0-9.]+)".to_string(),
             }],
         },
+        sources: vec![],
     }
 }
 
@@ -54,6 +55,7 @@ fn task_command_failure() {
         ]),
         timeout: 30,
         adaptor: AdaptorConfig::Regex { patterns: vec![] },
+        sources: vec![],
     };
 
     let err = run_measure(&config, std::path::Path::new(".")).unwrap_err();
@@ -77,6 +79,7 @@ fn script_adaptor_task_extraction() {
                 r#"echo '{"fidelity": 0.97}'"#.to_string(),
             ],
         },
+        sources: vec![],
     };
 
     let metrics = run_measure(&config, std::path::Path::new(".")).unwrap();
@@ -94,6 +97,7 @@ fn task_command_times_out() {
         ]),
         timeout: 1,
         adaptor: AdaptorConfig::Regex { patterns: vec![] },
+        sources: vec![],
     };
 
     let started = Instant::now();
@@ -136,6 +140,7 @@ echo '{"cwd_metric": 7.0}'
                 "./extract.sh".to_string(),
             ],
         },
+        sources: vec![],
     };
 
     let metrics = run_measure(&config, workdir).unwrap();
@@ -158,6 +163,7 @@ fn task_does_not_false_timeout_when_stdout_is_verbose() {
                 pattern: r"(42\.5)".to_string(),
             }],
         },
+        sources: vec![],
     };
 
     let metrics = run_measure(&config, Path::new(".")).unwrap();
@@ -177,6 +183,7 @@ fn task_timeout_kills_background_descendants() {
         ]),
         timeout: 1,
         adaptor: AdaptorConfig::Regex { patterns: vec![] },
+        sources: vec![],
     };
 
     let err = run_measure(&config, Path::new(".")).unwrap_err();

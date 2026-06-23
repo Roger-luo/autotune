@@ -153,6 +153,7 @@ fn build_planning_prompt_includes_last_iteration() {
         reverted_iteration: None,
         score_breakdown: None,
         changed_files: None,
+        variances: Default::default(),
         timestamp: Utc::now(),
     };
 

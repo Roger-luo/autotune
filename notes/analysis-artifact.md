@@ -7,8 +7,12 @@ re-joining the scattered per-iteration files** (`ledger.json`, per-iteration
 `metrics.json`, raw measure stdout/stderr, etc.).
 
 Built by `build_analysis_json` in `crates/autotune/src/main.rs`. The shape is
-versioned by `ANALYSIS_SCHEMA_VERSION` (currently `1`) — bump it on any breaking
+versioned by `ANALYSIS_SCHEMA_VERSION` (currently `2`) — bump it on any breaking
 change.
+
+- **v1**: initial structured score breakdown + changed-files + measure-output refs.
+- **v2**: noise-aware additions (see below). Purely additive — every new field
+  defaults — but bumped so consumers can detect the noise model is present.
 
 ## Two commands, one artifact
 
@@ -48,6 +52,9 @@ Top-level object:
   - `reason`, `commit_sha`, `reverted_iteration`, `fix_attempts`,
     `fresh_spawns`, `timestamp`,
   - `metrics` — this iteration's measured values,
+  - `variances` — per-metric noise estimates (`{stddev?, ci_lower?, ci_upper?}`)
+    keyed by metric name; `{}` when no adaptor (only criterion) supplied them.
+    Persisted so a later iteration's `best` envelope can recover them (v2),
   - `changed_files` — the files this iteration's commit touched vs its parent on
     the advancing branch (see below); `null` if not captured,
   - `score_breakdown` — the structured per-metric breakdown (see below),
@@ -72,7 +79,13 @@ Each `MetricBreakdown` records, for one scored metric:
 - `improvement_vs_best` — the **direction-normalized** improvement fraction that
   actually feeds the rank (weighted-sum only), or `null`,
 - `contribution` — `weight * improvement_vs_best`, this metric's share of the
-  rank (weighted-sum only), or `null`.
+  rank (weighted-sum only), or `null` — forced to `0.0` when `within_noise`,
+- `variance` (v2) — the per-metric noise estimate (`{stddev?, ci_lower?,
+  ci_upper?}`) used to size the significance envelope; omitted when none,
+- `within_noise` (v2) — `true` when the raw delta did NOT exceed the noise
+  envelope and was excluded from the rank and from regression accounting,
+- `causally_unrelated` (v2) — `true` when the iteration's `changed_files` don't
+  intersect this metric's measure `sources` globs (opt-in; defaults `false`).
 
 The breakdown is populated at the Scoring phase (`run_scoring` →
 `build_score_breakdown`) and carried on `ApproachState.score_breakdown` to the
@@ -104,12 +117,14 @@ state files written before this feature still deserialize (their new fields read
 as `None`). Pinned by `legacy_iteration_record_without_analysis_fields_*`
 tests in `crates/autotune-state/src/lib.rs`.
 
-## Deferred follow-up: variance / confidence intervals
+## Variance / confidence intervals (landed in v2)
 
-The artifact does NOT yet capture per-metric stddev/CIs (e.g. copying criterion
-`estimates.json`). That's valuable for noise-aware scoring but was deferred to
-keep this change focused. When added, it should hang off each `MetricBreakdown`
-(or the matrix entries) so the schema bump is localized.
+The follow-up #14 deferred is implemented: per-metric stddev/CIs are captured
+from criterion's `estimates.json`, hung off `MetricBreakdown.variance` and the
+per-iteration `variances` map, and feed noise-aware scoring. The raw
+`estimates.json` is copied into `iterations/<NNN>-<slug>/measures/<metric>.estimates.json`
+so it survives the worktree removal. See [scoring-and-rank.md](scoring-and-rank.md)
+for the noise model.
 
 See:
 

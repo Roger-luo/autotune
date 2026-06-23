@@ -10,11 +10,7 @@ fn make_input(best: &[(&str, f64)], candidate: &[(&str, f64)]) -> ScoreInput {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     };
 
-    ScoreInput {
-        baseline: to_map(best),
-        candidate: to_map(candidate),
-        best: to_map(best),
-    }
+    ScoreInput::new(to_map(best), to_map(candidate), to_map(best))
 }
 
 #[test]
@@ -132,14 +128,14 @@ fn weighted_sum_zero_best_improvement_is_not_neutral() {
     );
 
     let input = make_input(&[("m", 100.0)], &[("m", 1.0)]);
-    let input = ScoreInput {
-        baseline: input.baseline,
-        candidate: input.candidate,
-        best: [("m", 0.0)]
+    let input = ScoreInput::new(
+        input.baseline,
+        input.candidate,
+        [("m", 0.0)]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect(),
-    };
+    );
     let result = scorer.calculate(&input).unwrap();
 
     assert_eq!(result.decision, "keep");
@@ -162,14 +158,14 @@ fn weighted_sum_zero_best_guardrail_blocks() {
     );
 
     let input = make_input(&[("m", 10.0)], &[("m", 1.0)]);
-    let input = ScoreInput {
-        baseline: input.baseline,
-        candidate: input.candidate,
-        best: [("m", 0.0)]
+    let input = ScoreInput::new(
+        input.baseline,
+        input.candidate,
+        [("m", 0.0)]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect(),
-    };
+    );
     let result = scorer.calculate(&input).unwrap();
 
     assert_eq!(result.decision, "discard");
@@ -187,20 +183,20 @@ fn weighted_sum_uses_best_not_baseline() {
         vec![],
     );
 
-    let input = ScoreInput {
-        baseline: [("time", 100.0)]
+    let input = ScoreInput::new(
+        [("time", 100.0)]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect(),
-        candidate: [("time", 60.0)]
+        [("time", 60.0)]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect(),
-        best: [("time", 50.0)]
+        [("time", 50.0)]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect(),
-    };
+    );
     let result = scorer.calculate(&input).unwrap();
 
     assert_eq!(result.decision, "discard");
