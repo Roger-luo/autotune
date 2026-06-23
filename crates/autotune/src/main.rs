@@ -618,6 +618,7 @@ fn build_scorer(config: &AutotuneConfig) -> Box<dyn ScoreCalculator> {
         ScoreConfig::WeightedSum {
             primary_metrics,
             guardrail_metrics,
+            ..
         } => {
             let primary: Vec<PrimaryMetricDef> = primary_metrics
                 .iter()
@@ -637,7 +638,7 @@ fn build_scorer(config: &AutotuneConfig) -> Box<dyn ScoreCalculator> {
                 .collect();
             Box::new(WeightedSumScorer::new(primary, guardrails))
         }
-        ScoreConfig::Threshold { conditions } => {
+        ScoreConfig::Threshold { conditions, .. } => {
             let conds: Vec<ThresholdConditionDef> = conditions
                 .iter()
                 .map(|c| ThresholdConditionDef {
@@ -671,8 +672,29 @@ fn apply_resume_stop_condition_overrides(
     }
 }
 
+/// Convert benchmark/adaptor-layer variances to the state-layer type for
+/// persistence (the two are separate structs so each crate stays a leaf).
+fn state_variances_from_benchmark(
+    variances: &autotune_benchmark::Variances,
+) -> autotune_state::Variances {
+    variances
+        .iter()
+        .map(|(name, v)| {
+            (
+                name.clone(),
+                autotune_state::MetricVariance {
+                    stddev: v.stddev,
+                    ci_lower: v.ci_lower,
+                    ci_upper: v.ci_upper,
+                },
+            )
+        })
+        .collect()
+}
+
 fn build_baseline_record(
     baseline_metrics: std::collections::HashMap<String, f64>,
+    baseline_variances: autotune_state::Variances,
     timestamp: chrono::DateTime<Utc>,
 ) -> IterationRecord {
     IterationRecord {
@@ -690,6 +712,7 @@ fn build_baseline_record(
         reverted_iteration: None,
         score_breakdown: None,
         changed_files: None,
+        variances: baseline_variances,
         timestamp,
     }
 }
@@ -837,8 +860,27 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     }
     baseline_output_files.sort();
 
+    // Capture the baseline's per-metric noise estimates (criterion CI/stddev) so
+    // iteration 1's noise envelope can use the baseline-as-best variance, and
+    // copy the criterion estimates.json into the baseline iteration dir.
+    let baseline_variances =
+        state_variances_from_benchmark(&autotune_benchmark::merge_variances(&baseline_reports));
+    for measure in &config.measure {
+        let files = autotune_benchmark::criterion_estimates_files(measure, &repo_root);
+        if files.is_empty() {
+            continue;
+        }
+        let dest_dir = store.iteration_dir(0, "baseline").join("measures");
+        if std::fs::create_dir_all(&dest_dir).is_ok() {
+            for (metric, src) in files {
+                let _ = std::fs::copy(&src, dest_dir.join(format!("{metric}.estimates.json")));
+            }
+        }
+    }
+
     // Score baseline against itself (rank=0)
-    let baseline_record = build_baseline_record(baseline_metrics.clone(), Utc::now());
+    let baseline_record =
+        build_baseline_record(baseline_metrics.clone(), baseline_variances, Utc::now());
     store
         .append_ledger(&baseline_record)
         .context("failed to record baseline")?;
@@ -1360,6 +1402,7 @@ fn build_research_agent_prompt(
         autotune_config::ScoreConfig::WeightedSum {
             primary_metrics,
             guardrail_metrics,
+            ..
         } => {
             p.push_str("Score is a weighted sum of primary metrics (relative to baseline):\n");
             for m in primary_metrics {
@@ -1377,7 +1420,7 @@ fn build_research_agent_prompt(
                 }
             }
         }
-        autotune_config::ScoreConfig::Threshold { conditions } => {
+        autotune_config::ScoreConfig::Threshold { conditions, .. } => {
             p.push_str("Score uses thresholds:\n");
             for c in conditions {
                 writeln!(p, "- {} {:?} {}", c.metric, c.direction, c.threshold).ok();
@@ -1387,6 +1430,25 @@ fn build_research_agent_prompt(
         | autotune_config::ScoreConfig::Command { command } => {
             writeln!(p, "Score computed via: `{}`", command.join(" ")).ok();
         }
+    }
+
+    // Tell the agent about the noise gate so it doesn't chase metric swings
+    // that scoring will discount as measurement jitter.
+    let (noise_threshold, _noise_k) = config.score.noise_params();
+    let any_variance = config
+        .measure
+        .iter()
+        .any(|m| matches!(m.adaptor, autotune_config::AdaptorConfig::Criterion { .. }));
+    if any_variance || noise_threshold > 0.0 {
+        p.push_str(
+            "\nNoise-aware scoring: a metric's delta only counts (as an improvement \
+             OR a regression) when its magnitude exceeds the measurement-noise \
+             envelope. For criterion benchmarks the envelope is the sum of the \
+             candidate's and best's confidence-interval half-widths; otherwise it \
+             is `noise_threshold * |best|`. Within-noise deltas are excluded from \
+             the rank and from regression reporting — don't optimize for swings \
+             smaller than the noise.\n",
+        );
     }
 
     p.push_str("\n# Baseline metrics (already collected)\n\n");
@@ -2207,6 +2269,7 @@ fn build_reverted_record(
     reverted_iteration: usize,
     revert_sha: String,
     metrics: autotune_state::Metrics,
+    variances: autotune_state::Variances,
     reason: Option<String>,
 ) -> IterationRecord {
     IterationRecord {
@@ -2224,6 +2287,7 @@ fn build_reverted_record(
         reverted_iteration: Some(reverted_iteration),
         score_breakdown: None,
         changed_files: None,
+        variances,
         timestamp: Utc::now(),
     }
 }
@@ -2348,12 +2412,12 @@ fn cmd_revert(
 
     // The revert commit is already on the branch, so a re-measure failure must
     // NOT abort silently — record the row with empty metrics and warn.
-    let metrics = if no_measure {
+    let (metrics, variances) = if no_measure {
         aprintln!(
             "[autotune] --no-measure: recording revert without fresh metrics — scoring 'best' \
              falls back to the prior measured row; the next iteration re-establishes metrics"
         );
-        Default::default()
+        (Default::default(), Default::default())
     } else {
         match autotune_benchmark::run_all_measures_with_output(
             &config.measure,
@@ -2362,20 +2426,24 @@ fn cmd_revert(
             new_index as u32,
             judge_ctx.as_ref(),
         ) {
-            Ok((metrics, _reports)) => metrics,
+            Ok((metrics, reports)) => (
+                metrics,
+                state_variances_from_benchmark(&autotune_benchmark::merge_variances(&reports)),
+            ),
             Err(e) => {
                 aeprintln!(
                     "[autotune] re-measure failed ({e}); recording the revert with empty \
                      metrics — scoring 'best' falls back to the prior measured row"
                 );
-                Default::default()
+                (Default::default(), Default::default())
             }
         }
     };
 
     // Append the Reverted checkpoint row (counts toward budget like a discard;
     // its metrics feed best-selection).
-    let record = build_reverted_record(new_index, iteration, revert_sha, metrics, reason);
+    let record =
+        build_reverted_record(new_index, iteration, revert_sha, metrics, variances, reason);
     store.append_ledger(&record)?;
 
     state.current_iteration = new_index + 1;
@@ -2585,7 +2653,13 @@ fn build_export_json(
 
 /// Schema version of the self-contained analysis artifact. Bump on any
 /// breaking change to the JSON shape produced by [`build_analysis_json`].
-const ANALYSIS_SCHEMA_VERSION: u32 = 1;
+///
+/// - v1: initial structured score breakdown + changed-files + measure-output refs.
+/// - v2: noise-aware additions — per-iteration `variances`, and `variance` /
+///   `within_noise` / `causally_unrelated` on each `MetricBreakdown`. Purely
+///   additive (all new fields default), but bumped so consumers can detect
+///   the noise model is present.
+const ANALYSIS_SCHEMA_VERSION: u32 = 2;
 
 /// The non-ledger task context needed to build the analysis artifact: name,
 /// optional description, the raw config snapshot, and the research log. Bundled
@@ -2729,6 +2803,7 @@ fn build_analysis_json(
                 "fix_attempts": row.fix_attempts,
                 "fresh_spawns": row.fresh_spawns,
                 "metrics": row.metrics,
+                "variances": row.variances,
                 "changed_files": row.changed_files,
                 "score_breakdown": row.score_breakdown,
                 "measure_output_dir": measure_output_dir,
@@ -2825,6 +2900,7 @@ mod tests {
                             },
                         ],
                     },
+                    sources: vec![],
                 },
                 autotune_config::MeasureConfig {
                     name: "criterion".to_string(),
@@ -2837,6 +2913,7 @@ mod tests {
                             stat: autotune_config::CriterionStat::Mean,
                         }],
                     },
+                    sources: vec![],
                 },
                 autotune_config::MeasureConfig {
                     name: "scripted".to_string(),
@@ -2845,6 +2922,7 @@ mod tests {
                     adaptor: autotune_config::AdaptorConfig::Script {
                         command: vec!["python3".to_string(), "extract.py".to_string()],
                     },
+                    sources: vec![],
                 },
             ],
             score: autotune_config::ScoreConfig::WeightedSum {
@@ -2858,6 +2936,8 @@ mod tests {
                     direction: autotune_config::Direction::Minimize,
                     max_regression: 0.1,
                 }],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
             },
             agent: autotune_config::AgentConfig::default(),
             worktree: autotune_config::WorktreeConfig::default(),
@@ -2895,6 +2975,7 @@ mod tests {
                 fix_history: vec![],
                 score_reason: Some("coverage improved".to_string()),
                 score_breakdown: None,
+                variances: Default::default(),
             }),
         }
     }
@@ -2917,6 +2998,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             },
             IterationRecord {
                 iteration: 2,
@@ -2934,6 +3016,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             },
         ]
     }
@@ -2943,11 +3026,7 @@ mod tests {
             pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
         };
 
-        ScoreInput {
-            baseline: to_map(best),
-            candidate: to_map(candidate),
-            best: to_map(best),
-        }
+        ScoreInput::new(to_map(best), to_map(candidate), to_map(best))
     }
 
     fn command_test_lock() -> &'static Mutex<()> {
@@ -3038,6 +3117,7 @@ mod tests {
                     },
                 ],
             },
+            sources: vec![],
         }];
         std::fs::write(
             repo_root.join(".autotune.toml"),
@@ -3663,6 +3743,8 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                 direction: autotune_config::Direction::Maximize,
                 threshold: 85.0,
             }],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         };
 
         let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[], Path::new(""));
@@ -3803,6 +3885,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             },
             IterationRecord {
                 iteration: 1,
@@ -3830,10 +3913,14 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                         weight: Some(1.0),
                         improvement_vs_best: Some(0.1),
                         contribution: Some(0.1),
+                        variance: None,
+                        within_noise: false,
+                        causally_unrelated: false,
                     }],
                 }),
                 changed_files: Some(vec!["src/hot.rs".to_string()]),
                 timestamp: Utc::now(),
+                variances: Default::default(),
             },
             IterationRecord {
                 iteration: 2,
@@ -3861,10 +3948,14 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                         weight: Some(1.0),
                         improvement_vs_best: Some(-0.0556),
                         contribution: Some(-0.0556),
+                        variance: None,
+                        within_noise: false,
+                        causally_unrelated: false,
                     }],
                 }),
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             },
         ]
     }
@@ -4003,6 +4094,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                     pattern: "metric: ([0-9.]+)".to_string(),
                 }],
             },
+            sources: vec![],
         }];
 
         let metrics = validate_measure_config(&measures, workdir.path()).unwrap();
@@ -4027,6 +4119,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                     pattern: "metric: ([0-9.]+)".to_string(),
                 }],
             },
+            sources: vec![],
         }];
 
         let err = validate_measure_config(&measures, workdir.path()).unwrap_err();
@@ -4053,6 +4146,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                     pattern: "metric: ([0-9.]+)".to_string(),
                 }],
             },
+            sources: vec![],
         }];
 
         let err = validate_measure_config(&measures, workdir.path()).unwrap_err();
@@ -4144,7 +4238,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         let timestamp = Utc::now();
         let metrics = HashMap::from([("line_coverage".to_string(), 72.4)]);
 
-        let record = build_baseline_record(metrics.clone(), timestamp);
+        let record = build_baseline_record(metrics.clone(), Default::default(), timestamp);
 
         assert_eq!(record.iteration, 0);
         assert_eq!(record.approach, "baseline");
@@ -4285,6 +4379,8 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                     threshold: 5.0,
                 },
             ],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         };
         let scorer = build_scorer(&config);
 
@@ -4695,6 +4791,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             score_breakdown: None,
             changed_files: None,
             timestamp: chrono::Utc::now(),
+            variances: Default::default(),
         };
         let ledger = vec![
             mk(0, IterationStatus::Baseline, None, None),

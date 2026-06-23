@@ -39,6 +39,7 @@ fn sample_approach() -> ApproachState {
             output: Some("ok".to_string()),
         }],
         metrics: Some(metrics(&[("time_us", 123.0)])),
+        variances: Default::default(),
         rank: Some(0.25),
         files_to_modify: vec!["src/cache.rs".to_string()],
         impl_session_id: None,
@@ -67,6 +68,7 @@ fn sample_record(iteration: usize, approach: &str) -> IterationRecord {
         reverted_iteration: None,
         score_breakdown: None,
         changed_files: None,
+        variances: Default::default(),
         timestamp: Utc.with_ymd_and_hms(2026, 4, 11, 12, 0, 0).unwrap(),
     }
 }

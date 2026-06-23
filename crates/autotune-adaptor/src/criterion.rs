@@ -1,4 +1,4 @@
-use crate::{AdaptorError, MeasureOutput, MetricAdaptor, Metrics};
+use crate::{AdaptorError, MeasureOutput, MetricAdaptor, MetricVariance, Metrics, Variances};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,47 @@ impl CriterionAdaptor {
             .join(group)
             .join("new")
             .join("estimates.json")
+    }
+
+    /// Resolve the on-disk `estimates.json` path for a benchmark `group`,
+    /// trying the literal path first and falling back to the `full_id` index
+    /// (see [`Self::build_full_id_index`]). `full_id_index` is the lazily-built
+    /// cache shared across benchmarks in a single extraction pass.
+    fn resolve_estimates_path(
+        &self,
+        group: &str,
+        full_id_index: &mut Option<HashMap<String, PathBuf>>,
+    ) -> Result<PathBuf, AdaptorError> {
+        let literal = self.estimates_path(group);
+        if literal.is_file() {
+            return Ok(literal);
+        }
+        // The literal `group` path doesn't exist — Criterion likely sanitized
+        // a '/' inside the group/function id. Resolve via the logical full_id
+        // recorded in benchmark.json.
+        let index = full_id_index.get_or_insert_with(|| self.build_full_id_index());
+        match index.get(group) {
+            Some(new_dir) => Ok(new_dir.join("estimates.json")),
+            None => Err(AdaptorError::CriterionNotFound {
+                path: literal.display().to_string(),
+            }),
+        }
+    }
+
+    /// Resolve, for each configured benchmark, the on-disk `estimates.json`
+    /// path it reads from. Returned as `(metric_name, path)` pairs so a caller
+    /// can copy the file for post-hoc analysis (the iteration worktree is
+    /// removed after integration). Unresolvable benchmarks are skipped — this
+    /// is a best-effort lookup, not the measurement path.
+    pub fn estimates_files(&self) -> Vec<(String, PathBuf)> {
+        let mut index: Option<HashMap<String, PathBuf>> = None;
+        let mut out = Vec::new();
+        for entry in &self.benchmarks {
+            if let Ok(path) = self.resolve_estimates_path(&entry.group, &mut index) {
+                out.push((entry.name.clone(), path));
+            }
+        }
+        out
     }
 
     /// Index every benchmark's logical `full_id` (as printed by `cargo bench`,
@@ -93,6 +134,24 @@ struct CriterionEstimates {
 #[derive(serde::Deserialize)]
 struct CriterionStatValue {
     point_estimate: f64,
+    #[serde(default)]
+    confidence_interval: Option<CriterionConfidenceInterval>,
+}
+
+#[derive(serde::Deserialize)]
+struct CriterionConfidenceInterval {
+    lower_bound: f64,
+    upper_bound: f64,
+}
+
+impl CriterionEstimates {
+    fn stat(&self, stat: &CriterionStat) -> &CriterionStatValue {
+        match stat {
+            CriterionStat::Mean => &self.mean,
+            CriterionStat::Median => &self.median,
+            CriterionStat::StdDev => &self.std_dev,
+        }
+    }
 }
 
 /// The subset of Criterion's `benchmark.json` we need: the logical benchmark id
@@ -102,6 +161,22 @@ struct CriterionBenchmarkMeta {
     full_id: String,
 }
 
+impl CriterionAdaptor {
+    /// Read and parse the `estimates.json` for a benchmark `group`.
+    fn read_estimates(
+        &self,
+        group: &str,
+        full_id_index: &mut Option<HashMap<String, PathBuf>>,
+    ) -> Result<CriterionEstimates, AdaptorError> {
+        let path = self.resolve_estimates_path(group, full_id_index)?;
+        let content =
+            std::fs::read_to_string(&path).map_err(|_| AdaptorError::CriterionNotFound {
+                path: path.display().to_string(),
+            })?;
+        serde_json::from_str(&content).map_err(|source| AdaptorError::CriterionParse { source })
+    }
+}
+
 impl MetricAdaptor for CriterionAdaptor {
     fn extract(&self, _output: &MeasureOutput) -> Result<Metrics, AdaptorError> {
         let mut metrics = Metrics::new();
@@ -109,37 +184,41 @@ impl MetricAdaptor for CriterionAdaptor {
         // needed when a `group` doesn't resolve as a literal path.
         let mut full_id_index: Option<HashMap<String, PathBuf>> = None;
         for entry in &self.benchmarks {
-            let literal = self.estimates_path(&entry.group);
-            let path = if literal.is_file() {
-                literal
-            } else {
-                // The literal `group` path doesn't exist — Criterion likely
-                // sanitized a '/' inside the group/function id. Resolve via the
-                // logical full_id recorded in benchmark.json.
-                let index = full_id_index.get_or_insert_with(|| self.build_full_id_index());
-                match index.get(&entry.group) {
-                    Some(new_dir) => new_dir.join("estimates.json"),
-                    None => {
-                        return Err(AdaptorError::CriterionNotFound {
-                            path: literal.display().to_string(),
-                        });
-                    }
-                }
-            };
-            let content =
-                std::fs::read_to_string(&path).map_err(|_| AdaptorError::CriterionNotFound {
-                    path: path.display().to_string(),
-                })?;
-            let estimates: CriterionEstimates = serde_json::from_str(&content)
-                .map_err(|source| AdaptorError::CriterionParse { source })?;
-            let value = match entry.stat {
-                CriterionStat::Mean => estimates.mean.point_estimate,
-                CriterionStat::Median => estimates.median.point_estimate,
-                CriterionStat::StdDev => estimates.std_dev.point_estimate,
-            };
-            metrics.insert(entry.name.clone(), value);
+            let estimates = self.read_estimates(&entry.group, &mut full_id_index)?;
+            metrics.insert(
+                entry.name.clone(),
+                estimates.stat(&entry.stat).point_estimate,
+            );
         }
         Ok(metrics)
+    }
+
+    /// Read the confidence interval (and the std_dev point estimate) criterion
+    /// records next to each benchmark's mean, so the scorer can size a noise
+    /// envelope. The CI is the selected stat's own interval; the stddev is the
+    /// `std_dev` point estimate (a single number criterion always reports).
+    fn extract_variances(&self, _output: &MeasureOutput) -> Result<Variances, AdaptorError> {
+        let mut variances = Variances::new();
+        let mut full_id_index: Option<HashMap<String, PathBuf>> = None;
+        for entry in &self.benchmarks {
+            let estimates = self.read_estimates(&entry.group, &mut full_id_index)?;
+            let stat = estimates.stat(&entry.stat);
+            let (ci_lower, ci_upper) = match &stat.confidence_interval {
+                Some(ci) => (Some(ci.lower_bound), Some(ci.upper_bound)),
+                None => (None, None),
+            };
+            let variance = MetricVariance {
+                // The std_dev point estimate is the dispersion of the samples;
+                // it stands in for k·sigma noise sizing when no CI is present.
+                stddev: Some(estimates.std_dev.point_estimate),
+                ci_lower,
+                ci_upper,
+            };
+            if !variance.is_empty() {
+                variances.insert(entry.name.clone(), variance);
+            }
+        }
+        Ok(variances)
     }
 }
 
@@ -160,6 +239,24 @@ mod tests {
         std::fs::create_dir_all(&group_dir).unwrap();
         let json = format!(
             r#"{{"mean":{{"point_estimate":{mean}}},"median":{{"point_estimate":{median}}},"std_dev":{{"point_estimate":{std_dev}}}}}"#
+        );
+        std::fs::write(group_dir.join("estimates.json"), json).unwrap();
+    }
+
+    /// Write an estimates.json shaped the way real criterion writes it: each
+    /// stat carries a `confidence_interval` with lower/upper bounds.
+    fn write_estimates_with_ci(
+        dir: &std::path::Path,
+        group: &str,
+        mean: f64,
+        mean_ci: (f64, f64),
+        std_dev: f64,
+    ) {
+        let group_dir = dir.join(group).join("new");
+        std::fs::create_dir_all(&group_dir).unwrap();
+        let (lo, hi) = mean_ci;
+        let json = format!(
+            r#"{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":{lo},"upper_bound":{hi}}},"point_estimate":{mean}}},"median":{{"point_estimate":{mean}}},"std_dev":{{"point_estimate":{std_dev}}}}}"#
         );
         std::fs::write(group_dir.join("estimates.json"), json).unwrap();
     }
@@ -331,5 +428,77 @@ mod tests {
 
         let metrics = adaptor.extract(&dummy_output()).unwrap();
         assert_eq!(metrics["m"], 11.0);
+    }
+
+    /// The adaptor reads the confidence interval and std_dev criterion writes
+    /// next to the mean, populating a `MetricVariance` per benchmark. The CI
+    /// half-width is `(upper - lower) / 2`.
+    #[test]
+    fn criterion_extracts_variance_from_estimates_json() {
+        let dir = tempfile::tempdir().unwrap();
+        write_estimates_with_ci(dir.path(), "bench", 100.0, (90.0, 110.0), 7.5);
+
+        let adaptor = CriterionAdaptor::new(
+            dir.path(),
+            vec![CriterionBenchmarkEntry {
+                name: "m".to_string(),
+                group: "bench".to_string(),
+                stat: CriterionStat::Mean,
+            }],
+        );
+
+        let variances = adaptor.extract_variances(&dummy_output()).unwrap();
+        let v = &variances["m"];
+        assert_eq!(v.stddev, Some(7.5));
+        assert_eq!(v.ci_lower, Some(90.0));
+        assert_eq!(v.ci_upper, Some(110.0));
+        assert_eq!(v.ci_half_width(), Some(10.0));
+    }
+
+    /// An estimates.json without a `confidence_interval` (older criterion, or a
+    /// hand-written fixture) still yields a variance carrying just the stddev —
+    /// the CI fields stay `None` and `ci_half_width` is `None`.
+    #[test]
+    fn criterion_variance_without_ci_carries_only_stddev() {
+        let dir = tempfile::tempdir().unwrap();
+        write_estimates(dir.path(), "bench", 100.0, 98.0, 5.0);
+
+        let adaptor = CriterionAdaptor::new(
+            dir.path(),
+            vec![CriterionBenchmarkEntry {
+                name: "m".to_string(),
+                group: "bench".to_string(),
+                stat: CriterionStat::Mean,
+            }],
+        );
+
+        let variances = adaptor.extract_variances(&dummy_output()).unwrap();
+        let v = &variances["m"];
+        assert_eq!(v.stddev, Some(5.0));
+        assert_eq!(v.ci_lower, None);
+        assert_eq!(v.ci_half_width(), None);
+    }
+
+    /// `estimates_files` resolves the on-disk path for each benchmark so a
+    /// caller can copy it for post-hoc analysis (after the worktree is gone).
+    #[test]
+    fn criterion_estimates_files_resolves_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        write_estimates_with_ci(dir.path(), "bench", 100.0, (90.0, 110.0), 7.5);
+
+        let adaptor = CriterionAdaptor::new(
+            dir.path(),
+            vec![CriterionBenchmarkEntry {
+                name: "m".to_string(),
+                group: "bench".to_string(),
+                stat: CriterionStat::Mean,
+            }],
+        );
+
+        let files = adaptor.estimates_files();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "m");
+        assert!(files[0].1.ends_with("bench/new/estimates.json"));
+        assert!(files[0].1.is_file());
     }
 }

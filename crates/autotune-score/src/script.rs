@@ -50,11 +50,11 @@ mod tests {
     use crate::{ScoreCalculator, ScoreError, ScoreInput};
 
     fn empty_input() -> ScoreInput {
-        ScoreInput {
-            baseline: std::collections::HashMap::new(),
-            candidate: std::collections::HashMap::new(),
-            best: std::collections::HashMap::new(),
-        }
+        ScoreInput::new(
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        )
     }
 
     #[test]

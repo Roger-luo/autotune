@@ -225,6 +225,7 @@ mod tests {
             commit_sha: commit_sha.map(|s| s.to_string()),
             test_results: vec![],
             metrics,
+            variances: Default::default(),
             rank: None,
             files_to_modify: vec![],
             impl_session_id: None,
