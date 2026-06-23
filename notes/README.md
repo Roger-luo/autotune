@@ -23,6 +23,10 @@ took you a while to figure out and would not be obvious from reading the code.
 - [scoring-and-rank.md](scoring-and-rank.md) — What `rank` means today, why the
   baseline row is always `0.0`, and how weighted-sum scoring compares against
   the current best kept result rather than the raw metric value.
+- [analysis-artifact.md](analysis-artifact.md) — The self-contained,
+  machine-readable JSON emitted by `autotune analyze` (and embedded in
+  `autotune export`): metric × iteration matrix, structured per-metric score
+  breakdowns, and per-iteration changed-files. Schema field-by-field.
 - [live-tail-rendering.md](live-tail-rendering.md) — How subprocess/agent output
   is shown as a dimmed rolling tail, the physical-vs-logical-row erase footgun,
   and the terminal-height line-count policy.

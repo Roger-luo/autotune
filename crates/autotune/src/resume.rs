@@ -233,6 +233,7 @@ mod tests {
             fresh_spawns: 0,
             fix_history: vec![],
             score_reason: None,
+            score_breakdown: None,
         }
     }
 

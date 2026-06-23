@@ -134,6 +134,12 @@ pub struct ApproachState {
     /// kept ledger rows can retain the explanation that produced the rank.
     #[serde(default)]
     pub score_reason: Option<String>,
+    /// Structured per-metric score breakdown produced at the Scoring phase,
+    /// carried through to Integrating/recording so the kept (or discarded)
+    /// ledger row can persist it. `#[serde(default)]` keeps older state files
+    /// loadable.
+    #[serde(default)]
+    pub score_breakdown: Option<ScoreBreakdown>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -175,7 +181,67 @@ pub struct IterationRecord {
     /// Set only on `Reverted` rows: the iteration number this revert undid.
     #[serde(default)]
     pub reverted_iteration: Option<usize>,
+    /// Structured, per-metric breakdown of how this iteration was scored
+    /// (baseline/candidate/best values, deltas, direction, and — for the
+    /// weighted-sum scorer — weight + weighted contribution), plus the overall
+    /// keep/discard decision. Populated at the Scoring phase. `None` on rows
+    /// written before this feature existed, on baseline rows (nothing to score
+    /// against), and on crash rows (no metrics were ever taken).
+    #[serde(default)]
+    pub score_breakdown: Option<ScoreBreakdown>,
+    /// Files this iteration's commit changed relative to its parent on the
+    /// advancing branch (`git diff --name-only <sha>^..<sha>`). Lets a
+    /// downstream analyzer judge whether a metric delta is causally plausible
+    /// (e.g. flag a speedup attributed to a diff that never touched the hot
+    /// path). Populated for `Kept` rows at integration time. `None` on rows
+    /// written before this feature, and on rows that never produced a commit.
+    #[serde(default)]
+    pub changed_files: Option<Vec<String>>,
     pub timestamp: DateTime<Utc>,
+}
+
+/// Structured score breakdown for one iteration: the overall decision plus a
+/// per-metric breakdown. Persisted on `IterationRecord` so the analysis
+/// artifact can be assembled from the ledger alone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScoreBreakdown {
+    /// Overall keep/discard decision the scorer returned for this iteration.
+    pub decision: String,
+    /// One entry per primary/scored metric. Order follows the scorer's metric
+    /// definition order.
+    pub metrics: Vec<MetricBreakdown>,
+}
+
+/// Per-metric breakdown for the analysis artifact: the metric's value across
+/// baseline/candidate/best, the deltas vs each, the optimization direction,
+/// and (when the scorer is weighted-sum) the weight and weighted contribution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MetricBreakdown {
+    /// Metric name.
+    pub name: String,
+    /// Value at task baseline (the synthetic baseline ledger row).
+    pub baseline: Option<f64>,
+    /// This iteration's measured value.
+    pub candidate: Option<f64>,
+    /// Value of the current best (the metrics scoring used as `best`).
+    pub best: Option<f64>,
+    /// `candidate - baseline` (raw difference; not direction-normalized).
+    pub delta_vs_baseline: Option<f64>,
+    /// `candidate - best` (raw difference; not direction-normalized).
+    pub delta_vs_best: Option<f64>,
+    /// Optimization direction: `"higher"` if higher is better, `"lower"` if
+    /// lower is better. `None` when the scorer doesn't declare a direction
+    /// (e.g. a script scorer).
+    pub direction: Option<String>,
+    /// Weight applied to this metric in the weighted sum, if the scorer is
+    /// weighted-sum. `None` for threshold/script scorers.
+    pub weight: Option<f64>,
+    /// Direction-normalized improvement vs `best`, as a fraction, if available
+    /// from the scorer (weighted-sum). This is what feeds the rank.
+    pub improvement_vs_best: Option<f64>,
+    /// `weight * improvement_vs_best` — this metric's contribution to the rank,
+    /// if available from the scorer (weighted-sum).
+    pub contribution: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -777,5 +843,74 @@ mod tests {
         assert_eq!(record.status, IterationStatus::Reverted);
         assert_eq!(record.commit_sha.as_deref(), Some("deadbeef"));
         assert_eq!(record.reverted_iteration, Some(5));
+    }
+
+    /// The analysis fields (`score_breakdown`, `changed_files`) default to None
+    /// so a ledger written before this feature still deserializes. Pins the
+    /// backward-compatibility guarantee for the analysis-artifact work.
+    #[test]
+    fn legacy_iteration_record_without_analysis_fields_deserializes() {
+        let legacy_json = r#"{
+            "iteration": 3,
+            "approach": "specialize-rzz",
+            "status": "kept",
+            "metrics": {"latency": 12.0},
+            "rank": 0.1,
+            "commit_sha": "abc123",
+            "reverted_iteration": null,
+            "timestamp": "2026-04-15T00:00:00Z"
+        }"#;
+        let record: IterationRecord = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(record.score_breakdown, None);
+        assert_eq!(record.changed_files, None);
+        // The fields that did exist still load.
+        assert_eq!(record.commit_sha.as_deref(), Some("abc123"));
+    }
+
+    /// A row carrying a full structured score breakdown + changed files
+    /// round-trips through serde. Pins the on-disk shape the analysis artifact
+    /// reads back.
+    #[test]
+    fn iteration_record_with_analysis_fields_roundtrips() {
+        let record = IterationRecord {
+            iteration: 2,
+            approach: "trim-allocs".to_string(),
+            status: IterationStatus::Kept,
+            hypothesis: Some("fewer allocations".to_string()),
+            metrics: HashMap::from([("latency".to_string(), 8.0)]),
+            rank: 0.2,
+            score: Some("keep".to_string()),
+            reason: Some("latency: 20.00%".to_string()),
+            fix_attempts: 0,
+            fresh_spawns: 0,
+            commit_sha: Some("def456".to_string()),
+            reverted_iteration: None,
+            score_breakdown: Some(ScoreBreakdown {
+                decision: "keep".to_string(),
+                metrics: vec![MetricBreakdown {
+                    name: "latency".to_string(),
+                    baseline: Some(10.0),
+                    candidate: Some(8.0),
+                    best: Some(10.0),
+                    delta_vs_baseline: Some(-2.0),
+                    delta_vs_best: Some(-2.0),
+                    direction: Some("lower".to_string()),
+                    weight: Some(1.0),
+                    improvement_vs_best: Some(0.2),
+                    contribution: Some(0.2),
+                }],
+            }),
+            changed_files: Some(vec!["src/lib.rs".to_string()]),
+            timestamp: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&record).unwrap();
+        let back: IterationRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(record, back);
+        let bd = back.score_breakdown.unwrap();
+        assert_eq!(bd.decision, "keep");
+        assert_eq!(bd.metrics[0].direction.as_deref(), Some("lower"));
+        assert_eq!(bd.metrics[0].contribution, Some(0.2));
+        assert_eq!(back.changed_files.unwrap(), vec!["src/lib.rs".to_string()]);
     }
 }

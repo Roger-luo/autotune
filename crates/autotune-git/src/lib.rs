@@ -262,6 +262,48 @@ pub fn log_oneline(dir: &Path, base: &str) -> Result<Vec<String>, GitError> {
         .collect())
 }
 
+/// Return the files a commit changed relative to its first parent, as
+/// repo-relative paths (`git diff --name-only <sha>^..<sha>`). Used by the
+/// analysis artifact to record which files each kept iteration touched, so a
+/// downstream analyzer can judge whether a metric delta is causally plausible.
+///
+/// A root commit (no parent) has nothing to diff against `^`, so this falls
+/// back to diffing against the empty tree — i.e. every file the commit
+/// introduced. Returns an empty `Vec` when the commit changed nothing.
+pub fn diff_name_only(dir: &Path, sha: &str) -> Result<Vec<String>, GitError> {
+    let range = format!("{sha}^..{sha}");
+    let output = match git(
+        dir,
+        &[
+            OsStr::new("diff"),
+            OsStr::new("--name-only"),
+            OsStr::new(&range),
+        ],
+    ) {
+        Ok(out) => out,
+        // `<sha>^` is unresolvable for a root commit; diff against the empty
+        // tree to list everything the commit introduced.
+        Err(_) => {
+            let empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+            git(
+                dir,
+                &[
+                    OsStr::new("diff"),
+                    OsStr::new("--name-only"),
+                    OsStr::new(empty_tree),
+                    OsStr::new(sha),
+                ],
+            )?
+        }
+    };
+    Ok(output
+        .stdout
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
 /// Returns true if the working tree or index has any uncommitted changes
 /// (including untracked files).
 pub fn has_uncommitted_changes(dir: &Path) -> Result<bool, GitError> {
@@ -655,6 +697,42 @@ mod tests {
         assert!(!sha.is_empty());
         // Full SHA is 40 hex characters
         assert_eq!(sha.len(), 40);
+    }
+
+    #[test]
+    fn diff_name_only_lists_files_a_commit_changed() {
+        let dir = make_repo();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git command");
+        };
+        // A second commit that touches one existing + one new file.
+        fs::write(dir.path().join("README.md"), b"hello world").unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), b"pub fn f() {}").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-m", "second"]);
+
+        let sha = latest_commit_sha(dir.path()).unwrap();
+        let mut files = diff_name_only(dir.path(), &sha).unwrap();
+        files.sort();
+        assert_eq!(
+            files,
+            vec!["README.md".to_string(), "src/lib.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn diff_name_only_handles_root_commit() {
+        // The initial commit has no parent; `<sha>^` is unresolvable, so the
+        // helper must fall back to the empty-tree diff and still list files.
+        let dir = make_repo();
+        let sha = latest_commit_sha(dir.path()).unwrap();
+        let files = diff_name_only(dir.path(), &sha).unwrap();
+        assert_eq!(files, vec!["README.md".to_string()]);
     }
 
     #[test]

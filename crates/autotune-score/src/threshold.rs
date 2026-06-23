@@ -68,6 +68,9 @@ impl ScoreCalculator for ThresholdScorer {
                 "discard".to_string()
             },
             reason: reasons.join(", "),
+            // The threshold scorer has no per-metric weight model; the CLI
+            // still records baseline/candidate/best deltas without it.
+            details: None,
         })
     }
 }

@@ -116,6 +116,8 @@ fn seed_resume_task(project: &Project, state: TaskState) {
             fresh_spawns: 0,
             commit_sha: None,
             reverted_iteration: None,
+            score_breakdown: None,
+            changed_files: None,
             timestamp: Utc::now(),
         })
         .unwrap();
@@ -189,6 +191,141 @@ fn scenario_run_plain_plan_completes_iteration() {
     assert!(
         prompt.contains("# Approach: touch-src"),
         "prompt.md should contain the implementer prompt.\nprompt:\n{prompt}"
+    );
+}
+
+/// End-to-end shape lock for the analysis artifact. After a full run, both
+/// `autotune analyze` (standalone) and `autotune export` (legacy bundle + the
+/// embedded `analysis` key) must emit the documented, versioned, self-contained
+/// JSON: a versioned schema, a metric × iteration matrix with deltas vs
+/// baseline AND vs best, the per-iteration structured score breakdown, and the
+/// raw config snapshot — all derivable from this one file.
+#[test]
+fn scenario_run_export_emits_self_contained_analysis_artifact() {
+    let project = scenario_project();
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>touch-src</approach>\
+               <hypothesis>a harmless edit to verify the loop drives to completion</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let run = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "run should exit cleanly.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    // `autotune analyze` prints the standalone artifact to stdout.
+    let analyze = Command::cargo_bin("autotune")
+        .unwrap()
+        .args(["analyze", "--task", "scenario-task"])
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+    assert!(
+        analyze.status.success(),
+        "analyze should exit cleanly.\nstderr:\n{}",
+        String::from_utf8_lossy(&analyze.stderr)
+    );
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&analyze.stdout).expect("analyze must emit valid JSON");
+
+    // Versioned + task metadata + raw config snapshot for reproducibility.
+    assert_eq!(artifact["schema_version"], serde_json::json!(1));
+    assert_eq!(artifact["task"]["name"], serde_json::json!("scenario-task"));
+    assert!(
+        artifact["config"]
+            .as_str()
+            .unwrap()
+            .contains("name = \"scenario-task\""),
+        "artifact must inline the config snapshot"
+    );
+
+    // Metric matrix: the baseline + scored iteration, with deltas present.
+    assert_eq!(
+        artifact["metric_names"],
+        serde_json::json!(["metric_value"])
+    );
+    let series = artifact["metric_matrix"]["metric_value"]
+        .as_array()
+        .expect("metric matrix series");
+    assert!(
+        series.len() >= 2,
+        "matrix should cover baseline + iteration, got {series:?}"
+    );
+    // Baseline is the anchor (no prior best).
+    assert_eq!(series[0]["delta_vs_best"], serde_json::json!(null));
+    // The scored iteration carries a delta vs baseline.
+    assert!(
+        series
+            .iter()
+            .any(|e| e["delta_vs_baseline"] != serde_json::json!(null)),
+        "a scored iteration must record delta_vs_baseline"
+    );
+
+    // The scored (non-baseline) iteration carries a structured breakdown with
+    // the weighted-sum direction/weight/contribution fields.
+    let iters = artifact["iterations"].as_array().unwrap();
+    let scored = iters
+        .iter()
+        .find(|i| i["approach"] == serde_json::json!("touch-src"))
+        .expect("the planned iteration must appear");
+    let breakdown = &scored["score_breakdown"];
+    assert!(
+        breakdown.is_object(),
+        "scored iteration must have a structured score_breakdown, got {scored}"
+    );
+    assert_eq!(
+        breakdown["metrics"][0]["name"],
+        serde_json::json!("metric_value")
+    );
+    assert_eq!(
+        breakdown["metrics"][0]["direction"],
+        serde_json::json!("lower"),
+        "config declares metric_value as Minimize"
+    );
+    assert!(
+        breakdown["metrics"][0]["weight"] == serde_json::json!(1.0),
+        "weighted-sum weight must be recorded"
+    );
+
+    // `autotune export` stays backward compatible: legacy keys preserved AND
+    // the same analysis artifact embedded under `analysis`.
+    let export_path = project.path().join("export.json");
+    let export = Command::cargo_bin("autotune")
+        .unwrap()
+        .args(["export", "--task", "scenario-task", "--output"])
+        .arg(&export_path)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+    assert!(export.status.success(), "export should exit cleanly");
+    let bundle: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&export_path).unwrap()).unwrap();
+    assert_eq!(bundle["task_name"], serde_json::json!("scenario-task"));
+    assert!(bundle["ledger"].is_array(), "legacy ledger key preserved");
+    assert_eq!(bundle["analysis"]["schema_version"], serde_json::json!(1));
+    assert_eq!(
+        bundle["analysis"]["task"]["name"],
+        serde_json::json!("scenario-task")
     );
 }
 

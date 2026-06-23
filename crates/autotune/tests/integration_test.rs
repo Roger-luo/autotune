@@ -167,6 +167,8 @@ fn setup_task(repo_root: &Path, config: &AutotuneConfig) -> TaskStore {
         fresh_spawns: 0,
         commit_sha: None,
         reverted_iteration: None,
+        score_breakdown: None,
+        changed_files: None,
         timestamp: Utc::now(),
     };
     store.append_ledger(&baseline).unwrap();

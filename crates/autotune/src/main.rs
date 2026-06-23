@@ -52,6 +52,7 @@ fn main() -> Result<()> {
         Commands::Ff { task } => cmd_ff(task),
         Commands::Config(sub) => cmd_config(sub),
         Commands::Export { task, output } => cmd_export(task, output),
+        Commands::Analyze { task, output } => cmd_analyze(task, output),
         Commands::Revert {
             iteration,
             task,
@@ -687,6 +688,8 @@ fn build_baseline_record(
         fresh_spawns: 0,
         commit_sha: None,
         reverted_iteration: None,
+        score_breakdown: None,
+        changed_files: None,
         timestamp,
     }
 }
@@ -2072,8 +2075,24 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
 
     // Load raw config snapshot as a string
     let config_toml = store.load_config_snapshot().unwrap_or_default();
+    let description = description_from_config_snapshot(&config_toml);
 
-    let export = build_export_json(&task_name, &config_toml, &ledger, &log, &state);
+    // Backward compatible: the original export keys (task_name/config/ledger/
+    // log/state) are preserved verbatim; the self-contained analysis artifact
+    // is added under a new `analysis` key so existing consumers keep working.
+    let mut export = build_export_json(&task_name, &config_toml, &ledger, &log, &state);
+    export["analysis"] = build_analysis_json(
+        &AnalysisMeta {
+            task_name: &task_name,
+            description: description.as_deref(),
+            config_toml: &config_toml,
+            log: &log,
+        },
+        &state,
+        &ledger,
+        &store,
+        &repo_root,
+    );
 
     let json = serde_json::to_string_pretty(&export).context("failed to serialize export")?;
     std::fs::write(&output_path, &json)
@@ -2084,6 +2103,74 @@ fn cmd_export(task_name: String, output_path: String) -> Result<()> {
         task_name,
         output_path
     );
+
+    Ok(())
+}
+
+/// Best-effort extraction of `[task].description` from a config-snapshot TOML
+/// string, used to enrich the analysis artifact. A parse failure or missing
+/// key yields `None` rather than an error — the artifact is still useful.
+fn description_from_config_snapshot(config_toml: &str) -> Option<String> {
+    toml::from_str::<toml::Value>(config_toml)
+        .ok()?
+        .get("task")?
+        .get("description")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Emit the self-contained, machine-readable analysis artifact for a task.
+///
+/// Unlike `export` (which bundles config+ledger+log+state and *also* embeds the
+/// analysis under an `analysis` key for backward compatibility), `analyze`
+/// writes ONLY the analysis artifact — the focused, documented, versioned shape
+/// a downstream tool/agent reads. With no `--output`, it prints to stdout.
+fn cmd_analyze(task_name: Option<String>, output_path: Option<String>) -> Result<()> {
+    let repo_root = find_repo_root()?;
+    let autotune_dir = repo_root.join(".autotune");
+
+    let name = match task_name {
+        Some(n) => n,
+        None => load_config(&repo_root)?.task.name,
+    };
+
+    let task_dir = autotune_dir.join("tasks").join(&name);
+    let store = TaskStore::open(&task_dir).with_context(|| {
+        format!(
+            "task '{}' not found at {}",
+            name,
+            rel(&task_dir, &repo_root)
+        )
+    })?;
+
+    let state = store.load_state().context("failed to load state")?;
+    let ledger = store.load_ledger().context("failed to load ledger")?;
+    let log = store.read_log().unwrap_or_default();
+    let config_toml = store.load_config_snapshot().unwrap_or_default();
+    let description = description_from_config_snapshot(&config_toml);
+
+    let analysis = build_analysis_json(
+        &AnalysisMeta {
+            task_name: &name,
+            description: description.as_deref(),
+            config_toml: &config_toml,
+            log: &log,
+        },
+        &state,
+        &ledger,
+        &store,
+        &repo_root,
+    );
+    let json = serde_json::to_string_pretty(&analysis).context("failed to serialize analysis")?;
+
+    match output_path {
+        Some(path) => {
+            std::fs::write(&path, &json)
+                .with_context(|| format!("failed to write analysis to {}", path))?;
+            aprintln!("[autotune] wrote analysis for task '{}' to {}", name, path);
+        }
+        None => println!("{json}"),
+    }
 
     Ok(())
 }
@@ -2135,6 +2222,8 @@ fn build_reverted_record(
         fresh_spawns: 0,
         commit_sha: Some(revert_sha),
         reverted_iteration: Some(reverted_iteration),
+        score_breakdown: None,
+        changed_files: None,
         timestamp: Utc::now(),
     }
 }
@@ -2494,6 +2583,181 @@ fn build_export_json(
     })
 }
 
+/// Schema version of the self-contained analysis artifact. Bump on any
+/// breaking change to the JSON shape produced by [`build_analysis_json`].
+const ANALYSIS_SCHEMA_VERSION: u32 = 1;
+
+/// The non-ledger task context needed to build the analysis artifact: name,
+/// optional description, the raw config snapshot, and the research log. Bundled
+/// so [`build_analysis_json`] stays under the argument-count limit and callers
+/// pass a single coherent unit.
+struct AnalysisMeta<'a> {
+    task_name: &'a str,
+    description: Option<&'a str>,
+    config_toml: &'a str,
+    log: &'a str,
+}
+
+/// List the repo-relative raw measure-output files saved for an iteration's
+/// approach, sorted. Empty when the directory is absent or unreadable.
+fn measure_output_files(measure_dir: &Path, repo_root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(measure_dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .map(|p| {
+            p.strip_prefix(repo_root)
+                .unwrap_or(&p)
+                .display()
+                .to_string()
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// Build the self-contained, machine-readable analysis artifact for a task.
+///
+/// This is the ONE file a downstream tool/agent reads to reason about every
+/// improvement/regression without re-joining scattered files. See the
+/// `notes/analysis-artifact.md` schema doc. Stable shape (versioned by
+/// [`ANALYSIS_SCHEMA_VERSION`]):
+///
+/// - `schema_version`: integer.
+/// - `task`: `{ name, description?, phase, iteration }`.
+/// - `config`: raw `.autotune.toml` snapshot string (full reproducibility).
+/// - `log`: the research agent's durable findings (markdown).
+/// - `metric_names`: sorted union of all metric names seen across the ledger.
+/// - `baseline`: `{ iteration, metrics }` for the baseline row (if present).
+/// - `metric_matrix`: per metric name → list of one entry per measured
+///   iteration `{ iteration, status, value, delta_vs_baseline, delta_vs_best }`
+///   where `best` is the running best of prior kept/baseline/reverted rows.
+/// - `iterations`: per-iteration records carrying status, approach, hypothesis,
+///   rank, decision, reason, commit_sha, changed_files, the structured
+///   score_breakdown, the metrics, and references to the raw measure-output
+///   files on disk.
+fn build_analysis_json(
+    meta: &AnalysisMeta,
+    state: &TaskState,
+    ledger: &[IterationRecord],
+    store: &TaskStore,
+    repo_root: &Path,
+) -> serde_json::Value {
+    let task_name = meta.task_name;
+    let description = meta.description;
+    let config_toml = meta.config_toml;
+    let log = meta.log;
+    // Sorted union of every metric name that appears anywhere in the ledger.
+    let mut metric_names: Vec<String> = ledger
+        .iter()
+        .flat_map(|r| r.metrics.keys().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    metric_names.sort();
+
+    let baseline_row = ledger
+        .iter()
+        .find(|r| r.status == IterationStatus::Baseline);
+    let baseline_metrics = baseline_row.map(|r| &r.metrics);
+
+    // Build the metric × iteration matrix. `best` tracks the running best the
+    // same way scoring did: the most recent kept/baseline/reverted row with a
+    // value for this metric, evaluated as of *before* the current row.
+    let metric_matrix: serde_json::Map<String, serde_json::Value> = metric_names
+        .iter()
+        .map(|name| {
+            let mut series = Vec::new();
+            let mut best_so_far: Option<f64> = None;
+            for row in ledger {
+                let counts_for_best = matches!(
+                    row.status,
+                    IterationStatus::Baseline | IterationStatus::Kept | IterationStatus::Reverted
+                );
+                if let Some(&value) = row.metrics.get(name) {
+                    let baseline_val = baseline_metrics.and_then(|m| m.get(name).copied());
+                    series.push(serde_json::json!({
+                        "iteration": row.iteration,
+                        "status": row.status,
+                        "value": value,
+                        "delta_vs_baseline": baseline_val.map(|b| value - b),
+                        "delta_vs_best": best_so_far.map(|b| value - b),
+                    }));
+                    if counts_for_best {
+                        best_so_far = Some(value);
+                    }
+                } else if counts_for_best {
+                    // A kept/reverted row without this metric doesn't refresh
+                    // `best`; leave it as-is (mirrors best_metrics_from_ledger).
+                }
+            }
+            (name.clone(), serde_json::Value::Array(series))
+        })
+        .collect();
+
+    let iterations: Vec<serde_json::Value> = ledger
+        .iter()
+        .map(|row| {
+            // Reference the raw measure-output dir for this iteration, relative
+            // to the repo root so the artifact is portable within a checkout.
+            let measure_dir = store.measure_output_dir(row.iteration, &row.approach);
+            let measure_output_dir = if measure_dir.exists() {
+                Some(
+                    measure_dir
+                        .strip_prefix(repo_root)
+                        .unwrap_or(&measure_dir)
+                        .display()
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            let measure_output_files = measure_output_files(&measure_dir, repo_root);
+
+            serde_json::json!({
+                "iteration": row.iteration,
+                "approach": row.approach,
+                "status": row.status,
+                "hypothesis": row.hypothesis,
+                "rank": row.rank,
+                "decision": row.score,
+                "reason": row.reason,
+                "commit_sha": row.commit_sha,
+                "reverted_iteration": row.reverted_iteration,
+                "fix_attempts": row.fix_attempts,
+                "fresh_spawns": row.fresh_spawns,
+                "metrics": row.metrics,
+                "changed_files": row.changed_files,
+                "score_breakdown": row.score_breakdown,
+                "measure_output_dir": measure_output_dir,
+                "measure_output_files": measure_output_files,
+                "timestamp": row.timestamp,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "schema_version": ANALYSIS_SCHEMA_VERSION,
+        "task": {
+            "name": task_name,
+            "description": description,
+            "phase": format!("{}", state.current_phase),
+            "iteration": state.current_iteration,
+        },
+        "config": config_toml,
+        "log": log,
+        "metric_names": metric_names,
+        "baseline": baseline_row.map(|r| serde_json::json!({
+            "iteration": r.iteration,
+            "metrics": r.metrics,
+        })),
+        "metric_matrix": metric_matrix,
+        "iterations": iterations,
+    })
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
@@ -2630,6 +2894,7 @@ mod tests {
                 fresh_spawns: 0,
                 fix_history: vec![],
                 score_reason: Some("coverage improved".to_string()),
+                score_breakdown: None,
             }),
         }
     }
@@ -2649,6 +2914,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: None,
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             },
             IterationRecord {
@@ -2664,6 +2931,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: None,
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             },
         ]
@@ -3514,6 +3783,209 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         assert_eq!(export["ledger"][1]["status"], json!("kept"));
     }
 
+    /// A ledger fixture carrying a full structured score breakdown + changed
+    /// files on the kept row, used to pin the analysis-artifact shape.
+    fn analysis_ledger() -> Vec<IterationRecord> {
+        vec![
+            IterationRecord {
+                iteration: 0,
+                approach: "baseline".to_string(),
+                status: IterationStatus::Baseline,
+                hypothesis: None,
+                metrics: HashMap::from([("latency_ms".to_string(), 100.0)]),
+                rank: 0.0,
+                score: None,
+                reason: None,
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
+                timestamp: Utc::now(),
+            },
+            IterationRecord {
+                iteration: 1,
+                approach: "specialize-hot-path".to_string(),
+                status: IterationStatus::Kept,
+                hypothesis: Some("specialize the inner loop".to_string()),
+                metrics: HashMap::from([("latency_ms".to_string(), 90.0)]),
+                rank: 0.1,
+                score: Some("keep".to_string()),
+                reason: Some("latency_ms: 10.00%".to_string()),
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: Some("sha-iter-1".to_string()),
+                reverted_iteration: None,
+                score_breakdown: Some(autotune_state::ScoreBreakdown {
+                    decision: "keep".to_string(),
+                    metrics: vec![autotune_state::MetricBreakdown {
+                        name: "latency_ms".to_string(),
+                        baseline: Some(100.0),
+                        candidate: Some(90.0),
+                        best: Some(100.0),
+                        delta_vs_baseline: Some(-10.0),
+                        delta_vs_best: Some(-10.0),
+                        direction: Some("lower".to_string()),
+                        weight: Some(1.0),
+                        improvement_vs_best: Some(0.1),
+                        contribution: Some(0.1),
+                    }],
+                }),
+                changed_files: Some(vec!["src/hot.rs".to_string()]),
+                timestamp: Utc::now(),
+            },
+            IterationRecord {
+                iteration: 2,
+                approach: "regression-attempt".to_string(),
+                status: IterationStatus::Discarded,
+                hypothesis: Some("reorder fields".to_string()),
+                metrics: HashMap::from([("latency_ms".to_string(), 95.0)]),
+                rank: -0.055,
+                score: Some("discard".to_string()),
+                reason: Some("latency_ms: -5.56%".to_string()),
+                fix_attempts: 0,
+                fresh_spawns: 0,
+                commit_sha: None,
+                reverted_iteration: None,
+                score_breakdown: Some(autotune_state::ScoreBreakdown {
+                    decision: "discard".to_string(),
+                    metrics: vec![autotune_state::MetricBreakdown {
+                        name: "latency_ms".to_string(),
+                        baseline: Some(100.0),
+                        candidate: Some(95.0),
+                        best: Some(90.0),
+                        delta_vs_baseline: Some(-5.0),
+                        delta_vs_best: Some(5.0),
+                        direction: Some("lower".to_string()),
+                        weight: Some(1.0),
+                        improvement_vs_best: Some(-0.0556),
+                        contribution: Some(-0.0556),
+                    }],
+                }),
+                changed_files: None,
+                timestamp: Utc::now(),
+            },
+        ]
+    }
+
+    #[test]
+    fn build_analysis_json_emits_versioned_self_contained_artifact() {
+        let repo = init_git_repo();
+        let store = TaskStore::new(&repo.path().join(".autotune/tasks/perf-task")).unwrap();
+        let ledger = analysis_ledger();
+        let mut state = sample_state();
+        state.task_name = "perf-task".to_string();
+
+        let analysis = build_analysis_json(
+            &AnalysisMeta {
+                task_name: "perf-task",
+                description: Some("make it faster"),
+                config_toml: "[task]\nname = \"perf-task\"\n",
+                log: "notes",
+            },
+            &state,
+            &ledger,
+            &store,
+            repo.path(),
+        );
+
+        // Versioned + task metadata + raw config for reproducibility.
+        assert_eq!(analysis["schema_version"], json!(ANALYSIS_SCHEMA_VERSION));
+        assert_eq!(analysis["task"]["name"], json!("perf-task"));
+        assert_eq!(analysis["task"]["description"], json!("make it faster"));
+        assert_eq!(analysis["config"], json!("[task]\nname = \"perf-task\"\n"));
+        assert_eq!(analysis["metric_names"], json!(["latency_ms"]));
+        assert_eq!(analysis["baseline"]["metrics"]["latency_ms"], json!(100.0));
+
+        // Metric matrix: deltas vs baseline and vs running best per iteration.
+        let series = analysis["metric_matrix"]["latency_ms"]
+            .as_array()
+            .expect("matrix series");
+        assert_eq!(series.len(), 3);
+        // baseline row: no prior best, delta_vs_best is null.
+        assert_eq!(series[0]["value"], json!(100.0));
+        assert_eq!(series[0]["delta_vs_best"], json!(null));
+        // kept iter 1: vs baseline 100 and vs best (still baseline=100) = -10.
+        assert_eq!(series[1]["value"], json!(90.0));
+        assert_eq!(series[1]["delta_vs_baseline"], json!(-10.0));
+        assert_eq!(series[1]["delta_vs_best"], json!(-10.0));
+        // discarded iter 2: vs baseline -5; vs best (now 90 after the keep) +5.
+        assert_eq!(series[2]["delta_vs_baseline"], json!(-5.0));
+        assert_eq!(series[2]["delta_vs_best"], json!(5.0));
+
+        // Per-iteration: structured breakdown + changed files carried through.
+        let iters = analysis["iterations"].as_array().unwrap();
+        assert_eq!(iters.len(), 3);
+        assert_eq!(iters[1]["status"], json!("kept"));
+        assert_eq!(iters[1]["changed_files"], json!(["src/hot.rs"]));
+        assert_eq!(
+            iters[1]["score_breakdown"]["metrics"][0]["direction"],
+            json!("lower")
+        );
+        assert_eq!(
+            iters[1]["score_breakdown"]["metrics"][0]["contribution"],
+            json!(0.1)
+        );
+        // Discarded rows still carry their scorer breakdown for analysis.
+        assert_eq!(iters[2]["status"], json!("discarded"));
+        assert_eq!(iters[2]["score_breakdown"]["decision"], json!("discard"));
+    }
+
+    #[test]
+    fn build_analysis_json_inlines_measure_output_references() {
+        let repo = init_git_repo();
+        let store = TaskStore::new(&repo.path().join(".autotune/tasks/perf-task")).unwrap();
+        // Write a raw measure output for iteration 1's approach so the artifact
+        // references it (relative to the repo root).
+        store
+            .save_measure_output(1, "specialize-hot-path", "bench", "stdout body", "")
+            .unwrap();
+
+        let analysis = build_analysis_json(
+            &AnalysisMeta {
+                task_name: "perf-task",
+                description: None,
+                config_toml: "",
+                log: "",
+            },
+            &sample_state(),
+            &analysis_ledger(),
+            &store,
+            repo.path(),
+        );
+
+        let iters = analysis["iterations"].as_array().unwrap();
+        let files = iters[1]["measure_output_files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "should reference the saved measure output");
+        assert!(
+            files[0].as_str().unwrap().contains("bench.stdout.txt"),
+            "got {:?}",
+            files[0]
+        );
+        // No measure output for the baseline row → empty list.
+        assert!(
+            iters[0]["measure_output_files"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn description_from_config_snapshot_extracts_and_tolerates_missing() {
+        let toml = "[task]\nname = \"t\"\ndescription = \"speed it up\"\n";
+        assert_eq!(
+            description_from_config_snapshot(toml),
+            Some("speed it up".to_string())
+        );
+        assert_eq!(
+            description_from_config_snapshot("[task]\nname = \"t\"\n"),
+            None
+        );
+        assert_eq!(description_from_config_snapshot("not toml {{{"), None);
+    }
+
     #[test]
     fn validate_measure_config_extracts_metrics_from_successful_commands() {
         let workdir = tempdir().unwrap();
@@ -4064,6 +4536,38 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         assert_eq!(export["task_name"], json!("export-task"));
         assert_eq!(export["log"], json!("investigation notes\n"));
         assert_eq!(export["state"]["current_phase"], json!("scoring"));
+        // Backward compatible: original keys preserved AND the new analysis
+        // artifact is embedded under `analysis`.
+        assert_eq!(
+            export["analysis"]["schema_version"],
+            json!(ANALYSIS_SCHEMA_VERSION)
+        );
+        assert_eq!(export["analysis"]["task"]["name"], json!("export-task"));
+        assert!(export["analysis"]["metric_matrix"].is_object());
+    }
+
+    #[test]
+    fn cmd_analyze_writes_standalone_artifact_without_legacy_keys() {
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "analyze-task");
+        write_task_fixture(repo.path(), "analyze-task", Phase::Scoring);
+
+        let output_path = repo.path().join("analysis.json");
+        cmd_analyze(
+            Some("analyze-task".to_string()),
+            Some(output_path.display().to_string()),
+        )
+        .unwrap();
+
+        let analysis: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(output_path).unwrap()).unwrap();
+        // `analyze` emits the artifact at the top level (not nested), and does
+        // NOT carry the legacy export wrapper keys.
+        assert_eq!(analysis["schema_version"], json!(ANALYSIS_SCHEMA_VERSION));
+        assert_eq!(analysis["task"]["name"], json!("analyze-task"));
+        assert!(analysis.get("task_name").is_none());
+        assert!(analysis.get("ledger").is_none());
     }
 
     #[test]
@@ -4188,6 +4692,8 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             fresh_spawns: 0,
             commit_sha: sha.map(String::from),
             reverted_iteration: reverted,
+            score_breakdown: None,
+            changed_files: None,
             timestamp: chrono::Utc::now(),
         };
         let ledger = vec![
