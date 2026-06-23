@@ -898,6 +898,18 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         &repo_root,
     );
 
+    // Record how the research prompt was specialized so the externally-visible
+    // perf-vs-generic decision is inspectable (trace + scenario tests). Purely
+    // declaration-derived — no task-kind flag (see notes/metric-aware-guidance.md).
+    autotune_agent::trace::record(
+        "research.prompt",
+        serde_json::json!({
+            "optimizes_runtime_perf": config.optimizes_runtime_perf(),
+            "offers_profiler": research_prompt.contains("You MAY run a profiler"),
+            "mentions_hot_path": research_prompt.contains("hot path"),
+        }),
+    );
+
     let mut research_config = research_agent_session_config(&config, &repo_root);
     research_config.prompt = research_prompt;
 
@@ -1249,8 +1261,92 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Run each measure command and try metric extraction, returning detailed
-/// errors (including the actual command output) so the init agent can fix the config.
+/// The "Forming a high-value hypothesis" guidance block, specialized by whether
+/// the task optimizes a runtime-performance benchmark.
+///
+/// AutoTune is a general metric-driven loop, so this guidance must DERIVE from
+/// how the metrics are declared rather than assume "performance" (see
+/// [`autotune_config::AutotuneConfig::optimizes_runtime_perf`]). When the
+/// objective is a timing benchmark we keep the profiling / hot-path /
+/// smallest-surgical-change advice (and elsewhere offer profiler tool access).
+/// Otherwise we emit metric-agnostic advice — study what moves the declared
+/// metric, form the smallest change that improves the objective, respect the
+/// configured weights/directions, and learn from the ledger — with NO
+/// instruction to run a profiler, because "profile the hot path" is meaningless
+/// for a coverage, binary-size, or accuracy objective.
+fn hypothesis_guidance_block(is_perf: bool) -> String {
+    let mut p = String::new();
+    p.push_str("\n# Forming a high-value hypothesis\n\n");
+    if is_perf {
+        p.push_str(
+            "Assume the codebase is already reasonably optimized: generic \"best \
+             practice\" changes usually REGRESS. Proposals that just presize a \
+             collection that's already sized, add caching/abstraction, or route a \
+             hot single-element path through a general or batched API tend to add \
+             indirection and get *slower*. To propose changes that actually move the \
+             metrics:\n\n",
+        );
+        p.push_str(
+            "- Find the real hot path FIRST — don't guess. Read the benchmark to see \
+             exactly what it exercises, then trace which functions/loops dominate. \
+             When you can, PROFILE: request `Bash` and use the project's own \
+             profiling tooling if it has any (look for scripts, `cargo flamegraph`, \
+             `samply`, `perf`), or build the relevant bench in release and sample it. \
+             A hypothesis grounded in a measured hot spot beats one from intuition.\n",
+        );
+        p.push_str(
+            "- Target that bottleneck with the SMALLEST change that removes wasted \
+             work — a redundant allocation, clone, hash, recomputation, or bounds \
+             check in the hottest loop. Prefer a surgical edit over a broad rewrite \
+             or a new abstraction.\n",
+        );
+        p.push_str(
+            "- Respect the scoring weights: the highest-weighted metrics dominate the \
+             rank. A change that speeds up a low-weight micro-op but slows a \
+             high-weight end-to-end metric is a net loss and will be discarded.\n",
+        );
+        p.push_str(
+            "- Learn from the ledger: each past iteration shows its approach, status, \
+             rank, and (for the last one) a per-metric Reason. If an approach \
+             regressed a metric, do NOT repeat that class of change — diagnose WHY it \
+             regressed and pick a different lever. Don't re-propose something already \
+             tried.\n",
+        );
+    } else {
+        p.push_str(
+            "Assume the codebase is already reasonable: generic \"best practice\" \
+             changes often REGRESS the objective or trade one declared metric away \
+             for another. To propose changes that actually move the metrics:\n\n",
+        );
+        p.push_str(
+            "- Study what MOVES the declared metric FIRST — don't guess. Read how \
+             each target metric is produced (what the measure command exercises and \
+             which code it covers/sizes/exercises) and trace exactly what would have \
+             to change for it to improve in the configured direction.\n",
+        );
+        p.push_str(
+            "- Form the SMALLEST change that improves the objective. Prefer a \
+             scoped, surgical edit over a broad rewrite or a new abstraction; a \
+             narrow change is easier to attribute and less likely to regress a \
+             co-measured metric.\n",
+        );
+        p.push_str(
+            "- Respect the scoring weights and directions: the highest-weighted \
+             metrics dominate the rank, and each metric is Maximize or Minimize as \
+             configured. A change that improves a low-weight metric but regresses a \
+             high-weight one is a net loss and will be discarded.\n",
+        );
+        p.push_str(
+            "- Learn from the ledger: each past iteration shows its approach, status, \
+             rank, and (for the last one) a per-metric Reason. If an approach \
+             regressed a metric, do NOT repeat that class of change — diagnose WHY it \
+             regressed and pick a different lever. Don't re-propose something already \
+             tried.\n",
+        );
+    }
+    p
+}
+
 /// Build the initial prompt for the research agent at task spawn time.
 ///
 /// Front-loads everything the agent needs so it doesn't re-explore setup or
@@ -1260,6 +1356,10 @@ fn cmd_init(name_override: Option<String>) -> Result<()> {
 /// - Which test and measure commands the CLI will run (agent does NOT run them)
 /// - How metrics are extracted and scored
 /// - Baseline metric values already collected
+///
+/// The hypothesis-quality guidance and profiler offer specialize on
+/// [`autotune_config::AutotuneConfig::optimizes_runtime_perf`] — see
+/// [`hypothesis_guidance_block`].
 fn build_research_agent_prompt(
     config: &autotune_config::AutotuneConfig,
     baseline_metrics: &std::collections::HashMap<String, f64>,
@@ -1269,8 +1369,8 @@ fn build_research_agent_prompt(
     use std::fmt::Write as _;
 
     let mut p = String::new();
-    p.push_str("You are the research agent for the autotune performance-tuning system.\n\n");
-    p.push_str("The CLI drives the tune loop. Your job, each iteration, is to analyze the codebase and propose ONE concrete approach (a hypothesis + files to modify). The CLI handles running tests, running measures, scoring, and integrating changes — do not run them yourself.\n\n");
+    p.push_str("You are the research agent for the autotune metric-driven tuning system.\n\n");
+    p.push_str("The CLI drives the tune loop. Your job, each iteration, is to analyze the codebase and propose ONE concrete approach (a hypothesis + files to modify) that improves the declared metric(s). The CLI handles running tests, running measures, scoring, and integrating changes — do not run them yourself.\n\n");
 
     p.push_str("# Task\n\n");
     writeln!(p, "- Name: {}", config.task.name).ok();
@@ -1476,51 +1576,25 @@ fn build_research_agent_prompt(
         }
     }
 
+    let is_perf = config.optimizes_runtime_perf();
+
     p.push_str("\n# What to do\n\n");
-    p.push_str(
-        "- The CLI owns the official scoring: do NOT run the configured measure/test commands to score, and do NOT re-collect the baseline. (You MAY run a profiler or a quick exploratory bench under Bash to find the hot path — see \"Forming a high-value hypothesis\" below.)\n",
-    );
+    if is_perf {
+        p.push_str(
+            "- The CLI owns the official scoring: do NOT run the configured measure/test commands to score, and do NOT re-collect the baseline. (You MAY run a profiler or a quick exploratory bench under Bash to find the hot path — see \"Forming a high-value hypothesis\" below.)\n",
+        );
+    } else {
+        p.push_str(
+            "- The CLI owns the official scoring: do NOT run the configured measure/test commands to score, and do NOT re-collect the baseline.\n",
+        );
+    }
     p.push_str("- Use Read/Glob/Grep to understand the code that produces the target metric(s).\n");
     p.push_str("- When the CLI asks you to plan the next iteration, propose a concrete, scoped hypothesis with specific files to modify.\n");
     p.push_str("- Your planning response format is an XML `<plan>` fragment with `<approach>`, `<hypothesis>`, and a `<files-to-modify>` list of `<file>` entries. The CLI will tell you when to emit one.\n");
     p.push_str("- `<approach>` is a SHORT label — a few words, e.g. `specialize-rzz-fast-path` or `reuse-scratch-buffer`. It names the git branch and the iteration directory, so keep it terse; do NOT put a full sentence or paragraph there. All the detail goes in `<hypothesis>`.\n");
     p.push_str("- The `hypothesis` string is the main prompt passed to the implementation agent, along with the `files_to_modify` list. Write it as concrete instructions: what to change and why. Anything you want the implementer to know must go there.\n");
 
-    p.push_str("\n# Forming a high-value hypothesis\n\n");
-    p.push_str(
-        "Assume the codebase is already reasonably optimized: generic \"best \
-         practice\" changes usually REGRESS. Proposals that just presize a \
-         collection that's already sized, add caching/abstraction, or route a \
-         hot single-element path through a general or batched API tend to add \
-         indirection and get *slower*. To propose changes that actually move the \
-         metrics:\n\n",
-    );
-    p.push_str(
-        "- Find the real hot path FIRST — don't guess. Read the benchmark to see \
-         exactly what it exercises, then trace which functions/loops dominate. \
-         When you can, PROFILE: request `Bash` and use the project's own \
-         profiling tooling if it has any (look for scripts, `cargo flamegraph`, \
-         `samply`, `perf`), or build the relevant bench in release and sample it. \
-         A hypothesis grounded in a measured hot spot beats one from intuition.\n",
-    );
-    p.push_str(
-        "- Target that bottleneck with the SMALLEST change that removes wasted \
-         work — a redundant allocation, clone, hash, recomputation, or bounds \
-         check in the hottest loop. Prefer a surgical edit over a broad rewrite \
-         or a new abstraction.\n",
-    );
-    p.push_str(
-        "- Respect the scoring weights: the highest-weighted metrics dominate the \
-         rank. A change that speeds up a low-weight micro-op but slows a \
-         high-weight end-to-end metric is a net loss and will be discarded.\n",
-    );
-    p.push_str(
-        "- Learn from the ledger: each past iteration shows its approach, status, \
-         rank, and (for the last one) a per-metric Reason. If an approach \
-         regressed a metric, do NOT repeat that class of change — diagnose WHY it \
-         regressed and pick a different lever. Don't re-propose something already \
-         tried.\n",
-    );
+    p.push_str(&hypothesis_guidance_block(is_perf));
 
     p.push_str("\n# Requesting additional tools\n\n");
     p.push_str("You start with read-only tools (Read, Glob, Grep). If you need a tool that isn't available — for example `Bash` to run `cargo tree`, `cargo metadata`, or `git log` — you can request it by emitting an XML fragment in your response:\n\n");
@@ -3790,6 +3864,60 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
 
         assert!(prompt.contains("may modify test files"));
         assert!(!prompt.contains("must not modify test files"));
+    }
+
+    /// `sample_config()` has a criterion measure, so it is classified as a
+    /// runtime-performance task and the perf-specific profiler guidance is
+    /// included. (This is the same surface the high-value-context test pins;
+    /// asserting it here keeps the perf branch coupled to the classifier.)
+    #[test]
+    fn build_research_agent_prompt_perf_task_keeps_profiler_guidance() {
+        let config = sample_config();
+        assert!(config.optimizes_runtime_perf());
+        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[], Path::new(""));
+        assert!(prompt.contains("You MAY run a profiler"));
+        assert!(prompt.contains("Find the real hot path FIRST"));
+        assert!(prompt.contains("PROFILE"));
+    }
+
+    /// A coverage-style task (regex/script measures, NO criterion bench) must
+    /// get GENERIC, metric-agnostic hypothesis guidance and must NOT be told to
+    /// profile a hot path or be offered profiler access — the core stays
+    /// unbiased toward performance. Behavior derives purely from the declared
+    /// measures (no task-kind flag).
+    #[test]
+    fn build_research_agent_prompt_non_perf_task_omits_profiler_guidance() {
+        let mut config = sample_config();
+        // Drop the criterion measure → no runtime-perf benchmark remains.
+        config
+            .measure
+            .retain(|m| !matches!(m.adaptor, autotune_config::AdaptorConfig::Criterion { .. }));
+        assert!(!config.optimizes_runtime_perf());
+
+        let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[], Path::new(""));
+
+        // No profiler offer, no hot-path framing.
+        assert!(
+            !prompt.contains("You MAY run a profiler"),
+            "non-perf prompt must not offer a profiler:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("hot path"),
+            "non-perf prompt must not mention a hot path:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("PROFILE"),
+            "non-perf prompt must not instruct profiling:\n{prompt}"
+        );
+        // But the generic, metric-agnostic guidance IS present.
+        assert!(
+            prompt.contains("Study what MOVES the declared metric FIRST"),
+            "non-perf prompt should give generic metric guidance:\n{prompt}"
+        );
+        assert!(prompt.contains("Forming a high-value hypothesis"));
+        // The shared bullets (weights, ledger) stay in both branches.
+        assert!(prompt.contains("Respect the scoring weights"));
+        assert!(prompt.contains("Learn from the ledger"));
     }
 
     #[test]

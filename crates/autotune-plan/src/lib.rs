@@ -161,6 +161,7 @@ pub fn build_planning_prompt(
     last_iteration: Option<&IterationRecord>,
     iteration_count: usize,
     description: &str,
+    is_perf: bool,
 ) -> Result<String, PlanError> {
     let mut prompt = String::new();
 
@@ -253,17 +254,39 @@ pub fn build_planning_prompt(
         prompt.push_str("\n\n");
     }
 
-    prompt.push_str(
-        "# Instructions\n\n\
-         Propose the next approach, grounded in the results above. If the last \
-         approach regressed a metric (see its Reason), diagnose why and pick a \
-         different, evidence-backed lever — do not re-propose a tried approach or \
-         repeat a regressing class of change (e.g. adding indirection/generality \
-         to a hot path). Prefer the smallest change that targets the measured \
-         hot path. Emit a `<plan>` fragment in the schema you were given at \
-         session start. If you need a tool you don't yet have (e.g. `Bash` to \
-         profile the hot path), emit `<request-tool>` and end your turn.\n",
-    );
+    // The "what lever to pull" guidance specializes by whether the task
+    // optimizes a runtime-performance benchmark (passed in by the CLI, which
+    // derives it from the declared measures — see
+    // `autotune_config::AutotuneConfig::optimizes_runtime_perf`). For perf tasks
+    // we keep the hot-path / profiler framing; otherwise we stay metric-agnostic
+    // and do NOT suggest a profiler, which is meaningless for a coverage / size /
+    // accuracy objective.
+    if is_perf {
+        prompt.push_str(
+            "# Instructions\n\n\
+             Propose the next approach, grounded in the results above. If the last \
+             approach regressed a metric (see its Reason), diagnose why and pick a \
+             different, evidence-backed lever — do not re-propose a tried approach or \
+             repeat a regressing class of change (e.g. adding indirection/generality \
+             to a hot path). Prefer the smallest change that targets the measured \
+             hot path. Emit a `<plan>` fragment in the schema you were given at \
+             session start. If you need a tool you don't yet have (e.g. `Bash` to \
+             profile the hot path), emit `<request-tool>` and end your turn.\n",
+        );
+    } else {
+        prompt.push_str(
+            "# Instructions\n\n\
+             Propose the next approach, grounded in the results above. If the last \
+             approach regressed a metric (see its Reason), diagnose why and pick a \
+             different, evidence-backed lever — do not re-propose a tried approach or \
+             repeat a regressing class of change. Prefer the smallest change that \
+             moves the declared metric in its configured direction, and respect the \
+             scoring weights. Emit a `<plan>` fragment in the schema you were given \
+             at session start. If you need a tool you don't yet have (e.g. `Bash` to \
+             inspect the build or dependency graph), emit `<request-tool>` and end \
+             your turn.\n",
+        );
+    }
 
     Ok(prompt)
 }
@@ -409,6 +432,11 @@ fn try_resolve_plan(
 /// loop re-prompts the agent with the specific error up to
 /// [`MAX_PLAN_ATTEMPTS`] times before giving up. Non-parse errors (IO, timeout,
 /// interrupt) are returned immediately.
+///
+/// `is_perf` selects the "what lever to pull" guidance: perf tasks keep the
+/// hot-path / profiler framing, non-perf tasks get metric-agnostic guidance.
+/// The CLI derives it from the declared measures (no task-kind flag) — see
+/// `autotune_config::AutotuneConfig::optimizes_runtime_perf`.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_next(
     agent: &dyn Agent,
@@ -417,10 +445,12 @@ pub fn plan_next(
     last_iteration: Option<&IterationRecord>,
     iteration_count: usize,
     description: &str,
+    is_perf: bool,
     event_handler: Option<&EventHandler>,
     approver: Option<&dyn ToolApprover>,
 ) -> Result<Hypothesis, PlanError> {
-    let prompt = build_planning_prompt(store, last_iteration, iteration_count, description)?;
+    let prompt =
+        build_planning_prompt(store, last_iteration, iteration_count, description, is_perf)?;
     let mut response: AgentResponse = agent.send_streaming(session, &prompt, event_handler)?;
 
     for attempt in 1..=MAX_PLAN_ATTEMPTS {
@@ -689,7 +719,7 @@ This should give us a 10% improvement."#;
         .unwrap();
         store.append_ledger(&rec).unwrap();
 
-        let prompt = build_planning_prompt(&store, None, 7, "task desc").unwrap();
+        let prompt = build_planning_prompt(&store, None, 7, "task desc", true).unwrap();
         assert!(prompt.contains("reverted iteration 5"), "prompt:\n{prompt}");
         assert!(
             prompt.contains("broke truncation fidelity test"),
@@ -719,7 +749,7 @@ This should give us a 10% improvement."#;
         .unwrap();
         store.append_ledger(&rec).unwrap();
 
-        let prompt = build_planning_prompt(&store, None, 2, "task desc").unwrap();
+        let prompt = build_planning_prompt(&store, None, 2, "task desc", true).unwrap();
         assert!(
             prompt.contains("Speed up rehash via byte-slice hashing"),
             "ledger history should keep the first line.\nprompt:\n{prompt}"
@@ -727,6 +757,38 @@ This should give us a 10% improvement."#;
         assert!(
             !prompt.contains("SECRET_SECOND_LINE"),
             "ledger history should summarize multi-line approaches.\nprompt:\n{prompt}"
+        );
+    }
+
+    /// Perf-task planning keeps the hot-path / profiler framing.
+    #[test]
+    fn planning_instructions_perf_mentions_hot_path_and_profiler() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let prompt = build_planning_prompt(&store, None, 1, "task desc", true).unwrap();
+        assert!(prompt.contains("hot path"), "prompt:\n{prompt}");
+        assert!(prompt.contains("profile the hot path"), "prompt:\n{prompt}");
+    }
+
+    /// Non-perf (e.g. coverage/size/accuracy) planning is metric-agnostic and
+    /// must NOT instruct the agent to profile a hot path — that framing is
+    /// meaningless for those objectives.
+    #[test]
+    fn planning_instructions_generic_omits_profiler_and_hot_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+        let prompt = build_planning_prompt(&store, None, 1, "task desc", false).unwrap();
+        assert!(
+            !prompt.contains("hot path"),
+            "generic planning must not mention a hot path:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("profile"),
+            "generic planning must not suggest profiling:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("moves the declared metric"),
+            "generic planning should be metric-agnostic:\n{prompt}"
         );
     }
 }
