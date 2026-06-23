@@ -944,6 +944,7 @@ fn run_init_inner(
                                             max: rubric.score_max,
                                         },
                                         guidance: None,
+                                        sources: Vec::new(),
                                     });
                                     ack_lines.push(format!(
                                         "Rubric '{}' ({}–{}): accepted.",
@@ -965,6 +966,7 @@ fn run_init_inner(
                                             max: rubric.score_max,
                                         },
                                         guidance: None,
+                                        sources: Vec::new(),
                                     });
                                     ack_lines.push(format!(
                                         "Rubric '{}' accepted with modified instruction: '{new_instruction}'.",
@@ -1164,6 +1166,7 @@ mod tests {
                 patterns: vec![RegexPattern {
                     name: metric_name.to_string(),
                     pattern: "([0-9.]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -1590,10 +1593,12 @@ mod tests {
                 RegexPattern {
                     name: "a".to_string(),
                     pattern: "([0-9]+)".to_string(),
+                    sources: vec![],
                 },
                 RegexPattern {
                     name: "b".to_string(),
                     pattern: "([0-9]+)".to_string(),
+                    sources: vec![],
                 },
             ],
         };
@@ -1612,11 +1617,13 @@ mod tests {
                     name: "sort_mean_ns".to_string(),
                     group: "bench/sort".to_string(),
                     stat: CriterionStat::Mean,
+                    sources: vec![],
                 },
                 CriterionBenchmark {
                     name: "sort_median_ns".to_string(),
                     group: "bench/sort".to_string(),
                     stat: CriterionStat::Median,
+                    sources: vec![],
                 },
             ],
         };
@@ -1824,6 +1831,7 @@ mod tests {
                 instruction: "Is it correct?".to_string(),
                 score_range: autotune_config::ScoreRangeConfig { min: 1, max: 5 },
                 guidance: None,
+                sources: vec![],
             }],
         });
         assert!(!acc.is_complete());
@@ -1863,6 +1871,7 @@ mod tests {
             instruction: "Is it correct?".to_string(),
             score_range: autotune_config::ScoreRangeConfig { min: 1, max: 5 },
             guidance: None,
+            sources: vec![],
         };
         let mut acc = ConfigAccumulator {
             pending_judge: Some(PendingJudgeMeasure {

@@ -18,6 +18,7 @@ fn make_regex_measure(name: &str, command_output: &str, metric_name: &str) -> Me
             patterns: vec![RegexPattern {
                 name: metric_name.to_string(),
                 pattern: r"([0-9.]+)".to_string(),
+                sources: vec![],
             }],
         },
         sources: vec![],
@@ -161,6 +162,7 @@ fn task_does_not_false_timeout_when_stdout_is_verbose() {
             patterns: vec![RegexPattern {
                 name: "score".to_string(),
                 pattern: r"(42\.5)".to_string(),
+                sources: vec![],
             }],
         },
         sources: vec![],

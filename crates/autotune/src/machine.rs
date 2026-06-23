@@ -1445,34 +1445,14 @@ fn metric_directions(config: &AutotuneConfig) -> HashMap<String, &'static str> {
     }
 }
 
-/// Map each metric name to the `sources` globs declared on the measure that
-/// produces it (Part C: causal attribution). Only measures with statically
-/// known metric names (regex/criterion/judge) and a non-empty `sources` list
-/// contribute; script measures and measures without `sources` are skipped.
+/// Map each metric name to the effective `sources` globs for causal
+/// attribution (Part B/C). Delegates to [`AutotuneConfig::metric_sources`],
+/// which resolves the per-metric override (regex pattern / criterion benchmark
+/// / judge rubric `sources`) over the measure-level `sources`. Only metrics
+/// with at least one effective glob are present; script measures and metrics
+/// without any `sources` are absent (no causal filtering).
 fn metric_sources(config: &AutotuneConfig) -> HashMap<String, Vec<String>> {
-    let mut map = HashMap::new();
-    for measure in &config.measure {
-        if measure.sources.is_empty() {
-            continue;
-        }
-        let names: Vec<String> = match &measure.adaptor {
-            autotune_config::AdaptorConfig::Regex { patterns } => {
-                patterns.iter().map(|p| p.name.clone()).collect()
-            }
-            autotune_config::AdaptorConfig::Criterion { benchmarks } => {
-                benchmarks.iter().map(|b| b.name.clone()).collect()
-            }
-            autotune_config::AdaptorConfig::Judge { rubrics, .. } => {
-                rubrics.iter().map(|r| r.id.clone()).collect()
-            }
-            // Script adaptors emit names only at runtime — can't attribute.
-            autotune_config::AdaptorConfig::Script { .. } => Vec::new(),
-        };
-        for name in names {
-            map.insert(name, measure.sources.clone());
-        }
-    }
-    map
+    config.metric_sources()
 }
 
 /// The set of metric names that are causally unrelated to this candidate's
@@ -2713,6 +2693,7 @@ mod tests {
                 patterns: vec![autotune_config::RegexPattern {
                     name: "metric".to_string(),
                     pattern: "metric: ([0-9.]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -3598,6 +3579,7 @@ mod tests {
                     patterns: vec![autotune_config::RegexPattern {
                         name: "touched_metric".to_string(),
                         pattern: "x".to_string(),
+                        sources: vec![],
                     }],
                 },
                 sources: vec!["src/hot.rs".to_string()],
@@ -3610,6 +3592,7 @@ mod tests {
                     patterns: vec![autotune_config::RegexPattern {
                         name: "untouched_metric".to_string(),
                         pattern: "x".to_string(),
+                        sources: vec![],
                     }],
                 },
                 sources: vec!["src/cold.rs".to_string()],
@@ -3622,6 +3605,7 @@ mod tests {
                     patterns: vec![autotune_config::RegexPattern {
                         name: "nosrc_metric".to_string(),
                         pattern: "x".to_string(),
+                        sources: vec![],
                     }],
                 },
                 sources: vec![],
@@ -3651,5 +3635,56 @@ mod tests {
 
         // No changed files known → nothing excluded (behavior unchanged).
         assert!(causally_unrelated_metrics(&config, None, &candidate).is_empty());
+    }
+
+    /// Part B: per-metric `sources` separate co-located metrics that share one
+    /// measure (e.g. a criterion bench binary emitting many metrics). A metric
+    /// whose per-metric `sources` the diff never touched is `causally_unrelated`
+    /// EVEN when a co-located metric from the SAME measure WAS touched — which a
+    /// measure-level glob alone cannot express.
+    #[test]
+    fn causally_unrelated_metrics_uses_per_metric_sources() {
+        let mut config = make_minimal_config(None, None);
+        config.measure = vec![autotune_config::MeasureConfig {
+            name: "bench".to_string(),
+            command: Some(vec!["cargo".to_string(), "bench".to_string()]),
+            timeout: 10,
+            adaptor: autotune_config::AdaptorConfig::Criterion {
+                benchmarks: vec![
+                    autotune_config::CriterionBenchmark {
+                        name: "micro_cnot".to_string(),
+                        group: "gates/cnot".to_string(),
+                        stat: autotune_config::CriterionStat::Mean,
+                        sources: vec!["src/gates/cnot.rs".to_string()],
+                    },
+                    autotune_config::CriterionBenchmark {
+                        name: "sparse_trim".to_string(),
+                        group: "sparse-vec/trim".to_string(),
+                        stat: autotune_config::CriterionStat::Mean,
+                        sources: vec!["src/sparse.rs".to_string()],
+                    },
+                ],
+            },
+            // A measure-level glob covering BOTH files: under the old
+            // measure-level-only model neither metric would be excluded.
+            sources: vec!["src/**".to_string()],
+        }];
+
+        let candidate = HashMap::from([
+            ("micro_cnot".to_string(), 1.0),
+            ("sparse_trim".to_string(), 1.0),
+        ]);
+        // Diff touched only the cnot source.
+        let changed = vec!["src/gates/cnot.rs".to_string()];
+
+        let excluded = causally_unrelated_metrics(&config, Some(&changed), &candidate);
+        assert!(
+            excluded.contains("sparse_trim"),
+            "co-located metric whose per-metric sources the diff missed must be excluded"
+        );
+        assert!(
+            !excluded.contains("micro_cnot"),
+            "metric whose per-metric sources the diff hit must NOT be excluded"
+        );
     }
 }

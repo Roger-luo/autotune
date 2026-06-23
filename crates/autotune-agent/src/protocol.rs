@@ -637,7 +637,12 @@ fn parse_criterion_benchmark(
         });
     }
 
-    Ok(CriterionBenchmark { name, group, stat })
+    Ok(CriterionBenchmark {
+        name,
+        group,
+        stat,
+        sources: Vec::new(),
+    })
 }
 
 fn parse_pattern(reader: &mut Reader<&[u8]>) -> Result<RegexPattern, AgentError> {
@@ -656,6 +661,7 @@ fn parse_pattern(reader: &mut Reader<&[u8]>) -> Result<RegexPattern, AgentError>
     Ok(RegexPattern {
         name,
         pattern: regex,
+        sources: Vec::new(),
     })
 }
 

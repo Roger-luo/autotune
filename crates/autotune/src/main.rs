@@ -2967,10 +2967,12 @@ mod tests {
                             autotune_config::RegexPattern {
                                 name: "line_coverage".to_string(),
                                 pattern: "coverage: ([0-9.]+)".to_string(),
+                                sources: vec![],
                             },
                             autotune_config::RegexPattern {
                                 name: "runtime_ms".to_string(),
                                 pattern: "runtime_ms: ([0-9.]+)".to_string(),
+                                sources: vec![],
                             },
                         ],
                     },
@@ -2985,6 +2987,7 @@ mod tests {
                             name: "throughput_mean".to_string(),
                             group: "throughput".to_string(),
                             stat: autotune_config::CriterionStat::Mean,
+                            sources: vec![],
                         }],
                     },
                     sources: vec![],
@@ -3184,10 +3187,12 @@ mod tests {
                     autotune_config::RegexPattern {
                         name: "line_coverage".to_string(),
                         pattern: "line_coverage: ([0-9.]+)".to_string(),
+                        sources: vec![],
                     },
                     autotune_config::RegexPattern {
                         name: "runtime_ms".to_string(),
                         pattern: "runtime_ms: ([0-9.]+)".to_string(),
+                        sources: vec![],
                     },
                 ],
             },
@@ -4220,6 +4225,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                 patterns: vec![autotune_config::RegexPattern {
                     name: "metric".to_string(),
                     pattern: "metric: ([0-9.]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -4245,6 +4251,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                 patterns: vec![autotune_config::RegexPattern {
                     name: "metric".to_string(),
                     pattern: "metric: ([0-9.]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -4272,6 +4279,7 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
                 patterns: vec![autotune_config::RegexPattern {
                     name: "metric".to_string(),
                     pattern: "metric: ([0-9.]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
