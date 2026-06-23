@@ -2135,6 +2135,7 @@ mod tests {
                     name: "perf".to_string(),
                     direction: autotune_config::Direction::Maximize,
                     weight: 1.0,
+                    guardrail: false,
                 }],
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,

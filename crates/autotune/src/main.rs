@@ -19,7 +19,9 @@ use autotune_config::{AutotuneConfig, ScoreConfig};
 use autotune_score::ScoreCalculator;
 use autotune_score::script::ScriptScorer;
 use autotune_score::threshold::{ThresholdConditionDef, ThresholdScorer};
-use autotune_score::weighted_sum::{GuardrailMetricDef, PrimaryMetricDef, WeightedSumScorer};
+use autotune_score::weighted_sum::{
+    GuardrailMetricDef, NoiseGuardrailDef, PrimaryMetricDef, WeightedSumScorer,
+};
 use autotune_state::{IterationRecord, IterationStatus, Phase, TaskState, TaskStore};
 
 use cli::{Cli, Commands, ConfigCommands, ReportFormat};
@@ -620,12 +622,25 @@ fn build_scorer(config: &AutotuneConfig) -> Box<dyn ScoreCalculator> {
             guardrail_metrics,
             ..
         } => {
+            // A primary marked `guardrail = true` is a noise-tolerant constraint
+            // (Part C / option 4), not a weighted objective: split it out so it
+            // never contributes to the rank and can only veto on a regression
+            // beyond its noise envelope.
             let primary: Vec<PrimaryMetricDef> = primary_metrics
                 .iter()
+                .filter(|m| !m.guardrail)
                 .map(|m| PrimaryMetricDef {
                     name: m.name.clone(),
                     direction: map_direction_weighted(m.direction),
                     weight: m.weight,
+                })
+                .collect();
+            let noise_guardrails: Vec<NoiseGuardrailDef> = primary_metrics
+                .iter()
+                .filter(|m| m.guardrail)
+                .map(|m| NoiseGuardrailDef {
+                    name: m.name.clone(),
+                    direction: map_direction_weighted(m.direction),
                 })
                 .collect();
             let guardrails: Vec<GuardrailMetricDef> = guardrail_metrics
@@ -636,7 +651,11 @@ fn build_scorer(config: &AutotuneConfig) -> Box<dyn ScoreCalculator> {
                     max_regression: m.max_regression,
                 })
                 .collect();
-            Box::new(WeightedSumScorer::new(primary, guardrails))
+            Box::new(WeightedSumScorer::with_noise_guardrails(
+                primary,
+                guardrails,
+                noise_guardrails,
+            ))
         }
         ScoreConfig::Threshold { conditions, .. } => {
             let conds: Vec<ThresholdConditionDef> = conditions
@@ -1505,8 +1524,20 @@ fn build_research_agent_prompt(
             ..
         } => {
             p.push_str("Score is a weighted sum of primary metrics (relative to baseline):\n");
-            for m in primary_metrics {
+            for m in primary_metrics.iter().filter(|m| !m.guardrail) {
                 writeln!(p, "- {} ({:?}, weight={})", m.name, m.direction, m.weight).ok();
+            }
+            let guardrail_primaries: Vec<_> =
+                primary_metrics.iter().filter(|m| m.guardrail).collect();
+            if !guardrail_primaries.is_empty() {
+                p.push_str(
+                    "\nGuardrail metrics (constraints, NOT optimization targets — they do NOT \
+                     contribute to the score; an approach is discarded only if one regresses by \
+                     MORE than its measurement-noise envelope; within-noise moves are ignored):\n",
+                );
+                for g in guardrail_primaries {
+                    writeln!(p, "- {} ({:?})", g.name, g.direction).ok();
+                }
             }
             if !guardrail_metrics.is_empty() {
                 p.push_str("\nGuardrails (an approach is discarded if any guardrail regresses past its limit):\n");
@@ -3007,6 +3038,7 @@ mod tests {
                     name: "line_coverage".to_string(),
                     direction: autotune_config::Direction::Maximize,
                     weight: 1.5,
+                    guardrail: false,
                 }],
                 guardrail_metrics: vec![autotune_config::GuardrailMetric {
                     name: "runtime_ms".to_string(),

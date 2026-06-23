@@ -778,6 +778,7 @@ fn parse_primary_metric(reader: &mut Reader<&[u8]>) -> Result<PrimaryMetric, Age
         name,
         direction,
         weight,
+        guardrail: false,
     })
 }
 

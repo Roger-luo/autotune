@@ -132,18 +132,73 @@ on the `weighted_sum` and `threshold` score types. `ScoreConfig::noise_params()`
 returns `(threshold, k)`; script/command scorers own their full decision and get
 the identity.
 
-## Causal attribution (Part C, opt-in)
+## Causal attribution (opt-in)
 
 `[[measure]] sources = ["glob/**", …]` declares which source paths a measure
 exercises. When set, a metric whose iteration `changed_files` do **not** intersect
-its measure's `sources` globs is flagged `MetricBreakdown.causally_unrelated =
+its `sources` globs is flagged `MetricBreakdown.causally_unrelated =
 true` and added to `ScoreInput.excluded_metrics`, which the built-in scorers
 treat exactly like a within-noise delta (zero contribution, no guardrail trip).
 A change can't be blamed for moving code it never touched. When `sources` is
 absent the set is empty and behavior is unchanged. Candidate `changed_files` are
 computed at scoring time from the worktree commit (`diff_name_only`).
 
+### Per-metric `sources` (finer than per-measure)
+
+One measure can emit many metrics — a single criterion bench binary produces
+`micro_cnot`, `sparse-vec/trim`, … — and a measure-level glob can't separate a
+touched metric from an untouched co-located one. So `sources` may also be
+declared at **metric granularity** on a regex pattern, a criterion benchmark, or
+a judge rubric:
+
+```toml
+[[measure]]
+name = "bench"
+sources = ["src/**"]                       # measure-level fallback
+adaptor = { type = "criterion", benchmarks = [
+  { name = "micro_cnot",  group = "gates/cnot",      sources = ["src/gates/cnot.rs"] },
+  { name = "sparse_trim", group = "sparse-vec/trim" },   # inherits "src/**"
+] }
+```
+
+Precedence per metric: the metric's own `sources` (if non-empty) else the
+measure's `sources` else none. `AutotuneConfig::metric_sources()` resolves it;
+`machine::metric_sources` delegates. So `sparse_trim` is `causally_unrelated`
+when a diff touches only `src/gates/cnot.rs`, even though `micro_cnot` (its
+co-located metric) is not. Absent everywhere ⇒ today's behavior.
+
+## Guardrail metrics: noise-tolerant constraints
+
+A weighted-sum primary can be declared a **guardrail/constraint** (not an
+optimization target) with `guardrail = true`:
+
+```toml
+[score]
+type = "weighted_sum"
+primary_metrics = [
+  { name = "throughput", direction = "Maximize", weight = 1.0 },
+  { name = "peak_mem",   direction = "Minimize", guardrail = true },
+]
+```
+
+A guardrail metric: (i) **never contributes to the rank** (its `weight` is
+ignored — it's split into `WeightedSumScorer`'s `noise_guardrails`); (ii) can
+only **VETO** (force discard) when it regresses by MORE than its noise envelope;
+(iii) ignores within-noise moves, and a significant *improvement* is harmless.
+The veto threshold IS the noise envelope (reuses `noise_envelope`) — unlike
+`[[score.guardrail_metrics]]`, which needs an explicit `max_regression`, so a
+guardrail never trips on jitter. This is "declaring how a metric participates"
+(specialize by declaration, not a mode flag). Default (none declared) ⇒
+identical rank/decision (pinned by
+`absent_noise_guardrails_reproduces_legacy_rank_exactly`); a weighted-sum config
+must keep at least one non-guardrail primary (validated).
+
 See:
+
+- `crates/autotune-config/src/lib.rs` — `RegexPattern/CriterionBenchmark/
+  RubricConfig::sources`, `metric_sources()`, `PrimaryMetric::guardrail`.
+- `crates/autotune-score/src/weighted_sum.rs` — `NoiseGuardrailDef`,
+  `with_noise_guardrails`, the veto loop in `calculate`.
 
 - `crates/autotune-score/src/lib.rs` — `MetricVariance`, `NoiseConfig`,
   `noise_envelope`, `within_noise`, `ScoreInput.{candidate_variances,

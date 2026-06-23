@@ -368,3 +368,149 @@ guardrail_metrics = []
         "error output should mention criterion or estimates path.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Part C: noise-tolerant guardrail metric (`guardrail = true` on a primary)
+// ---------------------------------------------------------------------------
+
+/// Config with `fast_ns` as the optimization objective and `mem_ns` declared as
+/// a noise-tolerant GUARDRAIL (`guardrail = true`). The measure writes both
+/// benches' estimates conditionally on the OPTIMIZED marker. `mem_ns`'s
+/// candidate value and CI are templated so one test makes it a significant
+/// regression and the other a within-noise wobble.
+fn guardrail_config(mem_candidate: f64, mem_ci_lower: f64, mem_ci_upper: f64) -> String {
+    format!(
+        r#"
+[task]
+name = "guardrail-task"
+description = "noise-tolerant guardrail veto test"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "benches"
+command = ["sh", "-c", """
+mkdir -p target/criterion/fast/new target/criterion/mem/new
+if grep -q OPTIMIZED src/lib.rs; then
+  fast=80.0
+  mem={mem_candidate}
+  mlo={mem_ci_lower}
+  mhi={mem_ci_upper}
+else
+  fast=100.0
+  mem=100.0
+  mlo=95.0
+  mhi=105.0
+fi
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":2.0}}}}' "$fast" "$fast" "$fast" "$fast" > target/criterion/fast/new/estimates.json
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":2.0}}}}' "$mlo" "$mhi" "$mem" "$mem" > target/criterion/mem/new/estimates.json
+"""]
+timeout = 30
+adaptor = {{ type = "criterion", benchmarks = [{{ name = "fast_ns", group = "fast", stat = "mean" }}, {{ name = "mem_ns", group = "mem", stat = "mean" }}] }}
+
+[score]
+type = "weighted_sum"
+primary_metrics = [
+  {{ name = "fast_ns", direction = "Minimize", weight = 1.0 }},
+  {{ name = "mem_ns", direction = "Minimize", guardrail = true }},
+]
+"#
+    )
+}
+
+/// Run the guardrail scenario and return the iteration-1 ledger row's status.
+fn run_guardrail_scenario(config_toml: &str) -> String {
+    let project = Project::empty()
+        .file(".autotune.toml", config_toml)
+        .file("src/lib.rs", "pub fn hello() -> u64 { 42 }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let impl_script = project.path().join(".mock-impl-script");
+    std::fs::write(
+        &impl_script,
+        "printf '// OPTIMIZED\\n' >> src/lib.rs && git add -A && git commit -q -m 'optimize fast path'",
+    )
+    .unwrap();
+
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>optimize-fast</approach>\
+               <hypothesis>speed up the fast path; mem is a guardrail</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env("AUTOTUNE_MOCK_IMPL_SCRIPT", &impl_script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "run should complete.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let ledger_text = std::fs::read_to_string(
+        project
+            .path()
+            .join(".autotune/tasks/guardrail-task/ledger.json"),
+    )
+    .unwrap();
+    let ledger: serde_json::Value = serde_json::from_str(&ledger_text).unwrap();
+    ledger
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["iteration"] == serde_json::json!(1))
+        .unwrap_or_else(|| panic!("iteration 1 row present.\nledger:\n{ledger_text}"))["status"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// A guardrail metric VETOes a candidate when it regresses by MORE than its
+/// noise envelope — even though the objective `fast_ns` genuinely improved.
+/// mem 100 → 200 with a tight CI [195,205] (half-width 5) → envelope ~10,
+/// |100| ≫ envelope → discard.
+#[test]
+fn scenario_guardrail_vetoes_significant_regression() {
+    let status = run_guardrail_scenario(&guardrail_config(200.0, 195.0, 205.0));
+    assert_eq!(
+        status, "discarded",
+        "a significant guardrail regression must veto (force discard)"
+    );
+}
+
+/// A within-noise guardrail wobble does NOT veto: mem 100 → 130 but with a wide
+/// CI [60,140] (half-width 40) → envelope ~80, |30| ≤ envelope → ignored, so the
+/// candidate is KEPT on the strength of the real fast_ns improvement.
+#[test]
+fn scenario_guardrail_within_noise_move_does_not_veto() {
+    let status = run_guardrail_scenario(&guardrail_config(130.0, 60.0, 140.0));
+    assert_eq!(
+        status, "kept",
+        "a within-noise guardrail move must not veto"
+    );
+}

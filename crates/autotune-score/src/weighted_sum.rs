@@ -23,16 +23,46 @@ pub struct GuardrailMetricDef {
     pub max_regression: f64,
 }
 
+/// A NOISE-TOLERANT guardrail (Part C / option 4): a metric declared purely as
+/// a constraint, NOT an optimization target. Unlike [`GuardrailMetricDef`] it
+/// has no explicit `max_regression` — its veto threshold IS the metric's noise
+/// envelope. It (i) never contributes to the weighted objective/rank, (ii)
+/// vetoes (forces discard) only when it regresses by MORE than its noise
+/// envelope, (iii) ignores within-noise moves. With none declared, behavior is
+/// identical to today.
+#[derive(Debug, Clone)]
+pub struct NoiseGuardrailDef {
+    pub name: String,
+    pub direction: Direction,
+}
+
 pub struct WeightedSumScorer {
     primary: Vec<PrimaryMetricDef>,
     guardrails: Vec<GuardrailMetricDef>,
+    /// Noise-tolerant constraint metrics (Part C). Veto-only; threshold = the
+    /// noise envelope. Empty ⇒ behavior identical to the legacy scorer.
+    noise_guardrails: Vec<NoiseGuardrailDef>,
 }
 
 impl WeightedSumScorer {
+    /// Construct with explicit-threshold guardrails only (no noise-tolerant
+    /// constraints). Equivalent to `with_noise_guardrails(primary, guardrails,
+    /// vec![])`; kept for call sites and tests that predate Part C.
     pub fn new(primary: Vec<PrimaryMetricDef>, guardrails: Vec<GuardrailMetricDef>) -> Self {
+        Self::with_noise_guardrails(primary, guardrails, Vec::new())
+    }
+
+    /// Construct with explicit-threshold guardrails AND noise-tolerant
+    /// constraint metrics (Part C / option 4).
+    pub fn with_noise_guardrails(
+        primary: Vec<PrimaryMetricDef>,
+        guardrails: Vec<GuardrailMetricDef>,
+        noise_guardrails: Vec<NoiseGuardrailDef>,
+    ) -> Self {
         Self {
             primary,
             guardrails,
+            noise_guardrails,
         }
     }
 }
@@ -123,6 +153,47 @@ impl ScoreCalculator for WeightedSumScorer {
                     ),
                     // A guardrail failure short-circuits before any primary
                     // metric contributes, so there is no weighted breakdown.
+                    details: Some(Vec::new()),
+                });
+            }
+        }
+
+        // Noise-tolerant constraint metrics (Part C / option 4): veto-only,
+        // threshold = the metric's noise envelope. They never contribute to the
+        // rank. A within-noise (or causally-unrelated) move is ignored; any
+        // regression whose magnitude EXCEEDS the envelope forces discard.
+        for guardrail in &self.noise_guardrails {
+            let best_val = get_metric(&input.best, &guardrail.name)?;
+            let cand_val = get_metric(&input.candidate, &guardrail.name)?;
+            let raw_delta = cand_val - best_val;
+
+            if input.excluded_metrics.contains(&guardrail.name)
+                || within_noise(
+                    raw_delta,
+                    best_val,
+                    input.candidate_variances.get(&guardrail.name),
+                    input.best_variances.get(&guardrail.name),
+                    &input.noise,
+                )
+            {
+                continue;
+            }
+
+            // The delta exceeds the envelope: it's a real, significant move.
+            // Veto only if it's a regression in the constraint's direction; a
+            // significant *improvement* on a guardrail is harmless.
+            let regression = match guardrail.direction {
+                Direction::Maximize => best_val - cand_val,
+                Direction::Minimize => cand_val - best_val,
+            };
+            if regression > 0.0 {
+                return Ok(ScoreOutput {
+                    rank: 0.0,
+                    decision: "discard".to_string(),
+                    reason: format!(
+                        "guardrail '{}' failed: significant regression beyond the noise envelope",
+                        guardrail.name
+                    ),
                     details: Some(Vec::new()),
                 });
             }
@@ -447,5 +518,156 @@ mod tests {
         let out = scorer.calculate(&score_input).unwrap();
         assert_eq!(out.rank, 0.0);
         assert!(out.details.unwrap()[0].within_noise);
+    }
+
+    // ---- Part C: noise-tolerant constraint guardrails (option 4) ----
+
+    use crate::weighted_sum::NoiseGuardrailDef;
+
+    fn objective(name: &str, dir: Direction) -> Vec<PrimaryMetricDef> {
+        vec![PrimaryMetricDef {
+            name: name.to_string(),
+            direction: dir,
+            weight: 1.0,
+        }]
+    }
+
+    /// A noise-tolerant guardrail VETOes (forces discard) when its regression
+    /// exceeds the noise envelope — even though the weighted objective improved.
+    #[test]
+    fn noise_guardrail_vetoes_significant_regression() {
+        let scorer = WeightedSumScorer::with_noise_guardrails(
+            objective("tp", Direction::Maximize),
+            vec![],
+            vec![NoiseGuardrailDef {
+                name: "mem".to_string(),
+                direction: Direction::Minimize,
+            }],
+        );
+        // tp improves 100→110 (real gain). mem 100→200 (Minimize regression of
+        // 100). CI half-width 5 each → envelope 10, |100| > 10 → significant
+        // regression → veto.
+        let mut score_input = input(
+            &[("tp", 100.0), ("mem", 100.0)],
+            &[("tp", 110.0), ("mem", 200.0)],
+        );
+        let tight = MetricVariance {
+            stddev: Some(2.0),
+            ci_lower: Some(95.0),
+            ci_upper: Some(105.0),
+        };
+        score_input.candidate_variances = variances(&[("mem", tight)]);
+        score_input.best_variances = variances(&[("mem", tight)]);
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(out.decision, "discard", "out: {out:?}");
+        assert!(out.reason.contains("mem"), "reason: {}", out.reason);
+        assert!(
+            out.reason.contains("noise envelope"),
+            "reason: {}",
+            out.reason
+        );
+    }
+
+    /// A within-noise guardrail move does NOT veto: the candidate is kept on the
+    /// strength of the (real) objective improvement.
+    #[test]
+    fn noise_guardrail_within_noise_move_does_not_veto() {
+        let scorer = WeightedSumScorer::with_noise_guardrails(
+            objective("tp", Direction::Maximize),
+            vec![],
+            vec![NoiseGuardrailDef {
+                name: "mem".to_string(),
+                direction: Direction::Minimize,
+            }],
+        );
+        // mem 100→130 looks like a 30% regression, but CI half-width 35 each →
+        // envelope 70, |30| <= 70 → within noise → ignored.
+        let mut score_input = input(
+            &[("tp", 100.0), ("mem", 100.0)],
+            &[("tp", 110.0), ("mem", 130.0)],
+        );
+        let wide = MetricVariance {
+            stddev: Some(20.0),
+            ci_lower: Some(65.0),
+            ci_upper: Some(135.0),
+        };
+        score_input.candidate_variances = variances(&[("mem", wide)]);
+        score_input.best_variances = variances(&[("mem", wide)]);
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(out.decision, "keep", "within-noise guardrail must not veto");
+        assert!((out.rank - 0.10).abs() < 1e-9, "rank {}", out.rank);
+    }
+
+    /// A guardrail never contributes to the rank, and a significant guardrail
+    /// IMPROVEMENT is harmless (no veto). The rank reflects ONLY the objective.
+    #[test]
+    fn noise_guardrail_does_not_contribute_to_rank() {
+        let scorer = WeightedSumScorer::with_noise_guardrails(
+            objective("tp", Direction::Maximize),
+            vec![],
+            vec![NoiseGuardrailDef {
+                name: "mem".to_string(),
+                direction: Direction::Minimize,
+            }],
+        );
+        // mem improves a lot (100→10, well beyond noise) — but guardrails don't
+        // earn rank. tp 100→110 is the only contributor → rank 0.10.
+        let mut score_input = input(
+            &[("tp", 100.0), ("mem", 100.0)],
+            &[("tp", 110.0), ("mem", 10.0)],
+        );
+        let tight = MetricVariance {
+            stddev: Some(2.0),
+            ci_lower: Some(95.0),
+            ci_upper: Some(105.0),
+        };
+        score_input.candidate_variances = variances(&[("mem", tight)]);
+        score_input.best_variances = variances(&[("mem", tight)]);
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(out.decision, "keep");
+        assert!((out.rank - 0.10).abs() < 1e-9, "rank {}", out.rank);
+        let details = out.details.unwrap();
+        assert_eq!(
+            details.len(),
+            1,
+            "guardrail must not appear as a contributor"
+        );
+        assert_eq!(details[0].name, "tp");
+    }
+
+    /// Backward-compat pin: with NO guardrails declared, `with_noise_guardrails`
+    /// (empty) produces a rank and decision bit-for-bit identical to the legacy
+    /// scorer. This guarantees Part C is a pure opt-in.
+    #[test]
+    fn absent_noise_guardrails_reproduces_legacy_rank_exactly() {
+        let primary = vec![
+            PrimaryMetricDef {
+                name: "throughput".to_string(),
+                direction: Direction::Maximize,
+                weight: 0.75,
+            },
+            PrimaryMetricDef {
+                name: "latency".to_string(),
+                direction: Direction::Minimize,
+                weight: 0.25,
+            },
+        ];
+        let legacy = WeightedSumScorer::new(primary.clone(), vec![]);
+        let with_empty = WeightedSumScorer::with_noise_guardrails(primary, vec![], vec![]);
+        let inp = input(
+            &[("throughput", 100.0), ("latency", 50.0)],
+            &[("throughput", 110.0), ("latency", 40.0)],
+        );
+        let a = legacy.calculate(&inp).unwrap();
+        let b = with_empty.calculate(&inp).unwrap();
+        assert_eq!(a.rank, b.rank);
+        assert_eq!(a.decision, b.decision);
+        assert_eq!(a.reason, b.reason);
+        assert_eq!(a.details, b.details);
+        // And it matches the documented legacy value.
+        assert!((b.rank - 0.125).abs() < 1e-12, "rank {}", b.rank);
     }
 }
