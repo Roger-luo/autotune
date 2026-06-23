@@ -514,3 +514,240 @@ fn scenario_guardrail_within_noise_move_does_not_veto() {
         "a within-noise guardrail move must not veto"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Measurement robustness: option 1 (baseline replicates / cross-build envelope)
+// option 5 (two-phase confirmation), and the non-perf gating + defaults pin.
+// ---------------------------------------------------------------------------
+
+/// Run a project to completion and return the iteration-1 ledger row as JSON.
+fn run_and_get_iteration_row(project: &Project, task_name: &str) -> serde_json::Value {
+    let impl_script = project.path().join(".mock-impl-script");
+    std::fs::write(
+        &impl_script,
+        "printf '// OPTIMIZED\\n' >> src/lib.rs && git add -A && git commit -q -m 'optimize'",
+    )
+    .unwrap();
+
+    let script = write_script(
+        project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>optimize</approach>\
+               <hypothesis>tune the bench</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env("AUTOTUNE_MOCK_IMPL_SCRIPT", &impl_script)
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "run should complete.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let ledger_text = std::fs::read_to_string(
+        project
+            .path()
+            .join(format!(".autotune/tasks/{task_name}/ledger.json")),
+    )
+    .unwrap();
+    let ledger: serde_json::Value = serde_json::from_str(&ledger_text).unwrap();
+    ledger
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["iteration"] == serde_json::json!(1))
+        .unwrap_or_else(|| panic!("iteration 1 row present.\nledger:\n{ledger_text}"))
+        .clone()
+}
+
+/// Option 1: with `baseline_replicates = 3`, the baseline is re-measured with a
+/// per-replicate spread that yields an empirical CROSS-BUILD envelope of 30
+/// (values 100/70/130/90 → half-range (130-70)/2). The candidate's delta of +25
+/// EXCEEDS the tight within-run CI (half-width 2 each → envelope 4) but falls
+/// INSIDE the empirical envelope, so it is discounted as cross-build noise and
+/// the iteration is DISCARDED (no real improvement).
+///
+/// The measure command keys its value off an invocation counter (the baseline
+/// pass plus three replicates) and the OPTIMIZED marker (candidate). The
+/// counter-in-a-file is an ad-hoc stand-in for a proper mock knob that yields a
+/// sequence of criterion estimates across invocations — tracked in
+/// https://github.com/Roger-luo/autotune/issues/19.
+#[test]
+fn scenario_baseline_replicates_discount_cross_build_swing() {
+    // Per-invocation counter at the main repo .git (stable across the baseline
+    // cwd and the iteration worktree). Baseline passes (no OPTIMIZED) walk the
+    // spread 100,70,130,90; the candidate (OPTIMIZED) reports 125 with a tight
+    // CI. Ad-hoc stand-in for a real mock per-call estimate sequence — see
+    // https://github.com/Roger-luo/autotune/issues/19.
+    const CONFIG: &str = r#"
+[task]
+name = "replicate-task"
+description = "cross-build empirical envelope discount"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "bench"
+command = ["sh", "-c", """
+mkdir -p target/criterion/b/new
+# Stable per-invocation counter at the main repo .git (git-common-dir is the
+# same from the baseline cwd and the iteration worktree, unlike --show-toplevel).
+gcd=$(git rev-parse --git-common-dir 2>/dev/null)
+case "$gcd" in /*) ;; *) gcd="$PWD/$gcd";; esac
+counter_file="$gcd/autotune-measure-count"
+n=0
+[ -f "$counter_file" ] && n=$(cat "$counter_file")
+echo $((n + 1)) > "$counter_file"
+if grep -q OPTIMIZED src/lib.rs; then
+  val=125.0; lo=123.0; hi=127.0
+else
+  case "$n" in
+    0) val=100.0; lo=98.0;  hi=102.0;;
+    1) val=70.0;  lo=68.0;  hi=72.0;;
+    2) val=130.0; lo=128.0; hi=132.0;;
+    *) val=90.0;  lo=88.0;  hi=92.0;;
+  esac
+fi
+printf '{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s},"point_estimate":%s},"median":{"point_estimate":%s},"std_dev":{"point_estimate":1.0}}' "$lo" "$hi" "$val" "$val" > target/criterion/b/new/estimates.json
+"""]
+timeout = 30
+adaptor = { type = "criterion", benchmarks = [{ name = "b_ns", group = "b", stat = "mean" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "b_ns", direction = "Minimize", weight = 1.0 }]
+baseline_replicates = 3
+replicate_rebuild = false
+"#;
+
+    let project = Project::empty()
+        .file(".autotune.toml", CONFIG)
+        .file("src/lib.rs", "pub fn hello() -> u64 { 42 }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let row = run_and_get_iteration_row(&project, "replicate-task");
+    assert_eq!(
+        row["status"],
+        serde_json::json!("discarded"),
+        "a delta inside the empirical cross-build envelope must be discounted (no improvement).\nrow:\n{}",
+        serde_json::to_string_pretty(&row).unwrap()
+    );
+    let b = row["score_breakdown"]["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == serde_json::json!("b_ns"))
+        .expect("b_ns in breakdown");
+    assert_eq!(
+        b["within_noise"],
+        serde_json::json!(true),
+        "the candidate delta must be flagged within_noise via the empirical floor.\nbreakdown:\n{}",
+        serde_json::to_string_pretty(&row["score_breakdown"]).unwrap()
+    );
+}
+/// Gating: a NON-perf (regex) task with `baseline_replicates` and
+/// `confirm_significant` set still does NO extra measurement — the measure
+/// command runs exactly ONCE for the baseline and ONCE for the iteration (no
+/// replicates, no confirmation pass), because the robustness knobs only fire
+/// when `optimizes_runtime_perf()` (a criterion measure is declared).
+#[test]
+fn scenario_non_perf_task_does_no_extra_measurement() {
+    // The measure increments a counter and extracts it as the metric, so the
+    // final counter value == total measure invocations.
+    const CONFIG: &str = r#"
+[task]
+name = "regex-task"
+description = "non-perf gating: knobs set but ignored"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "count"
+command = ["sh", "-c", """
+gcd=$(git rev-parse --git-common-dir 2>/dev/null)
+case "$gcd" in /*) ;; *) gcd="$PWD/$gcd";; esac
+counter_file="$gcd/autotune-measure-count"
+n=0
+[ -f "$counter_file" ] && n=$(cat "$counter_file")
+n=$((n + 1))
+echo $n > "$counter_file"
+echo "invocations: $n"
+"""]
+timeout = 30
+adaptor = { type = "regex", patterns = [{ name = "invocations", pattern = "invocations: ([0-9]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "invocations", direction = "Maximize", weight = 1.0 }]
+baseline_replicates = 5
+confirm_significant = true
+"#;
+
+    let project = Project::empty()
+        .file(".autotune.toml", CONFIG)
+        .file("src/lib.rs", "pub fn hello() -> u64 { 42 }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let row = run_and_get_iteration_row(&project, "regex-task");
+    // Baseline measure = invocation 1; iteration candidate measure = invocation
+    // 2. If replication or a confirmation pass had fired, the counter would be
+    // higher. A regex task is deterministic and not a perf task, so the knobs
+    // are ignored: exactly 2 invocations total → the iteration metric is 2.
+    assert_eq!(
+        row["metrics"]["invocations"],
+        serde_json::json!(2.0),
+        "a non-perf task must do NO extra measurement despite the knobs.\nrow:\n{}",
+        serde_json::to_string_pretty(&row).unwrap()
+    );
+    // And the persisted cross-build envelope file must NOT exist (no replication ran).
+    assert!(
+        !project
+            .path()
+            .join(".autotune/tasks/regex-task/noise_envelope.json")
+            .exists()
+            || std::fs::read_to_string(
+                project
+                    .path()
+                    .join(".autotune/tasks/regex-task/noise_envelope.json")
+            )
+            .unwrap()
+            .trim()
+                == "{}",
+        "non-perf task must not persist a non-empty cross-build envelope"
+    );
+}

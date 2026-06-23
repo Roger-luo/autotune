@@ -736,6 +736,98 @@ fn build_baseline_record(
     }
 }
 
+/// Option 1: collect a per-metric empirical CROSS-BUILD noise envelope by
+/// re-measuring the baseline `N = score.baseline_replicates()` extra times,
+/// folding the original baseline values in so the spread is computed over
+/// `1 + N` measurements. Returns an empty map (no floor) when the task is not a
+/// perf task (`!optimizes_runtime_perf()`) or `N == 0` — the
+/// backward-compatible identity, with ZERO extra measurements for deterministic
+/// metrics.
+///
+/// When `score.replicate_rebuild()` is true (the default), each replicate runs
+/// with a distinct `RUSTFLAGS` cfg so Cargo's build fingerprint changes and the
+/// project is actually recompiled — that rebuild is the POINT: it surfaces the
+/// codegen/layout noise within-run criterion CIs cannot see. A `false` value
+/// runs the replicates with the ambient environment (cheaper; captures only
+/// re-run jitter, not cross-build noise).
+fn collect_baseline_replicate_envelope(
+    config: &AutotuneConfig,
+    repo_root: &Path,
+    baseline_metrics: &std::collections::HashMap<String, f64>,
+    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
+) -> Result<std::collections::HashMap<String, f64>> {
+    let replicates = config.score.baseline_replicates();
+    // Gate strictly: deterministic (non-criterion) tasks pay ZERO cost, and
+    // N == 0 is off. Both keep behavior bit-for-bit identical to #18.
+    if replicates == 0 || !config.optimizes_runtime_perf() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let rebuild = config.score.replicate_rebuild();
+    aprintln!(
+        "[autotune] measuring {replicates} baseline replicate(s) for a cross-build noise envelope (rebuild={rebuild})"
+    );
+
+    // Seed each metric's series with the original baseline measurement.
+    let mut series: std::collections::HashMap<String, Vec<f64>> = std::collections::HashMap::new();
+    for (name, value) in baseline_metrics {
+        series.entry(name.clone()).or_default().push(*value);
+    }
+
+    for replicate in 1..=replicates {
+        // Force a rebuild by perturbing Cargo's build fingerprint with a benign,
+        // never-referenced cfg unique to this replicate. The cfg is inert (no
+        // code reads it) but distinct values make Cargo recompile, so codegen
+        // and binary layout actually change between replicates.
+        let extra_env: Vec<(String, String)> = if rebuild {
+            vec![(
+                "RUSTFLAGS".to_string(),
+                format!("--cfg autotune_baseline_replicate=\"{replicate}\""),
+            )]
+        } else {
+            Vec::new()
+        };
+
+        aprintln!("[autotune] baseline replicate {replicate}/{replicates}");
+        let (metrics, _reports) = autotune_benchmark::run_all_measures_with_output_env(
+            &config.measure,
+            repo_root,
+            "baseline",
+            0,
+            judge_ctx,
+            &extra_env,
+        )
+        .with_context(|| format!("baseline replicate {replicate} measures failed"))?;
+        for (name, value) in metrics {
+            series.entry(name).or_default().push(value);
+        }
+    }
+
+    // Compute the empirical cross-build floor per metric (half-range across the
+    // 1 + N measurements). Only metrics that actually varied get a non-zero
+    // floor; the rest stay at 0.0 (no floor → within-run envelope unchanged).
+    let envelope: std::collections::HashMap<String, f64> = series
+        .iter()
+        .map(|(name, values)| {
+            (
+                name.clone(),
+                autotune_score::empirical_cross_build_envelope(values),
+            )
+        })
+        .collect();
+
+    aprintln!("[autotune] cross-build noise envelope: {envelope:?}");
+    autotune_agent::trace::record(
+        "baseline.replicates",
+        serde_json::json!({
+            "replicates": replicates,
+            "rebuild": rebuild,
+            "empirical_envelope": envelope,
+        }),
+    );
+    Ok(envelope)
+}
+
 fn build_initial_task_state(
     task_name: &str,
     canonical_branch: &str,
@@ -896,6 +988,25 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
             }
         }
     }
+
+    // Option 1: replicate / control baselines for a CROSS-BUILD noise envelope.
+    // Within-run criterion CIs only capture single-build sampling jitter; they
+    // miss the codegen/layout noise that swings unrelated benches between
+    // rebuilds (ppvm #149). When this is a perf task AND `baseline_replicates >
+    // 0`, re-measure the baseline N extra times — rebuilding between replicates
+    // by default — and persist a per-metric empirical envelope that EVERY
+    // iteration's scoring folds into the noise gate (MAX of within-run CI and
+    // cross-build spread). Deterministic tasks (no criterion measure) skip this
+    // entirely and pay zero cost.
+    let empirical_envelope = collect_baseline_replicate_envelope(
+        &config,
+        &repo_root,
+        &baseline_metrics,
+        judge_ctx.as_ref(),
+    )?;
+    store
+        .save_empirical_envelope(&empirical_envelope)
+        .context("failed to persist empirical cross-build envelope")?;
 
     // Score baseline against itself (rank=0)
     let baseline_record =
@@ -3047,6 +3158,9 @@ mod tests {
                 }],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
             agent: autotune_config::AgentConfig::default(),
             worktree: autotune_config::WorktreeConfig::default(),
@@ -3856,6 +3970,9 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             }],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         };
 
         let prompt = build_research_agent_prompt(&config, &HashMap::new(), &[], Path::new(""));
@@ -4549,6 +4666,9 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             ],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         };
         let scorer = build_scorer(&config);
 

@@ -1188,6 +1188,9 @@ mod tests {
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             }),
             ..Default::default()
         }
@@ -1462,6 +1465,9 @@ mod tests {
             guardrail_metrics: vec![],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         };
         assert!(matches!(
             validate_score(&score, &acc),
@@ -1483,6 +1489,9 @@ mod tests {
             guardrail_metrics: vec![],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         };
         match validate_score(&score, &acc) {
             FragmentOutcome::Rejected(msg) => {
@@ -1510,6 +1519,9 @@ mod tests {
             }],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         };
         match validate_score(&score, &acc) {
             FragmentOutcome::Rejected(msg) => {
@@ -1531,6 +1543,9 @@ mod tests {
             }],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         };
         assert!(matches!(
             validate_score(&score, &acc),
@@ -1550,6 +1565,9 @@ mod tests {
             }],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         };
         match validate_score(&score, &acc) {
             FragmentOutcome::Rejected(msg) => {

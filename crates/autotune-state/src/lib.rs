@@ -479,6 +479,37 @@ impl TaskStore {
         atomic_write(&dir.join("test_output.txt"), output)
     }
 
+    fn empirical_envelope_path(&self) -> PathBuf {
+        self.root.join("noise_envelope.json")
+    }
+
+    /// Persist the per-metric empirical CROSS-BUILD noise envelope computed once
+    /// at baseline time by replicating the baseline with a rebuild between each
+    /// measurement (option 1). Stored task-wide (not per-iteration) because the
+    /// estimate characterizes the build, not any single candidate — so every
+    /// iteration's scoring folds in the same floor. Atomic write.
+    pub fn save_empirical_envelope(
+        &self,
+        envelope: &HashMap<String, f64>,
+    ) -> Result<(), StateError> {
+        atomic_write(
+            &self.empirical_envelope_path(),
+            &serde_json::to_string_pretty(envelope)?,
+        )
+    }
+
+    /// Load the per-metric empirical cross-build noise envelope, or an empty map
+    /// when none was persisted (the default — `baseline_replicates == 0`, a
+    /// deterministic/non-perf task, or a task that predates this feature).
+    pub fn load_empirical_envelope(&self) -> Result<HashMap<String, f64>, StateError> {
+        let path = self.empirical_envelope_path();
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+        let content = fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&content)?)
+    }
+
     pub fn list_tasks(autotune_dir: &Path) -> Result<Vec<String>, StateError> {
         let tasks_dir = autotune_dir.join("tasks");
         if !tasks_dir.exists() {
@@ -667,6 +698,26 @@ mod tests {
         let record: IterationRecord = serde_json::from_str(legacy_json).unwrap();
         assert_eq!(record.fix_attempts, 0);
         assert_eq!(record.fresh_spawns, 0);
+    }
+
+    /// The empirical cross-build envelope round-trips through the store, and a
+    /// task that never persisted one (the default) reads back an empty map.
+    #[test]
+    fn empirical_envelope_round_trips_and_defaults_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TaskStore::new(tmp.path()).unwrap();
+
+        // No file yet → empty map (the backward-compatible default).
+        assert!(store.load_empirical_envelope().unwrap().is_empty());
+
+        let mut env = HashMap::new();
+        env.insert("bench_ns".to_string(), 35.0);
+        env.insert("other_ns".to_string(), 12.5);
+        store.save_empirical_envelope(&env).unwrap();
+
+        let loaded = store.load_empirical_envelope().unwrap();
+        assert_eq!(loaded.get("bench_ns"), Some(&35.0));
+        assert_eq!(loaded.get("other_ns"), Some(&12.5));
     }
 
     #[test]

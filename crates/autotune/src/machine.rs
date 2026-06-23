@@ -1358,6 +1358,11 @@ fn run_scoring(
         &candidate_metrics,
     );
 
+    // Option 1: per-metric empirical CROSS-BUILD noise floor measured once at
+    // baseline (replicated with rebuilds). Empty when off (`baseline_replicates
+    // == 0` or a non-perf task) → no floor, behavior unchanged.
+    let empirical_envelope = store.load_empirical_envelope().unwrap_or_default();
+
     let (noise_threshold, noise_k) = config.score.noise_params();
     let score_input = ScoreInput {
         baseline: baseline_metrics,
@@ -1370,6 +1375,7 @@ fn run_scoring(
             stddev_k: noise_k,
         },
         excluded_metrics,
+        empirical_envelope,
     };
 
     let score_output = scorer.calculate(&score_input).context("scoring failed")?;
@@ -1568,6 +1574,7 @@ fn build_score_breakdown(
                         b,
                         input.candidate_variances.get(&name),
                         input.best_variances.get(&name),
+                        input.empirical_envelope.get(&name).copied().unwrap_or(0.0),
                         &input.noise,
                     ),
                     _ => false,
@@ -2140,6 +2147,9 @@ mod tests {
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
             agent: autotune_config::AgentConfig::default(),
             worktree: autotune_config::WorktreeConfig::default(),

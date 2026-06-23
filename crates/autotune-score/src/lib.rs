@@ -61,6 +61,43 @@ impl MetricVariance {
 /// Per-metric noise estimates keyed by metric name.
 pub type Variances = HashMap<String, MetricVariance>;
 
+/// Per-metric empirical cross-build noise floor (absolute units), keyed by
+/// metric name. Computed once at baseline time by re-measuring the baseline
+/// `N` times with a rebuild between each replicate (option 1: cross-build
+/// codegen/layout noise), then folded into the noise envelope as a `MAX` floor.
+/// Empty by default → no cross-build floor, behavior unchanged.
+pub type EmpiricalEnvelopes = HashMap<String, f64>;
+
+/// Compute the empirical cross-build noise floor for one metric from a set of
+/// replicate measurements (the baseline measured `1 + N` times, rebuilding
+/// between each so the spread captures build-to-build codegen/layout noise).
+///
+/// Returns the **half-range** `(max - min) / 2` across the replicates. Half the
+/// peak-to-peak swing is the honest radius a single new measurement could land
+/// inside purely from rebuild jitter, and it composes with the existing
+/// CI-half-width model (which also returns a radius), so the two are directly
+/// comparable when we take their `MAX`.
+///
+/// Fewer than two replicates ⇒ `0.0` (no spread observed, no floor). This is
+/// the backward-compatible identity when `baseline_replicates == 0` (only the
+/// single baseline measurement exists).
+pub fn empirical_cross_build_envelope(replicate_values: &[f64]) -> f64 {
+    if replicate_values.len() < 2 {
+        return 0.0;
+    }
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for &v in replicate_values {
+        if v < min {
+            min = v;
+        }
+        if v > max {
+            max = v;
+        }
+    }
+    (max - min) / 2.0
+}
+
 /// Tunable parameters for the noise-aware significance gate. The default is the
 /// no-op identity: with no variances and `relative_threshold == 0.0` the
 /// envelope is `0.0`, so only an exactly-zero delta is "within noise" — and a
@@ -99,15 +136,39 @@ pub const DEFAULT_STDDEV_K: f64 = 2.0;
 
 /// Compute the noise envelope (the absolute magnitude a delta must EXCEED to
 /// count as a real change) for one metric, from the candidate and best
-/// variances plus the noise config. Preference order:
+/// variances plus the noise config. The WITHIN-RUN component is picked in
+/// preference order:
 ///
 /// 1. Confidence intervals: `candidate_half_width + best_half_width` (the task's
 ///    primary model — two independent measurements, errors add).
 /// 2. Stddev: `stddev_k * max(candidate_stddev, best_stddev)`.
 /// 3. Relative floor: `relative_threshold * |best_value|`.
 ///
+/// The final envelope is `MAX(within_run, empirical_cross_build)`. Criterion's
+/// per-run CI captures only *within-build* sampling jitter; it cannot see the
+/// codegen/layout noise that swings a bench ±35% between rebuilds (option 1).
+/// The empirical cross-build floor — measured by replicating the baseline with
+/// a rebuild between each — is the more honest, usually larger envelope, so we
+/// never let the (tighter) within-run CI shrink it. `empirical == 0.0` (the
+/// default when `baseline_replicates == 0`) leaves the within-run value
+/// untouched, the backward-compatible identity.
+///
 /// Returns `0.0` when nothing applies (the backward-compatible identity).
 pub fn noise_envelope(
+    best_value: f64,
+    candidate_variance: Option<&MetricVariance>,
+    best_variance: Option<&MetricVariance>,
+    empirical: f64,
+    config: &NoiseConfig,
+) -> f64 {
+    let within_run = within_run_envelope(best_value, candidate_variance, best_variance, config);
+    within_run.max(empirical)
+}
+
+/// The within-run (single-build) component of the noise envelope — CI, then
+/// stddev, then relative floor. Split out so the cross-build empirical floor can
+/// be `MAX`ed in by [`noise_envelope`].
+fn within_run_envelope(
     best_value: f64,
     candidate_variance: Option<&MetricVariance>,
     best_variance: Option<&MetricVariance>,
@@ -137,9 +198,16 @@ pub fn within_noise(
     best_value: f64,
     candidate_variance: Option<&MetricVariance>,
     best_variance: Option<&MetricVariance>,
+    empirical: f64,
     config: &NoiseConfig,
 ) -> bool {
-    let envelope = noise_envelope(best_value, candidate_variance, best_variance, config);
+    let envelope = noise_envelope(
+        best_value,
+        candidate_variance,
+        best_variance,
+        empirical,
+        config,
+    );
     delta.abs() <= envelope
 }
 
@@ -166,6 +234,13 @@ pub struct ScoreInput {
     /// exercises). Empty by default → no causal filtering, behavior unchanged.
     #[serde(default)]
     pub excluded_metrics: std::collections::HashSet<String>,
+    /// Per-metric empirical CROSS-BUILD noise floor (absolute units), computed
+    /// once at baseline time by replicating the baseline with a rebuild between
+    /// each measurement (option 1). Folded into the per-metric noise envelope as
+    /// a `MAX` floor (see [`noise_envelope`]). Empty by default
+    /// (`baseline_replicates == 0`) → no cross-build floor, behavior unchanged.
+    #[serde(default)]
+    pub empirical_envelope: EmpiricalEnvelopes,
 }
 
 impl ScoreInput {
@@ -180,6 +255,7 @@ impl ScoreInput {
             best_variances: Variances::new(),
             noise: NoiseConfig::default(),
             excluded_metrics: std::collections::HashSet::new(),
+            empirical_envelope: EmpiricalEnvelopes::new(),
         }
     }
 }
@@ -226,4 +302,108 @@ pub struct ScoreMetricContribution {
 
 pub trait ScoreCalculator {
     fn calculate(&self, input: &ScoreInput) -> Result<ScoreOutput, ScoreError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── empirical_cross_build_envelope ─────────────────────────────────────
+
+    /// Fewer than two replicates means no observed spread, so the empirical
+    /// floor is `0.0` — the backward-compatible identity when
+    /// `baseline_replicates == 0` (only the single baseline measurement exists).
+    #[test]
+    fn empirical_envelope_zero_for_under_two_replicates() {
+        assert_eq!(empirical_cross_build_envelope(&[]), 0.0);
+        assert_eq!(empirical_cross_build_envelope(&[100.0]), 0.0);
+    }
+
+    /// The empirical floor is the half-range `(max - min) / 2` across replicates
+    /// — half the peak-to-peak swing, a radius directly comparable to a CI
+    /// half-width.
+    #[test]
+    fn empirical_envelope_is_half_range_across_replicates() {
+        // baseline rebuilt three extra times: 100, 135, 80, 120.
+        // max 135, min 80 → range 55 → half-range 27.5.
+        let env = empirical_cross_build_envelope(&[100.0, 135.0, 80.0, 120.0]);
+        assert!((env - 27.5).abs() < 1e-12, "env {env}");
+    }
+
+    // ── noise_envelope: MAX(within-run CI, empirical cross-build) ──────────
+
+    fn ci(lower: f64, upper: f64) -> MetricVariance {
+        MetricVariance {
+            stddev: None,
+            ci_lower: Some(lower),
+            ci_upper: Some(upper),
+        }
+    }
+
+    /// The cross-build empirical floor is the more honest, larger envelope when
+    /// it exceeds the tight within-run CI — `noise_envelope` returns the MAX so
+    /// the within-run CI can never shrink the cross-build floor.
+    #[test]
+    fn noise_envelope_takes_max_of_ci_and_empirical() {
+        // within-run CI half-width 5 each → 10. Empirical cross-build floor 35.
+        let var = ci(95.0, 105.0);
+        let env = noise_envelope(100.0, Some(&var), Some(&var), 35.0, &NoiseConfig::default());
+        assert!(
+            (env - 35.0).abs() < 1e-12,
+            "expected empirical 35, got {env}"
+        );
+    }
+
+    /// When the within-run CI is the larger of the two, it wins the MAX — the
+    /// empirical floor never *shrinks* a genuinely wide within-run envelope.
+    #[test]
+    fn noise_envelope_keeps_wider_within_run_ci() {
+        // within-run CI half-width 40 each → 80. Empirical floor only 10.
+        let var = ci(60.0, 140.0);
+        let env = noise_envelope(100.0, Some(&var), Some(&var), 10.0, &NoiseConfig::default());
+        assert!(
+            (env - 80.0).abs() < 1e-12,
+            "expected within-run 80, got {env}"
+        );
+    }
+
+    /// `empirical == 0.0` (the default, `baseline_replicates == 0`) leaves the
+    /// within-run envelope exactly as it was — the backward-compatible identity.
+    #[test]
+    fn noise_envelope_zero_empirical_is_identity() {
+        let var = ci(95.0, 105.0);
+        let with = noise_envelope(100.0, Some(&var), Some(&var), 0.0, &NoiseConfig::default());
+        let within_run =
+            within_run_envelope(100.0, Some(&var), Some(&var), &NoiseConfig::default());
+        assert_eq!(with, within_run);
+        assert!((with - 10.0).abs() < 1e-12, "env {with}");
+    }
+
+    /// A delta within the empirical cross-build envelope is discounted even
+    /// though it exceeds the within-run CI — the core option-1 behavior.
+    #[test]
+    fn within_noise_discounts_delta_inside_empirical_but_outside_ci() {
+        // Tight within-run CI (half-width 5 each → 10). A +25 delta exceeds the
+        // CI, but the empirical cross-build floor of 35 swallows it.
+        let var = ci(95.0, 105.0);
+        let cfg = NoiseConfig::default();
+        // Without the empirical floor: 25 > 10 → NOT within noise (significant).
+        assert!(!within_noise(
+            25.0,
+            100.0,
+            Some(&var),
+            Some(&var),
+            0.0,
+            &cfg
+        ));
+        // With the empirical floor 35: 25 <= 35 → within noise (discounted).
+        assert!(within_noise(
+            25.0,
+            100.0,
+            Some(&var),
+            Some(&var),
+            35.0,
+            &cfg
+        ));
+    }
 }

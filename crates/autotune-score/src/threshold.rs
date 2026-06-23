@@ -53,6 +53,11 @@ impl ScoreCalculator for ThresholdScorer {
                     best,
                     input.candidate_variances.get(&condition.metric),
                     input.best_variances.get(&condition.metric),
+                    input
+                        .empirical_envelope
+                        .get(&condition.metric)
+                        .copied()
+                        .unwrap_or(0.0),
                     &input.noise,
                 )
             {
