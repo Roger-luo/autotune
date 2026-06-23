@@ -1447,3 +1447,69 @@ fn scenario_run_proceeds_when_precommit_hooks_pass() {
         "run should proceed past the preflight to baseline, got:\n{combined}"
     );
 }
+
+/// The preflight must skip the `no-commit-to-branch` branch-guard hook: it runs
+/// on the canonical branch (which that hook protects), but candidate commits
+/// land on worktree branches and never trip it. The fake runner here *fails*
+/// unless `SKIP=no-commit-to-branch` is set, so the run only proceeds if the
+/// preflight passed that env through.
+#[cfg(unix)]
+#[test]
+fn scenario_run_preflight_skips_branch_guard_hook() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = Project::empty()
+        .file(".autotune.toml", CONFIG_TOML)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .file("prek.toml", "# stand-in prek config\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let bin_dir = project.path().join(".fakebin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_prek = bin_dir.join("prek");
+    // Passes only when the branch-guard hook is in $SKIP (as the preflight sets).
+    std::fs::write(
+        &fake_prek,
+        "#!/bin/sh\ncase \"$SKIP\" in\n  *no-commit-to-branch*) exit 0 ;;\n  *) echo 'no-commit-to-branch.....Failed' >&2; exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_prek, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let script = write_script(
+        &project,
+        &[
+            "<plan><approach>x</approach><hypothesis>h</hypothesis><files-to-modify><file>src/lib.rs</file></files-to-modify></plan>",
+        ],
+    );
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .current_dir(project.path())
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !combined.contains("does not pass its own pre-commit hooks"),
+        "preflight must skip no-commit-to-branch and pass, got:\n{combined}"
+    );
+    assert!(
+        combined.contains("collecting baseline metrics"),
+        "run should proceed past the preflight to baseline, got:\n{combined}"
+    );
+}
