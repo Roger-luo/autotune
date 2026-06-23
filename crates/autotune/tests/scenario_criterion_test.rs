@@ -670,6 +670,127 @@ replicate_rebuild = false
         serde_json::to_string_pretty(&row["score_breakdown"]).unwrap()
     );
 }
+
+/// Option 5 config: `confirm_significant = true`. A genuine `fast_ns`
+/// improvement plus a noise-tolerant guardrail `mem_ns` whose FIRST candidate
+/// measurement shows a significant regression. The confirmation re-measure
+/// reports `mem_ns` at `confirm_mem` (back to baseline ⇒ noise, or still
+/// regressed ⇒ reproduces). The measure keys candidate values off the
+/// per-invocation counter: counter 1 = first candidate, 2 = confirmation pass.
+fn confirm_config(confirm_mem: f64) -> String {
+    format!(
+        r#"
+[task]
+name = "confirm-task"
+description = "two-phase confirmation of significant deltas"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "benches"
+command = ["sh", "-c", """
+mkdir -p target/criterion/fast/new target/criterion/mem/new
+gcd=$(git rev-parse --git-common-dir 2>/dev/null)
+case "$gcd" in /*) ;; *) gcd="$PWD/$gcd";; esac
+counter_file="$gcd/autotune-measure-count"
+n=0
+[ -f "$counter_file" ] && n=$(cat "$counter_file")
+echo $((n + 1)) > "$counter_file"
+if grep -q OPTIMIZED src/lib.rs; then
+  fast=80.0
+  if [ "$n" -eq 1 ]; then
+    mem=200.0          # first candidate measurement: significant regression
+  else
+    mem={confirm_mem}  # confirmation re-measure
+  fi
+else
+  fast=100.0
+  mem=100.0
+fi
+mlo=$(awk "BEGIN{{print $mem-3}}"); mhi=$(awk "BEGIN{{print $mem+3}}")
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":1.0}}}}' "$fast" "$fast" "$fast" "$fast" > target/criterion/fast/new/estimates.json
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":1.0}}}}' "$mlo" "$mhi" "$mem" "$mem" > target/criterion/mem/new/estimates.json
+"""]
+timeout = 30
+adaptor = {{ type = "criterion", benchmarks = [{{ name = "fast_ns", group = "fast", stat = "mean" }}, {{ name = "mem_ns", group = "mem", stat = "mean" }}] }}
+
+[score]
+type = "weighted_sum"
+confirm_significant = true
+replicate_rebuild = false
+primary_metrics = [
+  {{ name = "fast_ns", direction = "Minimize", weight = 1.0 }},
+  {{ name = "mem_ns", direction = "Minimize", guardrail = true }},
+]
+"#
+    )
+}
+
+/// Option 5: a one-off significant "regression" that does NOT reproduce on the
+/// confirmation pass is treated as noise — the candidate is KEPT on the strength
+/// of the real `fast_ns` improvement (the guardrail veto is withdrawn).
+#[test]
+fn scenario_confirmation_non_reproducing_regression_is_kept() {
+    let project = Project::empty()
+        .file(".autotune.toml", confirm_config(100.0)) // confirmation: mem back to baseline
+        .file("src/lib.rs", "pub fn hello() -> u64 { 42 }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let row = run_and_get_iteration_row(&project, "confirm-task");
+    assert_eq!(
+        row["status"],
+        serde_json::json!("kept"),
+        "a regression that doesn't reproduce on the confirmation pass must NOT be acted on.\nrow:\n{}",
+        serde_json::to_string_pretty(&row).unwrap()
+    );
+    // The recorded mem_ns reflects the confirmed (re-measured) value, not the
+    // one-off 200.
+    assert_eq!(
+        row["metrics"]["mem_ns"],
+        serde_json::json!(100.0),
+        "kept row must carry the confirmed mem_ns value.\nrow:\n{}",
+        serde_json::to_string_pretty(&row).unwrap()
+    );
+    assert!(
+        row["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("confirmation"),
+        "reason should note the confirmation pass.\nreason: {}",
+        row["reason"]
+    );
+}
+
+/// Option 5: a significant regression that REPRODUCES on the confirmation pass
+/// is real — the guardrail veto stands and the candidate is DISCARDED.
+#[test]
+fn scenario_confirmation_reproducing_regression_is_discarded() {
+    let project = Project::empty()
+        .file(".autotune.toml", confirm_config(200.0)) // confirmation: mem still regressed
+        .file("src/lib.rs", "pub fn hello() -> u64 { 42 }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let row = run_and_get_iteration_row(&project, "confirm-task");
+    assert_eq!(
+        row["status"],
+        serde_json::json!("discarded"),
+        "a reproducing significant regression must be acted on (discarded).\nrow:\n{}",
+        serde_json::to_string_pretty(&row).unwrap()
+    );
+}
+
 /// Gating: a NON-perf (regex) task with `baseline_replicates` and
 /// `confirm_significant` set still does NO extra measurement — the measure
 /// command runs exactly ONCE for the baseline and ONCE for the iteration (no
