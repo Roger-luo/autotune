@@ -437,6 +437,7 @@ fn run_planning(
         commit_sha: None,
         test_results: Vec::new(),
         metrics: None,
+        variances: Default::default(),
         rank: None,
         files_to_modify: hypothesis.files_to_modify.clone(),
         impl_session_id: None,
@@ -1165,11 +1166,75 @@ fn run_measuring(
         );
     }
 
+    // Merge per-metric noise estimates (criterion CI/stddev) across measures.
+    let variances = autotune_benchmark::merge_variances(&reports);
+
+    // Copy each criterion measure's `estimates.json` into the iteration dir so
+    // the raw confidence-interval data survives after the worktree is removed
+    // at integration. Best-effort: a missing file just isn't copied.
+    copy_criterion_estimates(
+        &config.measure,
+        &worktree_path,
+        store,
+        state.current_iteration,
+        &approach_name,
+    );
+
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.metrics = Some(metrics);
+    approach_mut.variances = adaptor_to_state_variances(&variances);
     state.current_phase = Phase::Scoring;
     store.save_state(state)?;
     Ok(())
+}
+
+/// Convert adaptor-layer variances (from measurement) to the state-layer type
+/// for persistence. The two are separate structs (so each crate stays a leaf),
+/// mapped here at the boundary like the parallel `Direction` enums.
+fn adaptor_to_state_variances(
+    variances: &autotune_benchmark::Variances,
+) -> autotune_state::Variances {
+    variances
+        .iter()
+        .map(|(name, v)| {
+            (
+                name.clone(),
+                autotune_state::MetricVariance {
+                    stddev: v.stddev,
+                    ci_lower: v.ci_lower,
+                    ci_upper: v.ci_upper,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Copy each criterion measure's resolved `estimates.json` into the iteration
+/// dir under `measures/<metric>.estimates.json`, so the raw CI/stddev data
+/// survives after the per-iteration worktree is removed at integration.
+fn copy_criterion_estimates(
+    measures: &[autotune_config::MeasureConfig],
+    worktree_path: &Path,
+    store: &TaskStore,
+    iteration: usize,
+    approach_name: &str,
+) {
+    let dest_dir = store
+        .iteration_dir(iteration, approach_name)
+        .join("measures");
+    for measure in measures {
+        let files = autotune_benchmark::criterion_estimates_files(measure, worktree_path);
+        if files.is_empty() {
+            continue;
+        }
+        if std::fs::create_dir_all(&dest_dir).is_err() {
+            continue;
+        }
+        for (metric, src) in files {
+            let dest = dest_dir.join(format!("{metric}.estimates.json"));
+            let _ = std::fs::copy(&src, &dest);
+        }
+    }
 }
 
 /// The metrics that represent the advancing branch's current state, used as
@@ -1194,6 +1259,42 @@ fn best_metrics_from_ledger(ledger: &[IterationRecord]) -> Metrics {
         .unwrap_or_default()
 }
 
+/// The per-metric noise estimates of the same ledger row `best_metrics_from_ledger`
+/// selects as `best`. Recovered so the noise envelope can add the best row's CI
+/// half-width to the candidate's. Empty when that row predates variance capture.
+fn best_variances_from_ledger(ledger: &[IterationRecord]) -> autotune_state::Variances {
+    ledger
+        .iter()
+        .rev()
+        .find(|r| {
+            matches!(
+                r.status,
+                IterationStatus::Kept | IterationStatus::Baseline | IterationStatus::Reverted
+            ) && !r.metrics.is_empty()
+        })
+        .map(|r| r.variances.clone())
+        .unwrap_or_default()
+}
+
+/// Convert state-layer variances to the score-layer type. The two are separate
+/// structs (kept so each crate stays a leaf), mapped here at the boundary like
+/// the parallel `Direction` enums.
+fn to_score_variances(variances: &autotune_state::Variances) -> autotune_score::Variances {
+    variances
+        .iter()
+        .map(|(name, v)| {
+            (
+                name.clone(),
+                autotune_score::MetricVariance {
+                    stddev: v.stddev,
+                    ci_lower: v.ci_lower,
+                    ci_upper: v.ci_upper,
+                },
+            )
+        })
+        .collect()
+}
+
 fn run_scoring(
     config: &AutotuneConfig,
     scorer: &dyn ScoreCalculator,
@@ -1216,6 +1317,11 @@ fn run_scoring(
         .as_ref()
         .and_then(|a| a.metrics.clone())
         .context("no metrics in Scoring phase")?;
+    let candidate_variances = state
+        .current_approach
+        .as_ref()
+        .map(|a| a.variances.clone())
+        .unwrap_or_default();
 
     let ledger = store.load_ledger()?;
     let baseline_metrics = ledger
@@ -1225,11 +1331,44 @@ fn run_scoring(
         .unwrap_or_default();
 
     let best_metrics = best_metrics_from_ledger(&ledger);
+    let best_variances = best_variances_from_ledger(&ledger);
 
+    // Part C: which files did this candidate's commit touch? Used to flag a
+    // metric as `causally_unrelated` when the diff doesn't intersect the
+    // measure's declared `sources`. Best-effort — `None` disables causal
+    // filtering (so behavior is unchanged when no commit/sources exist).
+    let candidate_changed_files = state
+        .current_approach
+        .as_ref()
+        .and_then(|a| {
+            a.commit_sha
+                .as_ref()
+                .map(|sha| (a.worktree_path.clone(), sha.clone()))
+        })
+        .and_then(|(wt, sha)| autotune_git::diff_name_only(&wt, &sha).ok());
+
+    // Metrics whose measure declares `sources` the candidate's diff doesn't
+    // touch are excluded from the keep/discard accounting (a change can't be
+    // blamed for moving code it never touched). Empty when no `sources` are
+    // configured → no behavior change.
+    let excluded_metrics = causally_unrelated_metrics(
+        config,
+        candidate_changed_files.as_deref(),
+        &candidate_metrics,
+    );
+
+    let (noise_threshold, noise_k) = config.score.noise_params();
     let score_input = ScoreInput {
         baseline: baseline_metrics,
         candidate: candidate_metrics.clone(),
         best: best_metrics,
+        candidate_variances: to_score_variances(&candidate_variances),
+        best_variances: to_score_variances(&best_variances),
+        noise: autotune_score::NoiseConfig {
+            relative_threshold: noise_threshold,
+            stddev_k: noise_k,
+        },
+        excluded_metrics,
     };
 
     let score_output = scorer.calculate(&score_input).context("scoring failed")?;
@@ -1237,7 +1376,13 @@ fn run_scoring(
     // Assemble the structured per-metric breakdown for the analysis artifact.
     // The scorer supplies weight + weighted contribution (weighted-sum only);
     // the values + raw deltas + direction come from the CLI's view here.
-    let breakdown = build_score_breakdown(config, &score_input, &score_output);
+    let breakdown = build_score_breakdown(
+        config,
+        &score_input,
+        &score_output,
+        &candidate_variances,
+        candidate_changed_files.as_deref(),
+    );
 
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.rank = Some(score_output.rank);
@@ -1290,13 +1435,88 @@ fn metric_directions(config: &AutotuneConfig) -> HashMap<String, &'static str> {
             .iter()
             .map(|m| (m.name.clone(), dir(m.direction)))
             .collect(),
-        autotune_config::ScoreConfig::Threshold { conditions } => conditions
+        autotune_config::ScoreConfig::Threshold { conditions, .. } => conditions
             .iter()
             .map(|c| (c.metric.clone(), dir(c.direction)))
             .collect(),
         autotune_config::ScoreConfig::Script { .. }
         | autotune_config::ScoreConfig::Command { .. } => HashMap::new(),
     }
+}
+
+/// Map each metric name to the `sources` globs declared on the measure that
+/// produces it (Part C: causal attribution). Only measures with statically
+/// known metric names (regex/criterion/judge) and a non-empty `sources` list
+/// contribute; script measures and measures without `sources` are skipped.
+fn metric_sources(config: &AutotuneConfig) -> HashMap<String, Vec<String>> {
+    let mut map = HashMap::new();
+    for measure in &config.measure {
+        if measure.sources.is_empty() {
+            continue;
+        }
+        let names: Vec<String> = match &measure.adaptor {
+            autotune_config::AdaptorConfig::Regex { patterns } => {
+                patterns.iter().map(|p| p.name.clone()).collect()
+            }
+            autotune_config::AdaptorConfig::Criterion { benchmarks } => {
+                benchmarks.iter().map(|b| b.name.clone()).collect()
+            }
+            autotune_config::AdaptorConfig::Judge { rubrics, .. } => {
+                rubrics.iter().map(|r| r.id.clone()).collect()
+            }
+            // Script adaptors emit names only at runtime — can't attribute.
+            autotune_config::AdaptorConfig::Script { .. } => Vec::new(),
+        };
+        for name in names {
+            map.insert(name, measure.sources.clone());
+        }
+    }
+    map
+}
+
+/// The set of metric names that are causally unrelated to this candidate's
+/// diff: their measure declares `sources` globs, and the candidate's
+/// `changed_files` don't intersect them. Empty when no measure sets `sources`
+/// or `changed_files` is unknown (so the keep/discard accounting is unchanged).
+fn causally_unrelated_metrics(
+    config: &AutotuneConfig,
+    changed_files: Option<&[String]>,
+    candidate_metrics: &Metrics,
+) -> std::collections::HashSet<String> {
+    let Some(changed) = changed_files else {
+        return std::collections::HashSet::new();
+    };
+    let sources_by_metric = metric_sources(config);
+    candidate_metrics
+        .keys()
+        .filter(|name| {
+            sources_by_metric
+                .get(*name)
+                .is_some_and(|sources| !changed_files_intersect_sources(changed, sources))
+        })
+        .cloned()
+        .collect()
+}
+
+/// True when `changed_files` intersects any of `sources` (glob match). When a
+/// glob fails to compile it is skipped (best-effort). Returns `false` when
+/// there are no changed files (can't prove intersection).
+fn changed_files_intersect_sources(changed_files: &[String], sources: &[String]) -> bool {
+    let mut builder = globset::GlobSetBuilder::new();
+    let mut any = false;
+    for pat in sources {
+        if let Ok(glob) = globset::Glob::new(pat) {
+            builder.add(glob);
+            any = true;
+        }
+    }
+    if !any {
+        return false;
+    }
+    let Ok(set) = builder.build() else {
+        return false;
+    };
+    changed_files.iter().any(|f| set.is_match(f))
 }
 
 /// Build the structured per-metric score breakdown persisted on the ledger.
@@ -1312,8 +1532,11 @@ fn build_score_breakdown(
     config: &AutotuneConfig,
     input: &ScoreInput,
     output: &ScoreOutput,
+    candidate_variances: &autotune_state::Variances,
+    candidate_changed_files: Option<&[String]>,
 ) -> autotune_state::ScoreBreakdown {
     let directions = metric_directions(config);
+    let sources_by_metric = metric_sources(config);
     let contributions: HashMap<&str, &autotune_score::ScoreMetricContribution> = output
         .details
         .as_deref()
@@ -1353,6 +1576,31 @@ fn build_score_breakdown(
             let candidate = input.candidate.get(&name).copied();
             let best = input.best.get(&name).copied();
             let contribution = contributions.get(name.as_str());
+            // Within-noise: prefer the scorer's verdict (weighted-sum gates per
+            // metric). Otherwise recompute from the envelope so threshold/script
+            // breakdowns still carry the flag.
+            let within_noise = match contribution {
+                Some(c) => c.within_noise,
+                None => match (candidate, best) {
+                    (Some(c), Some(b)) => autotune_score::within_noise(
+                        c - b,
+                        b,
+                        input.candidate_variances.get(&name),
+                        input.best_variances.get(&name),
+                        &input.noise,
+                    ),
+                    _ => false,
+                },
+            };
+            // Part C: flag a metric whose measure declares `sources` that the
+            // candidate's changed files don't intersect.
+            let causally_unrelated = match (sources_by_metric.get(&name), candidate_changed_files) {
+                (Some(sources), Some(changed)) => {
+                    !changed_files_intersect_sources(changed, sources)
+                }
+                _ => false,
+            };
+            let variance = candidate_variances.get(&name).copied();
             autotune_state::MetricBreakdown {
                 delta_vs_baseline: match (candidate, baseline) {
                     (Some(c), Some(b)) => Some(c - b),
@@ -1366,6 +1614,9 @@ fn build_score_breakdown(
                 weight: contribution.map(|c| c.weight),
                 improvement_vs_best: contribution.map(|c| c.delta),
                 contribution: contribution.map(|c| c.contribution),
+                variance,
+                within_noise,
+                causally_unrelated,
                 baseline,
                 candidate,
                 best,
@@ -1429,6 +1680,7 @@ fn build_kept_record(
         reverted_iteration: None,
         score_breakdown: approach.score_breakdown.clone(),
         changed_files,
+        variances: approach.variances.clone(),
         timestamp: Utc::now(),
     }
 }
@@ -1720,6 +1972,7 @@ fn record_crash(state: &mut TaskState, store: &TaskStore) -> Result<()> {
         reverted_iteration: None,
         score_breakdown: None,
         changed_files: None,
+        variances: Default::default(),
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -1763,6 +2016,7 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
         // rows never produced an integrated commit, so `changed_files` is None.
         score_breakdown: approach.score_breakdown.clone(),
         changed_files: None,
+        variances: approach.variances.clone(),
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -1893,6 +2147,7 @@ mod tests {
                 command: Some(vec!["cargo".to_string(), "bench".to_string()]),
                 timeout: 600,
                 adaptor: autotune_config::AdaptorConfig::Regex { patterns: vec![] },
+                sources: vec![],
             }],
             score: autotune_config::ScoreConfig::WeightedSum {
                 primary_metrics: vec![autotune_config::PrimaryMetric {
@@ -1901,6 +2156,8 @@ mod tests {
                     weight: 1.0,
                 }],
                 guardrail_metrics: vec![],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
             },
             agent: autotune_config::AgentConfig::default(),
             worktree: autotune_config::WorktreeConfig::default(),
@@ -1924,6 +2181,7 @@ mod tests {
             score_breakdown: None,
             changed_files: None,
             timestamp: Utc::now(),
+            variances: Default::default(),
         }
     }
 
@@ -2003,6 +2261,7 @@ mod tests {
             fix_history: vec![],
             score_reason: None,
             score_breakdown: None,
+            variances: Default::default(),
         }
     }
 
@@ -2205,6 +2464,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             })
             .unwrap();
         // Kept iter1 with rank 0.9 (above target 0.5)
@@ -2225,6 +2485,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             })
             .unwrap();
         // Reverted checkpoint that reverts iteration 1
@@ -2245,6 +2506,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             })
             .unwrap();
         assert!(
@@ -2272,6 +2534,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             })
             .unwrap();
         store2
@@ -2291,6 +2554,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             })
             .unwrap();
         assert!(
@@ -2450,6 +2714,7 @@ mod tests {
                     pattern: "metric: ([0-9.]+)".to_string(),
                 }],
             },
+            sources: vec![],
         }];
 
         let worktree = tempfile::tempdir().unwrap();
@@ -2499,6 +2764,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             })
             .unwrap();
         let scorer = FixedScorer {
@@ -2549,6 +2815,7 @@ mod tests {
                 score_breakdown: None,
                 changed_files: None,
                 timestamp: Utc::now(),
+                variances: Default::default(),
             })
             .unwrap();
         let scorer = FixedScorer {
@@ -2890,6 +3157,7 @@ mod tests {
             fix_history: vec![],
             score_reason: None,
             score_breakdown: None,
+            variances: Default::default(),
         };
 
         let session = implementation_session_from_approach(&approach).unwrap();
@@ -2956,6 +3224,7 @@ mod tests {
             fix_history: vec![],
             score_reason: None,
             score_breakdown: None,
+            variances: Default::default(),
         };
 
         assert!(!can_continue_implementation_session(&approach, false));
@@ -3020,6 +3289,7 @@ mod tests {
             score_breakdown: None,
             changed_files: None,
             timestamp: Utc::now(),
+            variances: Default::default(),
         }
     }
 
@@ -3099,6 +3369,7 @@ mod tests {
             score_breakdown: None,
             changed_files: None,
             timestamp: Utc::now(),
+            variances: Default::default(),
         }
     }
 
@@ -3180,8 +3451,12 @@ mod tests {
                     weight: Some(1.0),
                     improvement_vs_best: Some(0.064),
                     contribution: Some(0.064),
+                    variance: None,
+                    within_noise: false,
+                    causally_unrelated: false,
                 }],
             }),
+            variances: Default::default(),
         };
 
         // build_kept_record now takes the post-integration advancing SHA and
@@ -3212,11 +3487,11 @@ mod tests {
     #[test]
     fn build_score_breakdown_weighted_sum_populates_values_and_contribution() {
         let config = make_minimal_config(None, None);
-        let input = ScoreInput {
-            baseline: HashMap::from([("perf".to_string(), 100.0)]),
-            candidate: HashMap::from([("perf".to_string(), 120.0)]),
-            best: HashMap::from([("perf".to_string(), 110.0)]),
-        };
+        let input = ScoreInput::new(
+            HashMap::from([("perf".to_string(), 100.0)]),
+            HashMap::from([("perf".to_string(), 120.0)]),
+            HashMap::from([("perf".to_string(), 110.0)]),
+        );
         // perf is Maximize, weight 1.0 in make_minimal_config.
         let output = ScoreOutput {
             rank: 0.0909,
@@ -3227,10 +3502,11 @@ mod tests {
                 delta: 0.0909,
                 weight: 1.0,
                 contribution: 0.0909,
+                within_noise: false,
             }]),
         };
 
-        let bd = build_score_breakdown(&config, &input, &output);
+        let bd = build_score_breakdown(&config, &input, &output, &Default::default(), None);
         assert_eq!(bd.decision, "keep");
         assert_eq!(bd.metrics.len(), 1);
         let m = &bd.metrics[0];
@@ -3255,11 +3531,11 @@ mod tests {
         config.score = autotune_config::ScoreConfig::Script {
             command: vec!["true".to_string()],
         };
-        let input = ScoreInput {
-            baseline: HashMap::from([("perf".to_string(), 100.0)]),
-            candidate: HashMap::from([("perf".to_string(), 120.0)]),
-            best: HashMap::from([("perf".to_string(), 110.0)]),
-        };
+        let input = ScoreInput::new(
+            HashMap::from([("perf".to_string(), 100.0)]),
+            HashMap::from([("perf".to_string(), 120.0)]),
+            HashMap::from([("perf".to_string(), 110.0)]),
+        );
         let output = ScoreOutput {
             rank: 1.0,
             decision: "keep".to_string(),
@@ -3267,7 +3543,7 @@ mod tests {
             details: None,
         };
 
-        let bd = build_score_breakdown(&config, &input, &output);
+        let bd = build_score_breakdown(&config, &input, &output, &Default::default(), None);
         assert_eq!(bd.metrics.len(), 1);
         let m = &bd.metrics[0];
         assert_eq!(m.name, "perf");
@@ -3276,5 +3552,103 @@ mod tests {
         assert_eq!(m.direction, None);
         assert_eq!(m.weight, None);
         assert_eq!(m.contribution, None);
+    }
+
+    /// Part C: glob intersection between changed files and a measure's sources.
+    #[test]
+    fn changed_files_intersect_sources_matches_globs() {
+        // A diff touching clifford.rs intersects the clifford sources glob.
+        assert!(changed_files_intersect_sources(
+            &["src/clifford.rs".to_string()],
+            &["src/clifford.rs".to_string(), "src/gates/**".to_string()],
+        ));
+        // The classic Clifford episode: a clifford-only diff does NOT touch the
+        // sparse-vec sources, so the sparse-vec metric is causally unrelated.
+        assert!(!changed_files_intersect_sources(
+            &["src/clifford.rs".to_string()],
+            &["src/sparse_vec.rs".to_string()],
+        ));
+        // Recursive globs match nested files.
+        assert!(changed_files_intersect_sources(
+            &["src/gates/two_qubit/cz.rs".to_string()],
+            &["src/gates/**".to_string()],
+        ));
+        // No changed files → can't prove intersection.
+        assert!(!changed_files_intersect_sources(
+            &[],
+            &["src/clifford.rs".to_string()],
+        ));
+    }
+
+    /// Part C: `causally_unrelated_metrics` flags a metric whose measure's
+    /// `sources` the candidate diff doesn't touch, and leaves alone metrics
+    /// whose measure has no `sources` (opt-in).
+    #[test]
+    fn causally_unrelated_metrics_uses_measure_sources() {
+        let mut config = make_minimal_config(None, None);
+        // Two measures: `touched` declares sources the diff hits; `untouched`
+        // declares sources the diff misses; `nosrc` declares none (opt-out).
+        config.measure = vec![
+            autotune_config::MeasureConfig {
+                name: "touched".to_string(),
+                command: Some(vec!["true".to_string()]),
+                timeout: 10,
+                adaptor: autotune_config::AdaptorConfig::Regex {
+                    patterns: vec![autotune_config::RegexPattern {
+                        name: "touched_metric".to_string(),
+                        pattern: "x".to_string(),
+                    }],
+                },
+                sources: vec!["src/hot.rs".to_string()],
+            },
+            autotune_config::MeasureConfig {
+                name: "untouched".to_string(),
+                command: Some(vec!["true".to_string()]),
+                timeout: 10,
+                adaptor: autotune_config::AdaptorConfig::Regex {
+                    patterns: vec![autotune_config::RegexPattern {
+                        name: "untouched_metric".to_string(),
+                        pattern: "x".to_string(),
+                    }],
+                },
+                sources: vec!["src/cold.rs".to_string()],
+            },
+            autotune_config::MeasureConfig {
+                name: "nosrc".to_string(),
+                command: Some(vec!["true".to_string()]),
+                timeout: 10,
+                adaptor: autotune_config::AdaptorConfig::Regex {
+                    patterns: vec![autotune_config::RegexPattern {
+                        name: "nosrc_metric".to_string(),
+                        pattern: "x".to_string(),
+                    }],
+                },
+                sources: vec![],
+            },
+        ];
+
+        let candidate = HashMap::from([
+            ("touched_metric".to_string(), 1.0),
+            ("untouched_metric".to_string(), 1.0),
+            ("nosrc_metric".to_string(), 1.0),
+        ]);
+        let changed = vec!["src/hot.rs".to_string()];
+
+        let excluded = causally_unrelated_metrics(&config, Some(&changed), &candidate);
+        assert!(
+            excluded.contains("untouched_metric"),
+            "metric whose sources the diff missed must be excluded"
+        );
+        assert!(
+            !excluded.contains("touched_metric"),
+            "metric whose sources the diff hit must NOT be excluded"
+        );
+        assert!(
+            !excluded.contains("nosrc_metric"),
+            "metric whose measure declares no sources is never excluded (opt-in)"
+        );
+
+        // No changed files known → nothing excluded (behavior unchanged).
+        assert!(causally_unrelated_metrics(&config, None, &candidate).is_empty());
     }
 }

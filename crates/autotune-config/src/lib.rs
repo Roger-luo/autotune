@@ -131,6 +131,14 @@ pub struct MeasureConfig {
     #[serde(default = "default_measure_timeout")]
     pub timeout: u64,
     pub adaptor: AdaptorConfig,
+    /// Optional glob patterns naming the source paths this measure exercises.
+    /// When set, a metric from this measure whose iteration `changed_files` do
+    /// NOT intersect these globs is flagged `causally_unrelated` and excluded
+    /// from keep/discard regression accounting (a change can't be blamed for
+    /// moving code it never touched). Absent → no causal filtering, identical
+    /// to today.
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 fn default_measure_timeout() -> u64 {
@@ -201,13 +209,54 @@ pub enum ScoreConfig {
         primary_metrics: Vec<PrimaryMetric>,
         #[serde(default)]
         guardrail_metrics: Vec<GuardrailMetric>,
+        /// Relative noise floor (fraction of `|best|`) below which a metric
+        /// delta is treated as measurement noise and excluded from the rank.
+        /// Used only when no per-metric variance (criterion CI/stddev) is
+        /// available. Default `0.0` = no discounting (identical to legacy).
+        #[serde(default)]
+        noise_threshold: f64,
+        /// Multiplier `k` applied to a metric's stddev when sizing the noise
+        /// envelope from stddev alone (no CI). Default `2.0` (~95% band).
+        #[serde(default = "default_noise_k")]
+        noise_k: f64,
     },
     #[serde(rename = "threshold")]
-    Threshold { conditions: Vec<ThresholdCondition> },
+    Threshold {
+        conditions: Vec<ThresholdCondition>,
+        #[serde(default)]
+        noise_threshold: f64,
+        #[serde(default = "default_noise_k")]
+        noise_k: f64,
+    },
     #[serde(rename = "script")]
     Script { command: Vec<String> },
     #[serde(rename = "command")]
     Command { command: Vec<String> },
+}
+
+fn default_noise_k() -> f64 {
+    2.0
+}
+
+impl ScoreConfig {
+    /// The noise gate parameters declared on this score config, if it is a
+    /// built-in scorer. Script/command scorers have no noise gate (they own
+    /// their full decision), so this returns the identity defaults for them.
+    pub fn noise_params(&self) -> (f64, f64) {
+        match self {
+            ScoreConfig::WeightedSum {
+                noise_threshold,
+                noise_k,
+                ..
+            }
+            | ScoreConfig::Threshold {
+                noise_threshold,
+                noise_k,
+                ..
+            } => (*noise_threshold, *noise_k),
+            ScoreConfig::Script { .. } | ScoreConfig::Command { .. } => (0.0, default_noise_k()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,6 +544,7 @@ impl AutotuneConfig {
             ScoreConfig::WeightedSum {
                 primary_metrics,
                 guardrail_metrics,
+                ..
             } => {
                 if primary_metrics.is_empty() {
                     return Err(ConfigError::Validation {
@@ -523,7 +573,7 @@ impl AutotuneConfig {
                     }
                 }
             }
-            ScoreConfig::Threshold { conditions } => {
+            ScoreConfig::Threshold { conditions, .. } => {
                 if conditions.is_empty() {
                     return Err(ConfigError::Validation {
                         message: "threshold score must contain at least one condition".to_string(),
@@ -828,6 +878,7 @@ max_fresh_spawns = 2
                     pattern: "([0-9]+)".to_string(),
                 }],
             },
+            sources: vec![],
         }
     }
 
@@ -839,6 +890,8 @@ max_fresh_spawns = 2
                 weight: 1.0,
             }],
             guardrail_metrics: vec![],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         }
     }
 
@@ -888,6 +941,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             command: Some(vec![]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex { patterns: vec![] },
+            sources: vec![],
         };
         let config = make_config_direct(
             default_task_with_stop(),
@@ -909,6 +963,7 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             command: Some(vec!["echo".to_string()]),
             timeout: 30,
             adaptor: AdaptorConfig::Script { command: vec![] },
+            sources: vec![],
         };
         let config = make_config_direct(
             default_task_with_stop(),
@@ -1017,6 +1072,8 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                     weight: 1.0,
                 }],
                 guardrail_metrics: vec![],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1033,6 +1090,8 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             ScoreConfig::WeightedSum {
                 primary_metrics: vec![],
                 guardrail_metrics: vec![],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1060,6 +1119,8 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                     direction: Direction::Minimize,
                     max_regression: 0.1,
                 }],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1073,7 +1134,11 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
             default_paths(),
             vec![],
             vec![regex_measure("m", "val")],
-            ScoreConfig::Threshold { conditions: vec![] },
+            ScoreConfig::Threshold {
+                conditions: vec![],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
+            },
         );
         let err = config.validate().unwrap_err();
         assert!(
@@ -1115,6 +1180,70 @@ setup = [["mise", "trust"], ["echo", "ready"]]
                 vec!["mise".to_string(), "trust".to_string()],
                 vec!["echo".to_string(), "ready".to_string()],
             ]
+        );
+    }
+
+    #[test]
+    fn noise_threshold_parses_and_defaults() {
+        // Absent → identity defaults (0.0 floor, k=2.0).
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(config.score.noise_params(), (0.0, 2.0));
+
+        // Explicit values round-trip through the config.
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+noise_threshold = 0.05
+noise_k = 3.0
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(config.score.noise_params(), (0.05, 3.0));
+    }
+
+    #[test]
+    fn measure_sources_parses_and_defaults_empty() {
+        // Absent → empty (no causal filtering).
+        let toml = minimal_config_with_score(
+            r#"
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#,
+        );
+        let config: AutotuneConfig = toml::from_str(&toml).unwrap();
+        assert!(config.measure[0].sources.is_empty());
+
+        // Present → parsed as globs.
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "m"
+command = ["echo"]
+sources = ["src/clifford.rs", "src/gates/**"]
+adaptor = { type = "regex", patterns = [{ name = "val", pattern = "x([0-9]+)" }] }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "val", direction = "Maximize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        assert_eq!(
+            config.measure[0].sources,
+            vec!["src/clifford.rs".to_string(), "src/gates/**".to_string()]
         );
     }
 

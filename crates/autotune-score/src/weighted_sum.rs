@@ -1,5 +1,6 @@
 use crate::{
     Metrics, ScoreCalculator, ScoreError, ScoreInput, ScoreMetricContribution, ScoreOutput,
+    within_noise,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +91,21 @@ impl ScoreCalculator for WeightedSumScorer {
             let best_val = get_metric(&input.best, &guardrail.name)?;
             let cand_val = get_metric(&input.candidate, &guardrail.name)?;
 
+            // A guardrail "regression" within the noise envelope — or on a
+            // metric the candidate's diff can't causally affect — is not a real
+            // regression; don't trip the guardrail on it.
+            if input.excluded_metrics.contains(&guardrail.name)
+                || within_noise(
+                    cand_val - best_val,
+                    best_val,
+                    input.candidate_variances.get(&guardrail.name),
+                    input.best_variances.get(&guardrail.name),
+                    &input.noise,
+                )
+            {
+                continue;
+            }
+
             if let Some(regression) = check_guardrail(
                 best_val,
                 cand_val,
@@ -120,14 +136,38 @@ impl ScoreCalculator for WeightedSumScorer {
             let best_val = get_metric(&input.best, &primary.name)?;
             let cand_val = get_metric(&input.candidate, &primary.name)?;
             let delta = improvement(best_val, cand_val, primary.direction);
-            let contribution = primary.weight * delta;
+
+            // Noise gate: a delta whose RAW magnitude doesn't exceed the noise
+            // envelope is indistinguishable from re-run jitter. It must count as
+            // neither improvement nor regression — zero its contribution and
+            // drop it from the reason string.
+            let raw_delta = cand_val - best_val;
+            let noisy = input.excluded_metrics.contains(&primary.name)
+                || within_noise(
+                    raw_delta,
+                    best_val,
+                    input.candidate_variances.get(&primary.name),
+                    input.best_variances.get(&primary.name),
+                    &input.noise,
+                );
+
+            let contribution = if noisy { 0.0 } else { primary.weight * delta };
             rank += contribution;
-            reasons.push(format!("{}: {:.2}%", primary.name, delta * 100.0));
+            if noisy {
+                reasons.push(format!(
+                    "{}: {:.2}% (within noise)",
+                    primary.name,
+                    delta * 100.0
+                ));
+            } else {
+                reasons.push(format!("{}: {:.2}%", primary.name, delta * 100.0));
+            }
             details.push(ScoreMetricContribution {
                 name: primary.name.clone(),
                 delta,
                 weight: primary.weight,
                 contribution,
+                within_noise: noisy,
             });
         }
 
@@ -153,11 +193,7 @@ mod tests {
         let to_map = |pairs: &[(&str, f64)]| -> Metrics {
             pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
         };
-        ScoreInput {
-            baseline: to_map(best),
-            candidate: to_map(candidate),
-            best: to_map(best),
-        }
+        ScoreInput::new(to_map(best), to_map(candidate), to_map(best))
     }
 
     /// The structured breakdown must record each primary metric's delta,
@@ -244,5 +280,172 @@ mod tests {
         let json = r#"{"rank": 0.5, "decision": "keep", "reason": "ok"}"#;
         let out: ScoreOutput = serde_json::from_str(json).unwrap();
         assert!(out.details.is_none());
+    }
+
+    use crate::{DEFAULT_STDDEV_K, MetricVariance, NoiseConfig, Variances};
+
+    fn variances(pairs: &[(&str, MetricVariance)]) -> Variances {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    /// THE backward-compatibility pin: with no variances and the default
+    /// (zero-threshold) noise config, the rank, decision, and contributions are
+    /// bit-for-bit identical to the pre-noise scorer. This is what guarantees
+    /// existing scorer behavior never silently changes.
+    #[test]
+    fn no_variance_zero_threshold_reproduces_legacy_rank_exactly() {
+        let scorer = WeightedSumScorer::new(
+            vec![
+                PrimaryMetricDef {
+                    name: "throughput".to_string(),
+                    direction: Direction::Maximize,
+                    weight: 0.75,
+                },
+                PrimaryMetricDef {
+                    name: "latency".to_string(),
+                    direction: Direction::Minimize,
+                    weight: 0.25,
+                },
+            ],
+            vec![],
+        );
+        let out = scorer
+            .calculate(&input(
+                &[("throughput", 100.0), ("latency", 50.0)],
+                &[("throughput", 110.0), ("latency", 40.0)],
+            ))
+            .unwrap();
+
+        // Identical to `details_carry_weight_and_contribution_summing_to_rank`.
+        assert!((out.rank - 0.125).abs() < 1e-12, "rank {}", out.rank);
+        assert_eq!(out.decision, "keep");
+        let details = out.details.unwrap();
+        for d in &details {
+            assert!(!d.within_noise, "{} flagged noisy under identity", d.name);
+        }
+        let tp = details.iter().find(|d| d.name == "throughput").unwrap();
+        assert!((tp.contribution - 0.075).abs() < 1e-12);
+    }
+
+    /// A regression whose magnitude falls inside the CI noise envelope is
+    /// excluded: it contributes 0 to the rank and is flagged `within_noise`.
+    /// This is the Clifford episode in miniature — a "+31% regression" that is
+    /// pure re-run jitter must not drag the rank negative.
+    #[test]
+    fn within_noise_regression_is_excluded_from_rank() {
+        let scorer = WeightedSumScorer::new(
+            vec![PrimaryMetricDef {
+                name: "sparse_vec_ns".to_string(),
+                direction: Direction::Minimize,
+                weight: 1.0,
+            }],
+            vec![],
+        );
+        // best 100, candidate 131 → naive Minimize delta = -0.31 (a 31%
+        // "regression"). But both measurements have CI half-width 35, so the
+        // envelope is 70 and |131-100|=31 <= 70 → within noise.
+        let mut score_input = input(&[("sparse_vec_ns", 100.0)], &[("sparse_vec_ns", 131.0)]);
+        let var = MetricVariance {
+            stddev: Some(20.0),
+            ci_lower: Some(65.0),
+            ci_upper: Some(135.0), // half-width 35
+        };
+        score_input.candidate_variances = variances(&[("sparse_vec_ns", var)]);
+        score_input.best_variances = variances(&[("sparse_vec_ns", var)]);
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(out.rank, 0.0, "within-noise delta must not move the rank");
+        let d = &out.details.unwrap()[0];
+        assert!(d.within_noise);
+        assert_eq!(d.contribution, 0.0);
+        assert!(
+            out.reason.contains("within noise"),
+            "reason: {}",
+            out.reason
+        );
+    }
+
+    /// A delta that EXCEEDS the envelope is still scored normally even when
+    /// variance is present — the gate only discounts sub-noise deltas.
+    #[test]
+    fn significant_delta_with_variance_still_scores() {
+        let scorer = WeightedSumScorer::new(
+            vec![PrimaryMetricDef {
+                name: "lat".to_string(),
+                direction: Direction::Minimize,
+                weight: 1.0,
+            }],
+            vec![],
+        );
+        // best 100, candidate 50 → |delta|=50 > envelope (2*5+2*5 via... here
+        // CI half-width 5 each → envelope 10). 50 > 10, so it scores.
+        let mut score_input = input(&[("lat", 100.0)], &[("lat", 50.0)]);
+        let var = MetricVariance {
+            stddev: Some(2.0),
+            ci_lower: Some(95.0),
+            ci_upper: Some(105.0), // half-width 5
+        };
+        score_input.candidate_variances = variances(&[("lat", var)]);
+        score_input.best_variances = variances(&[("lat", var)]);
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert!((out.rank - 0.5).abs() < 1e-12, "rank {}", out.rank);
+        assert!(!out.details.unwrap()[0].within_noise);
+    }
+
+    /// A within-noise guardrail "regression" does not trip the guardrail.
+    #[test]
+    fn within_noise_guardrail_regression_does_not_discard() {
+        let scorer = WeightedSumScorer::new(
+            vec![PrimaryMetricDef {
+                name: "tp".to_string(),
+                direction: Direction::Maximize,
+                weight: 1.0,
+            }],
+            vec![GuardrailMetricDef {
+                name: "errors".to_string(),
+                direction: Direction::Minimize,
+                max_regression: 0.05,
+            }],
+        );
+        // errors best 100 → 130: naive 30% regression > 5% max. But CI
+        // half-width 35 each → envelope 70, |30| <= 70 → noise, skip guardrail.
+        let mut score_input = input(
+            &[("tp", 100.0), ("errors", 100.0)],
+            &[("tp", 110.0), ("errors", 130.0)],
+        );
+        let var = MetricVariance {
+            stddev: Some(20.0),
+            ci_lower: Some(65.0),
+            ci_upper: Some(135.0),
+        };
+        score_input.candidate_variances = variances(&[("errors", var)]);
+        score_input.best_variances = variances(&[("errors", var)]);
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(out.decision, "keep", "noise guardrail should not discard");
+    }
+
+    /// Relative `noise_threshold` (no variance present) discounts a small delta.
+    #[test]
+    fn relative_threshold_discounts_small_delta() {
+        let scorer = WeightedSumScorer::new(
+            vec![PrimaryMetricDef {
+                name: "m".to_string(),
+                direction: Direction::Maximize,
+                weight: 1.0,
+            }],
+            vec![],
+        );
+        // best 100 → 102: +2% gain. With a 5% relative noise floor, envelope is
+        // 5.0 and |2| <= 5 → within noise, no rank.
+        let mut score_input = input(&[("m", 100.0)], &[("m", 102.0)]);
+        score_input.noise = NoiseConfig {
+            relative_threshold: 0.05,
+            stddev_k: DEFAULT_STDDEV_K,
+        };
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(out.rank, 0.0);
+        assert!(out.details.unwrap()[0].within_noise);
     }
 }

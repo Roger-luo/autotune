@@ -5,6 +5,9 @@ use autotune_agent::aprintln;
 
 // Re-export for consumers that need to work with build_adaptor
 pub use autotune_adaptor::MeasureOutput;
+// Re-export the variance types so consumers (the CLI) can map noise estimates
+// without taking a direct dependency on autotune-adaptor.
+pub use autotune_adaptor::{MetricVariance, Variances};
 use autotune_config::{AdaptorConfig, MeasureConfig};
 use autotune_judge::{
     Rubric, ScoreRange, Subject, SubjectContext, SubjectContextKind, parse_batch_response,
@@ -55,6 +58,9 @@ pub struct MeasureReport {
     pub stdout: String,
     pub stderr: String,
     pub metrics: Metrics,
+    /// Per-metric noise estimates extracted alongside `metrics`, when the
+    /// adaptor supplies them (criterion CI/stddev). Empty for regex/script.
+    pub variances: Variances,
 }
 
 /// Factory that creates a streaming handler for one judge invocation.
@@ -197,6 +203,8 @@ pub fn run_judge_measure(
         stdout: cmd_stdout,
         stderr: cmd_stderr,
         metrics,
+        // Judge scores carry no dispersion estimate.
+        variances: Variances::new(),
     })
 }
 
@@ -236,12 +244,17 @@ pub fn run_measure_with_output(
             name: config.name.clone(),
             source,
         })?;
+    // Best-effort: an adaptor that can't compute dispersion returns an empty
+    // map by default. A variance-extraction error must not fail a measure that
+    // already produced valid metrics, so fall back to empty on error.
+    let variances = adaptor.extract_variances(&bench_output).unwrap_or_default();
 
     Ok(MeasureReport {
         name: config.name.clone(),
         stdout,
         stderr,
         metrics,
+        variances,
     })
 }
 
@@ -289,6 +302,46 @@ pub fn run_all_measures_with_output(
     }
 
     Ok((all_metrics, reports))
+}
+
+/// For a criterion measure, resolve the on-disk `estimates.json` files it
+/// reads so a caller can copy them into the iteration dir for post-hoc
+/// analysis (the iteration worktree is removed after integration). Returns
+/// `(metric_name, source_path)` pairs. Non-criterion measures yield nothing.
+pub fn criterion_estimates_files(
+    config: &MeasureConfig,
+    working_dir: &Path,
+) -> Vec<(String, PathBuf)> {
+    let AdaptorConfig::Criterion { benchmarks } = &config.adaptor else {
+        return Vec::new();
+    };
+    use autotune_adaptor::criterion::{CriterionBenchmarkEntry, CriterionStat};
+    let criterion_dir = working_dir.join("target").join("criterion");
+    let entries = benchmarks
+        .iter()
+        .map(|b| CriterionBenchmarkEntry {
+            name: b.name.clone(),
+            group: b.group.clone(),
+            stat: match b.stat {
+                autotune_config::CriterionStat::Mean => CriterionStat::Mean,
+                autotune_config::CriterionStat::Median => CriterionStat::Median,
+                autotune_config::CriterionStat::StdDev => CriterionStat::StdDev,
+            },
+        })
+        .collect();
+    CriterionAdaptor::new(&criterion_dir, entries).estimates_files()
+}
+
+/// Merge the per-measure `variances` maps from a slice of reports into one map
+/// keyed by metric name (mirrors how `run_all_measures_with_output` merges
+/// `metrics`). Later measures win on a name collision — but metric names are
+/// validated unique across measures, so collisions don't happen in practice.
+pub fn merge_variances(reports: &[MeasureReport]) -> Variances {
+    let mut merged = Variances::new();
+    for report in reports {
+        merged.extend(report.variances.clone());
+    }
+    merged
 }
 
 /// Build a MetricAdaptor from config.
@@ -663,6 +716,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
             ]),
             timeout: 30,
             adaptor: AdaptorConfig::Regex { patterns: vec![] },
+            sources: vec![],
         };
         let tmp = tempfile::tempdir().unwrap();
         let result = run_measure(&config, tmp.path());
@@ -688,6 +742,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     pattern: r"score: ([0-9.]+)".to_string(),
                 }],
             },
+            sources: vec![],
         };
         let tmp = tempfile::tempdir().unwrap();
         let metrics = run_measure(&config, tmp.path()).unwrap();
@@ -705,6 +760,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
             ]),
             timeout: 0,
             adaptor: AdaptorConfig::Regex { patterns: vec![] },
+            sources: vec![],
         };
         let tmp = tempfile::tempdir().unwrap();
 
@@ -732,6 +788,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     pattern: r"score: ([0-9.]+)".to_string(),
                 }],
             },
+            sources: vec![],
         };
         let tmp = tempfile::tempdir().unwrap();
 
@@ -759,6 +816,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     pattern: r"val: ([0-9]+)".to_string(),
                 }],
             },
+            sources: vec![],
         };
         let tmp = tempfile::tempdir().unwrap();
         let report = run_measure_with_output(&config, tmp.path()).unwrap();
@@ -787,6 +845,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     pattern: r"x: ([0-9]+)".to_string(),
                 }],
             },
+            sources: vec![],
         };
         let m2 = MeasureConfig {
             name: "beta".to_string(),
@@ -802,6 +861,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     pattern: r"y: ([0-9]+)".to_string(),
                 }],
             },
+            sources: vec![],
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_metrics, reports) =
@@ -829,6 +889,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     pattern: r"a: ([0-9]+)".to_string(),
                 }],
             },
+            sources: vec![],
         };
         let m2 = MeasureConfig {
             name: "second".to_string(),
@@ -844,6 +905,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     pattern: r"b: ([0-9]+)".to_string(),
                 }],
             },
+            sources: vec![],
         };
         let tmp = tempfile::tempdir().unwrap();
         let metrics = run_all_measures(&[m1, m2], tmp.path(), "test", 1, None).unwrap();
@@ -904,6 +966,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                     })
                     .collect(),
             },
+            sources: vec![],
         }
     }
 

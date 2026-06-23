@@ -72,6 +72,88 @@ If future work wants a baseline-relative score throughout the run, either the
 scorer must use `input.baseline` for rank, or the system must record both
 "delta vs baseline" and "delta vs best" separately.
 
+## Noise-aware scoring
+
+A metric delta only counts — as an improvement **or** a regression — when its
+magnitude exceeds the **noise envelope**. Within-noise deltas are excluded from
+the rank/weighted-sum contribution, from guardrail tripping, and from
+regression reporting. This stops AutoTune treating same-binary codegen/layout
+jitter as causal signal (the Clifford episode: criterion reported a `sparse-vec`
+"+31% regression" on a diff that only touched `clifford.rs`, and re-runs swung
+±35%).
+
+### The envelope (per metric)
+
+`autotune_score::noise_envelope(best_value, candidate_var, best_var, &NoiseConfig)`
+picks, in order:
+
+1. **Confidence intervals** (criterion's primary model): `candidate_ci_half_width
+   + best_ci_half_width`. Two independent measurements, so the error radii add.
+   CI half-width is `(upper - lower) / 2`.
+2. **Stddev**: `noise_k * max(candidate_stddev, best_stddev)`. `noise_k`
+   defaults to `2.0` (~95% band, matching criterion's CI confidence level).
+   Used when criterion supplied stddev but no CI.
+3. **Relative floor**: `noise_threshold * |best_value|`. Used when no per-metric
+   variance is available at all.
+
+`within_noise(delta, …)` returns `|delta| <= envelope`. A metric flagged noisy
+gets `contribution = 0` and `MetricBreakdown.within_noise = true`.
+
+### Where variance comes from
+
+`CriterionAdaptor::extract_variances` reads the selected stat's
+`confidence_interval {lower_bound, upper_bound}` and the `std_dev` point estimate
+from the same `estimates.json` it reads the mean from. Other adaptors
+(regex/script) return no variance. The per-iteration `estimates.json` is **copied
+into the iteration dir** (`iterations/<NNN>-<slug>/measures/<metric>.estimates.json`)
+at measure time so the CI data survives after the worktree is removed.
+
+Variances flow: adaptor → `MeasureReport.variances` →
+`ApproachState.variances` → persisted on the ledger row's `variances` field. At
+scoring, the candidate's variance comes from `ApproachState`; the `best` row's
+variance is recovered from the ledger via `best_variances_from_ledger` (mirrors
+`best_metrics_from_ledger`). The three crates each define their own
+`MetricVariance` (adaptor/state/score), mapped at the `main.rs`/`benchmark`
+boundaries — same pattern as the parallel `Direction` enums (keeps each a leaf).
+
+### Backward compatibility (critical)
+
+The default `NoiseConfig` is the **identity**: `relative_threshold = 0.0`,
+`stddev_k = 2.0`. With no variance present and a zero threshold, the envelope is
+`0.0`, so only an exactly-zero delta is "within noise" — and a zero delta already
+contributes nothing. So with no variance AND no `[score] noise_threshold`,
+scoring is **bit-for-bit identical to before**. Pinned by
+`no_variance_zero_threshold_reproduces_legacy_rank_exactly` in `weighted_sum.rs`.
+
+### Config
+
+`[score] noise_threshold` (relative, default `0.0`) and `noise_k` (default `2.0`)
+on the `weighted_sum` and `threshold` score types. `ScoreConfig::noise_params()`
+returns `(threshold, k)`; script/command scorers own their full decision and get
+the identity.
+
+## Causal attribution (Part C, opt-in)
+
+`[[measure]] sources = ["glob/**", …]` declares which source paths a measure
+exercises. When set, a metric whose iteration `changed_files` do **not** intersect
+its measure's `sources` globs is flagged `MetricBreakdown.causally_unrelated =
+true` and added to `ScoreInput.excluded_metrics`, which the built-in scorers
+treat exactly like a within-noise delta (zero contribution, no guardrail trip).
+A change can't be blamed for moving code it never touched. When `sources` is
+absent the set is empty and behavior is unchanged. Candidate `changed_files` are
+computed at scoring time from the worktree commit (`diff_name_only`).
+
+See:
+
+- `crates/autotune-score/src/lib.rs` — `MetricVariance`, `NoiseConfig`,
+  `noise_envelope`, `within_noise`, `ScoreInput.{candidate_variances,
+  best_variances, noise, excluded_metrics}`.
+- `crates/autotune-adaptor/src/criterion.rs` — `extract_variances`,
+  `estimates_files`.
+- `crates/autotune/src/machine.rs` — `run_measuring` (variance capture + copy),
+  `best_variances_from_ledger`, `run_scoring`, `build_score_breakdown`,
+  `metric_sources`, `causally_unrelated_metrics`.
+
 ## Footgun: manual edits to the advancing branch diverge from the ledger
 
 The ledger is autotune's source of truth in two places that both assume the

@@ -119,6 +119,7 @@ fn seed_resume_task(project: &Project, state: TaskState) {
             score_breakdown: None,
             changed_files: None,
             timestamp: Utc::now(),
+            variances: Default::default(),
         })
         .unwrap();
     store.save_state(&state).unwrap();
@@ -248,7 +249,7 @@ fn scenario_run_export_emits_self_contained_analysis_artifact() {
         serde_json::from_slice(&analyze.stdout).expect("analyze must emit valid JSON");
 
     // Versioned + task metadata + raw config snapshot for reproducibility.
-    assert_eq!(artifact["schema_version"], serde_json::json!(1));
+    assert_eq!(artifact["schema_version"], serde_json::json!(2));
     assert_eq!(artifact["task"]["name"], serde_json::json!("scenario-task"));
     assert!(
         artifact["config"]
@@ -322,7 +323,7 @@ fn scenario_run_export_emits_self_contained_analysis_artifact() {
         serde_json::from_str(&std::fs::read_to_string(&export_path).unwrap()).unwrap();
     assert_eq!(bundle["task_name"], serde_json::json!("scenario-task"));
     assert!(bundle["ledger"].is_array(), "legacy ledger key preserved");
-    assert_eq!(bundle["analysis"]["schema_version"], serde_json::json!(1));
+    assert_eq!(bundle["analysis"]["schema_version"], serde_json::json!(2));
     assert_eq!(
         bundle["analysis"]["task"]["name"],
         serde_json::json!("scenario-task")

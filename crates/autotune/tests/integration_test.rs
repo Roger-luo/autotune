@@ -170,6 +170,7 @@ fn setup_task(repo_root: &Path, config: &AutotuneConfig) -> TaskStore {
         score_breakdown: None,
         changed_files: None,
         timestamp: Utc::now(),
+        variances: Default::default(),
     };
     store.append_ledger(&baseline).unwrap();
 
@@ -848,11 +849,7 @@ fn test_scorer_pipeline_keep() {
     let candidate = HashMap::from([("metric_value".to_string(), 80.0)]);
 
     let output = scorer
-        .calculate(&ScoreInput {
-            baseline: baseline.clone(),
-            candidate,
-            best: baseline,
-        })
+        .calculate(&ScoreInput::new(baseline.clone(), candidate, baseline))
         .unwrap();
     assert_eq!(output.decision, "keep");
     assert!(
@@ -868,11 +865,7 @@ fn test_scorer_pipeline_discard() {
     let candidate = HashMap::from([("metric_value".to_string(), 120.0)]);
 
     let output = scorer
-        .calculate(&ScoreInput {
-            baseline: baseline.clone(),
-            candidate,
-            best: baseline,
-        })
+        .calculate(&ScoreInput::new(baseline.clone(), candidate, baseline))
         .unwrap();
     assert_eq!(output.decision, "discard");
     assert!(output.rank < 0.0);
@@ -897,11 +890,7 @@ fn test_scorer_guardrail_blocks_improvement() {
     let candidate = HashMap::from([("time".to_string(), 50.0), ("accuracy".to_string(), 0.90)]);
 
     let output = scorer
-        .calculate(&ScoreInput {
-            baseline: baseline.clone(),
-            candidate,
-            best: baseline,
-        })
+        .calculate(&ScoreInput::new(baseline.clone(), candidate, baseline))
         .unwrap();
     // Time improved massively but accuracy regressed 9% (exceeds 1% guardrail)
     assert_eq!(output.decision, "discard");

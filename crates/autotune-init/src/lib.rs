@@ -285,6 +285,7 @@ fn validate_score(score: &ScoreConfig, acc: &ConfigAccumulator) -> FragmentOutco
         ScoreConfig::WeightedSum {
             primary_metrics,
             guardrail_metrics,
+            ..
         } => {
             for pm in primary_metrics {
                 if let Some(err) = check_name(&pm.name) {
@@ -297,7 +298,7 @@ fn validate_score(score: &ScoreConfig, acc: &ConfigAccumulator) -> FragmentOutco
                 }
             }
         }
-        ScoreConfig::Threshold { conditions } => {
+        ScoreConfig::Threshold { conditions, .. } => {
             for c in conditions {
                 if let Some(err) = check_name(&c.metric) {
                     return err;
@@ -995,6 +996,7 @@ fn run_init_inner(
                                     persona: pending.persona,
                                     rubrics: pending.approved_rubrics,
                                 },
+                                sources: Vec::new(),
                             };
                             acc.measures.push(measure);
                             ack_lines.push(format!("Judge measure finalized with {n} rubric(s)."));
@@ -1164,6 +1166,7 @@ mod tests {
                     pattern: "([0-9.]+)".to_string(),
                 }],
             },
+            sources: vec![],
         }
     }
 
@@ -1179,6 +1182,8 @@ mod tests {
                     weight: 1.0,
                 }],
                 guardrail_metrics: vec![],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
             }),
             ..Default::default()
         }
@@ -1409,6 +1414,7 @@ mod tests {
             command: Some(vec![]),
             timeout: 600,
             adaptor: AdaptorConfig::Script { command: vec![] },
+            sources: vec![],
         };
         match validate_measure(&measure, &ConfigAccumulator::default()) {
             FragmentOutcome::Rejected(msg) => assert!(msg.contains("empty"), "msg: {msg}"),
@@ -1449,6 +1455,8 @@ mod tests {
                 weight: 1.0,
             }],
             guardrail_metrics: vec![],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         };
         assert!(matches!(
             validate_score(&score, &acc),
@@ -1467,6 +1475,8 @@ mod tests {
                 weight: 1.0,
             }],
             guardrail_metrics: vec![],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         };
         match validate_score(&score, &acc) {
             FragmentOutcome::Rejected(msg) => {
@@ -1491,6 +1501,8 @@ mod tests {
                 direction: Direction::Minimize,
                 max_regression: 0.05,
             }],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         };
         match validate_score(&score, &acc) {
             FragmentOutcome::Rejected(msg) => {
@@ -1510,6 +1522,8 @@ mod tests {
                 direction: Direction::Minimize,
                 threshold: 5.0,
             }],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         };
         assert!(matches!(
             validate_score(&score, &acc),
@@ -1527,6 +1541,8 @@ mod tests {
                 direction: Direction::Minimize,
                 threshold: 5.0,
             }],
+            noise_threshold: 0.0,
+            noise_k: 2.0,
         };
         match validate_score(&score, &acc) {
             FragmentOutcome::Rejected(msg) => {
@@ -1761,6 +1777,7 @@ mod tests {
                 persona: persona.to_string(),
                 rubrics: vec![],
             },
+            sources: vec![],
         }
     }
 
@@ -1866,6 +1883,7 @@ mod tests {
                 persona: pending.persona,
                 rubrics: pending.approved_rubrics,
             },
+            sources: vec![],
         };
         acc.measures.push(assembled);
 
