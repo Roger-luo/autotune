@@ -80,6 +80,9 @@ fn scenario_revert_undoes_iteration_and_records_checkpoint() {
     std::fs::write(root.join("src/lib.rs"), "pub fn v() -> i32 { 2 }\n").unwrap();
     git(root, &["commit", "-am", "autotune: iteration 1 change"]);
     let kept_sha = rev_parse_head(root);
+    // Return the canonical checkout to `main`; the advancing branch lives in its
+    // own worktree (created on demand by revert), as in a real run.
+    git(root, &["checkout", "main"]);
 
     // Seed task state + ledger AFTER commits (so the gitignored .autotune/
     // doesn't dirty the tree). Baseline + kept iter1 carrying the real SHA.
@@ -118,9 +121,11 @@ fn scenario_revert_undoes_iteration_and_records_checkpoint() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // (a) An inverse commit is on the advancing branch (file restored to 1).
+    // (a) An inverse commit is on the advancing branch, in its dedicated
+    //     worktree (file restored to 1) — revert operated there, not in the
+    //     canonical checkout (which stays on `main`, unmodified at v=1).
     assert_eq!(
-        std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+        std::fs::read_to_string(task_dir.join("advancing/src/lib.rs")).unwrap(),
         "pub fn v() -> i32 { 1 }\n"
     );
 
@@ -175,6 +180,8 @@ fn scenario_revert_middle_iteration_no_conflict() {
         &["commit", "-am", "autotune: iteration 2 change (b.rs)"],
     );
     let sha_b = rev_parse_head(root);
+    // Canonical checkout returns to `main`; advancing lives in its worktree.
+    git(root, &["checkout", "main"]);
 
     // Seed task state + ledger after commits.
     let task_dir = root.join(".autotune/tasks/revert-task");
@@ -212,16 +219,17 @@ fn scenario_revert_middle_iteration_no_conflict() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // src/a.rs should be restored to "1" (iter1 reverted).
+    // src/a.rs should be restored to "1" (iter1 reverted) on the advancing
+    // branch, in its dedicated worktree.
     assert_eq!(
-        std::fs::read_to_string(root.join("src/a.rs")).unwrap(),
+        std::fs::read_to_string(task_dir.join("advancing/src/a.rs")).unwrap(),
         "1\n",
         "src/a.rs should be restored to original after revert of iter1"
     );
 
     // src/b.rs should still be "2" (iter2 untouched).
     assert_eq!(
-        std::fs::read_to_string(root.join("src/b.rs")).unwrap(),
+        std::fs::read_to_string(task_dir.join("advancing/src/b.rs")).unwrap(),
         "2\n",
         "src/b.rs should remain at 2 — iter2 was not reverted"
     );
@@ -261,6 +269,8 @@ fn scenario_revert_conflict_unresolved_aborts_and_leaves_ledger_untouched() {
     std::fs::write(root.join("src/lib.rs"), "pub fn v() -> i32 { 3 }\n").unwrap();
     git(root, &["commit", "-am", "autotune: iteration 2"]);
     let sha2 = rev_parse_head(root);
+    // Canonical checkout returns to `main`; advancing lives in its worktree.
+    git(root, &["checkout", "main"]);
 
     let task_dir = root.join(".autotune/tasks/revert-task");
     std::fs::create_dir_all(task_dir.join("iterations")).unwrap();
@@ -299,8 +309,9 @@ fn scenario_revert_conflict_unresolved_aborts_and_leaves_ledger_untouched() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // The revert was aborted: working tree restored to iter2 state, no conflict markers.
-    let src = std::fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    // The revert was aborted in the advancing worktree: restored to iter2 state,
+    // no conflict markers.
+    let src = std::fs::read_to_string(task_dir.join("advancing/src/lib.rs")).unwrap();
     assert_eq!(
         src, "pub fn v() -> i32 { 3 }\n",
         "revert should have been aborted to HEAD"

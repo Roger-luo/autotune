@@ -119,18 +119,25 @@ setup = [["mise", "trust"]]
 ## Branch layout
 
 ```
-main (canonical, untouched)
-  └── autotune-<task-name>           # advancing branch, created at task start
+main (canonical — read once at task start, then NEVER touched)
+  └── autotune/<task>-main            # advancing branch
+        ↳ checked out in its own worktree: .autotune/tasks/<task>/advancing/
        ├── autotune/<task>/approach-1  # worktree branch, iteration 1
        ├── autotune/<task>/approach-2  # worktree branch, iteration 2
        └── ...
 ```
 
 - **Canonical branch** (`state.canonical_branch`, from config): the user's
-  trunk. Autotune only reads from it.
+  trunk. Autotune **reads it exactly once** — at task start, to create the
+  advancing branch — and never checks it out or mutates it. The user can keep
+  working on (or have uncommitted WIP on) their canonical checkout while a tune
+  runs.
 - **Advancing branch** (`state.advancing_branch`, `autotune/<task>-main`):
-  created from canonical at task start. Each kept iteration advances this
-  branch linearly. The `-main` suffix is load-bearing: worktree branches
+  created from canonical at task start and **checked out in a dedicated
+  worktree** at `.autotune/tasks/<task>/advancing/` (see
+  `machine::advancing_worktree_path` / `ensure_advancing_worktree`). Each kept
+  iteration advances this branch linearly **in that worktree** — never in the
+  canonical checkout. The `-main` suffix is load-bearing: worktree branches
   live at `autotune/<task>/<slug>`, and git refuses to create a branch whose
   parent path is already occupied by another branch's ref file. Naming the
   advancing branch `autotune/<task>-main` keeps it a sibling of the
@@ -144,16 +151,28 @@ main (canonical, untouched)
 `run_integrating` in `crates/autotune/src/machine.rs`:
 
 1. **Rebase the worktree branch onto the advancing branch** — run the rebase
-   inside the worktree dir (the branch is checked out there; you can't
-   checkout a worktree-attached branch from the main repo).
+   inside the iteration's sub-worktree (the branch is checked out there; you
+   can't checkout a worktree-attached branch from the main repo).
 2. If conflicts: the research agent is granted `Edit` permission and asked to
    resolve the conflict markers. Loops `rebase --continue` up to
    `MAX_CONFLICT_ROUNDS` times (each commit being replayed may conflict
    separately).
-3. **Remove the worktree** — detaches the branch.
-4. **Fast-forward the advancing branch** onto the rebased commits (`merge --ff-only`).
+3. **Remove the sub-worktree** — detaches its branch.
+4. **Fast-forward the advancing branch in its own worktree** (`merge --ff-only`
+   run in `.autotune/tasks/<task>/advancing/`). This is the load-bearing part:
+   the advancing branch is advanced **without ever `git checkout`-ing it in the
+   canonical repo**, so the user's canonical working tree is never switched or
+   blocked — even if it's dirty or sitting on the user's own branch. (`revert`
+   and the `ff`/`apply` cleanup likewise operate via this worktree.)
 
-Result: linear history, no merge commits, canonical untouched.
+Result: linear history, no merge commits, **canonical genuinely untouched**.
+
+> **History:** integration originally did `git checkout <advancing>` in the
+> *canonical* repo to ff it. That switched the user's checkout onto the advancing
+> branch and **crashed when the canonical tree was dirty** (`"Your local changes
+> would be overwritten by checkout"`) — discovered dogfooding ppvm when the repo
+> was on a feature branch with uncommitted WIP. The dedicated worktree removes
+> that whole class of failure.
 
 ## Why rebase instead of cherry-pick
 

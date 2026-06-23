@@ -913,10 +913,17 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let advancing_branch = format!("autotune/{}-main", config.task.name);
     autotune_git::create_branch_from(&repo_root, &advancing_branch, &config.task.canonical_branch)
         .context("failed to create advancing branch")?;
+    // Check the advancing branch out in its own dedicated worktree (under the
+    // task dir), not the user's canonical checkout. Integration fast-forwards it
+    // there, so autotune never `git checkout`s in — and never disturbs — the
+    // canonical working tree (which may hold the user's own uncommitted work).
+    let advancing_wt =
+        machine::ensure_advancing_worktree(&repo_root, &task_dir, &advancing_branch)?;
     aprintln!(
-        "[autotune] created advancing branch '{}' from '{}'",
+        "[autotune] created advancing branch '{}' from '{}' (worktree: {})",
         advancing_branch,
-        config.task.canonical_branch
+        config.task.canonical_branch,
+        rel(&advancing_wt, &repo_root)
     );
 
     // Initialize state
@@ -2141,9 +2148,6 @@ fn cmd_revert(
     let repo_root = find_repo_root()?;
     let autotune_dir = repo_root.join(".autotune");
 
-    // Capture the branch the user is on so we can restore it at the end.
-    let original_branch = autotune_git::current_branch(&repo_root).ok();
-
     // Resolve task: --task, else the config's task name (mirrors cmd_report).
     let task_name = match task {
         Some(t) => t,
@@ -2187,23 +2191,19 @@ fn cmd_revert(
             state.advancing_branch
         );
     }
-    if autotune_git::has_uncommitted_changes(&repo_root).context("failed to check working tree")? {
-        anyhow::bail!(
-            "working tree has uncommitted changes; commit or stash them before reverting"
-        );
-    }
-
     aprintln!(
         "[autotune] reverting iteration {iteration} ({target_sha}) on '{}'",
         state.advancing_branch
     );
 
-    // Ensure the advancing branch is checked out at the repo root.
-    autotune_git::checkout(&repo_root, &state.advancing_branch)
-        .context("failed to checkout advancing branch")?;
+    // Operate in the advancing branch's dedicated worktree, never the user's
+    // canonical checkout (which may be dirty or on another branch). The worktree
+    // is already on the advancing branch, so no checkout is needed.
+    let advancing_wt =
+        machine::ensure_advancing_worktree(&repo_root, store.root(), &state.advancing_branch)?;
 
     // git revert; resolve conflicts via the research agent, else abort cleanly.
-    let clean = autotune_git::revert(&repo_root, &target_sha).context("git revert failed")?;
+    let clean = autotune_git::revert(&advancing_wt, &target_sha).context("git revert failed")?;
     if !clean {
         ctrlc::set_handler(|| {
             aprintln!("\n[autotune] received shutdown signal, terminating agent...");
@@ -2222,17 +2222,17 @@ fn cmd_revert(
         )?;
         if let Err(e) = machine::resolve_conflicts(
             agent.as_ref(),
-            &repo_root,
+            &advancing_wt,
             &research_session,
             "revert",
             autotune_git::revert_continue,
         ) {
-            let _ = autotune_git::revert_abort(&repo_root);
+            let _ = autotune_git::revert_abort(&advancing_wt);
             anyhow::bail!("revert conflict resolution failed: {e}; aborted, ledger unchanged");
         }
     }
 
-    let revert_sha = autotune_git::latest_commit_sha(&repo_root)?;
+    let revert_sha = autotune_git::latest_commit_sha(&advancing_wt)?;
 
     // Re-measure the branch (unless skipped) so scoring's best reflects reality.
     let new_index = ledger.iter().map(|r| r.iteration).max().unwrap_or(0) + 1;
@@ -2268,7 +2268,7 @@ fn cmd_revert(
     } else {
         match autotune_benchmark::run_all_measures_with_output(
             &config.measure,
-            &repo_root,
+            &advancing_wt,
             &format!("revert-{iteration}"),
             new_index as u32,
             judge_ctx.as_ref(),
@@ -2297,14 +2297,8 @@ fn cmd_revert(
         "[autotune] reverted iteration {iteration}; recorded checkpoint iteration {new_index}"
     );
 
-    // Restore the branch the user was on before the revert (the revert is
-    // committed, so the working tree is clean to switch away from).
-    if let Some(orig) = original_branch
-        && orig != state.advancing_branch
-    {
-        autotune_git::checkout(&repo_root, &orig)
-            .with_context(|| format!("failed to restore branch '{orig}' after revert"))?;
-    }
+    // The canonical checkout was never touched (the revert ran in the advancing
+    // worktree), so there's no branch to restore here.
 
     Ok(())
 }
@@ -2358,6 +2352,19 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
                 );
             }
         }
+    }
+
+    // Remove the dedicated advancing-branch worktree too, so the branch is no
+    // longer checked out and can be fast-forwarded into canonical and deleted.
+    let advancing_wt = machine::advancing_worktree_path(&task_dir);
+    if advancing_wt.exists()
+        && let Err(e) = autotune_git::remove_worktree(&repo_root, &advancing_wt)
+    {
+        aeprintln!(
+            "[autotune] warning: could not remove advancing worktree at {}: {}",
+            rel(&advancing_wt, &repo_root),
+            e
+        );
     }
 
     // FF merge advancing branch into canonical.

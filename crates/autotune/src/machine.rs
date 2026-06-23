@@ -1330,6 +1330,41 @@ fn format_metrics_status_sorts_all_metrics() {
     );
 }
 
+/// Path of the dedicated worktree that holds the task's advancing branch.
+///
+/// The advancing branch is checked out here — in a worktree under the task dir,
+/// NOT in the user's canonical checkout — so integration can fast-forward it
+/// without ever touching (or being blocked by) the canonical working tree. The
+/// per-iteration sub-worktrees branch off the advancing branch; this is the one
+/// place it lives as a working tree.
+pub fn advancing_worktree_path(task_dir: &Path) -> std::path::PathBuf {
+    task_dir.join("advancing")
+}
+
+/// Ensure the advancing-branch worktree exists, (re)creating it if a prior
+/// crash, a fresh `resume`, or an older task left it absent. Idempotent.
+pub fn ensure_advancing_worktree(
+    repo_root: &Path,
+    task_dir: &Path,
+    advancing_branch: &str,
+) -> Result<std::path::PathBuf> {
+    let wt = advancing_worktree_path(task_dir);
+    // A live worktree has a `.git` file pointing back at the repo's worktree
+    // admin dir; if present, reuse it.
+    if wt.join(".git").exists() {
+        return Ok(wt);
+    }
+    // Stale or absent: clear any leftover directory and prune dangling
+    // registrations, then create a fresh worktree on the advancing branch.
+    if wt.exists() {
+        let _ = std::fs::remove_dir_all(&wt);
+    }
+    let _ = autotune_git::prune_worktrees(repo_root);
+    autotune_git::create_worktree(repo_root, &wt, advancing_branch)
+        .context("failed to create advancing-branch worktree")?;
+    Ok(wt)
+}
+
 fn run_integrating(
     _config: &AutotuneConfig,
     agent: &dyn Agent,
@@ -1381,17 +1416,23 @@ fn run_integrating(
         return record_discard(state, store, &format!("rebase conflict: {e}"));
     }
 
-    // Remove worktree first so the branch is no longer attached, then
-    // fast-forward the advancing branch to the rebased commits.
-    let _ = autotune_git::remove_worktree(repo_root, &approach.worktree_path);
-    autotune_git::checkout(repo_root, &state.advancing_branch)?;
-    autotune_git::merge_ff_only(repo_root, &approach.branch_name)
-        .context("fast-forward advancing branch failed")?;
+    // Capture the rebased HEAD from the sub-worktree (it now points at the
+    // commits replayed onto the advancing branch) before removing it. This SHA
+    // is what `autotune revert` targets; it equals approach.commit_sha in the
+    // no-conflict case and differs when a conflict-rebase replayed the commit.
+    let advancing_sha = autotune_git::latest_commit_sha(&wt).ok();
 
-    // The SHA now on the advancing branch — what `autotune revert` targets.
-    // Equals approach.commit_sha in the no-conflict case; differs when a
-    // conflict-rebase replayed the commit into a new SHA.
-    let advancing_sha = autotune_git::latest_commit_sha(repo_root).ok();
+    // Remove the sub-worktree so its branch is no longer attached.
+    let _ = autotune_git::remove_worktree(repo_root, &approach.worktree_path);
+
+    // Fast-forward the advancing branch IN ITS OWN DEDICATED WORKTREE — never
+    // the canonical checkout. The canonical working tree may be dirty or on the
+    // user's own branch; checking out there would fail or clobber it. The
+    // rebase already made the advancing branch an ancestor of the approach
+    // branch, so this is a fast-forward.
+    let advancing_wt = ensure_advancing_worktree(repo_root, store.root(), &state.advancing_branch)?;
+    autotune_git::merge_ff_only(&advancing_wt, &approach.branch_name)
+        .context("fast-forward advancing branch failed")?;
 
     let metrics = approach.metrics.clone().unwrap_or_default();
 
