@@ -616,6 +616,7 @@ mod tests {
             patterns: vec![RegexPattern {
                 name: "m".to_string(),
                 pattern: "([0-9]+)".to_string(),
+                sources: vec![],
             }],
         };
         let adaptor = build_adaptor(&config, Path::new("."));
@@ -740,6 +741,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                 patterns: vec![RegexPattern {
                     name: "metric-name".to_string(),
                     pattern: r"score: ([0-9.]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -786,6 +788,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                 patterns: vec![RegexPattern {
                     name: "score".to_string(),
                     pattern: r"score: ([0-9.]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -814,6 +817,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                 patterns: vec![RegexPattern {
                     name: "val".to_string(),
                     pattern: r"val: ([0-9]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -843,6 +847,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                 patterns: vec![RegexPattern {
                     name: "x".to_string(),
                     pattern: r"x: ([0-9]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -859,6 +864,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                 patterns: vec![RegexPattern {
                     name: "y".to_string(),
                     pattern: r"y: ([0-9]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -887,6 +893,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                 patterns: vec![RegexPattern {
                     name: "metric-a".to_string(),
                     pattern: r"a: ([0-9]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -903,6 +910,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                 patterns: vec![RegexPattern {
                     name: "metric-b".to_string(),
                     pattern: r"b: ([0-9]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -963,6 +971,7 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
                         instruction: "Score 1-5.".to_string(),
                         score_range: ScoreRangeConfig { min: 1, max: 5 },
                         guidance: None,
+                        sources: vec![],
                     })
                     .collect(),
             },

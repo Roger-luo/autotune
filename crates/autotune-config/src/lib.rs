@@ -137,6 +137,11 @@ pub struct MeasureConfig {
     /// from keep/discard regression accounting (a change can't be blamed for
     /// moving code it never touched). Absent → no causal filtering, identical
     /// to today.
+    ///
+    /// This is the measure-level (coarse) glob. A single measure can emit many
+    /// metrics; to separate co-located metrics, declare `sources` on the
+    /// individual metric (regex pattern / criterion benchmark / judge rubric),
+    /// which OVERRIDES this for that metric. See [`AutotuneConfig::metric_sources`].
     #[serde(default)]
     pub sources: Vec<String>,
 }
@@ -159,6 +164,10 @@ pub struct RubricConfig {
     pub score_range: ScoreRangeConfig,
     #[serde(default)]
     pub guidance: Option<String>,
+    /// Per-metric source globs (Part B). Overrides the parent measure's
+    /// `sources` for this rubric only. See [`RegexPattern::sources`].
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -176,6 +185,14 @@ pub struct CriterionBenchmark {
     pub group: String,
     #[serde(default)]
     pub stat: CriterionStat,
+    /// Per-metric source globs (Part B). Overrides the parent measure's
+    /// `sources` for this benchmark only — so one criterion bench binary can
+    /// emit many metrics (`micro_cnot`, `sparse-vec/trim`, …) and a metric
+    /// whose `sources` the diff never touched is flagged `causally_unrelated`
+    /// even when a co-located metric from the same binary WAS touched. See
+    /// [`RegexPattern::sources`].
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +216,20 @@ pub enum AdaptorConfig {
 pub struct RegexPattern {
     pub name: String,
     pub pattern: String,
+    /// Per-metric source globs (Part B: per-metric causal attribution).
+    ///
+    /// When non-empty, these OVERRIDE the parent [`MeasureConfig::sources`] for
+    /// this metric only. A single measure can emit many metrics; a measure-level
+    /// glob can't separate a touched metric from an untouched co-located one, so
+    /// declaring `sources` per metric lets a metric whose globs the iteration's
+    /// `changed_files` never intersect be flagged `causally_unrelated` and
+    /// excluded from the objective + regression accounting — even when a
+    /// co-located metric from the same measure WAS touched.
+    ///
+    /// Precedence: per-metric `sources` (if non-empty) else the measure's
+    /// `sources` else none (no causal filtering). Absent ⇒ today's behavior.
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -651,6 +682,52 @@ impl AutotuneConfig {
         root.join(".autotune").join("tasks").join(&self.task.name)
     }
 
+    /// Resolve the effective source globs for every statically-known metric
+    /// (Part B: per-metric causal attribution).
+    ///
+    /// Precedence per metric: the metric's own `sources` (regex pattern /
+    /// criterion benchmark / judge rubric) if non-empty, else the parent
+    /// [`MeasureConfig::sources`]. Only metrics with at least one effective
+    /// glob are inserted, so the map stays empty when no `sources` are declared
+    /// anywhere (no causal filtering — today's behavior). Script adaptors emit
+    /// names only at runtime and so are skipped.
+    pub fn metric_sources(&self) -> std::collections::HashMap<String, Vec<String>> {
+        let mut map = std::collections::HashMap::new();
+        for measure in &self.measure {
+            let measure_sources = &measure.sources;
+            let mut insert = |name: String, per_metric: &[String]| {
+                let effective = if per_metric.is_empty() {
+                    measure_sources.clone()
+                } else {
+                    per_metric.to_vec()
+                };
+                if !effective.is_empty() {
+                    map.insert(name, effective);
+                }
+            };
+            match &measure.adaptor {
+                AdaptorConfig::Regex { patterns } => {
+                    for p in patterns {
+                        insert(p.name.clone(), &p.sources);
+                    }
+                }
+                AdaptorConfig::Criterion { benchmarks } => {
+                    for b in benchmarks {
+                        insert(b.name.clone(), &b.sources);
+                    }
+                }
+                AdaptorConfig::Judge { rubrics, .. } => {
+                    for r in rubrics {
+                        insert(r.id.clone(), &r.sources);
+                    }
+                }
+                // Script adaptors emit names only at runtime — can't attribute.
+                AdaptorConfig::Script { .. } => {}
+            }
+        }
+        map
+    }
+
     /// Whether this task optimizes a RUNTIME-PERFORMANCE benchmark, inferred
     /// purely from how its measures are declared — there is no task-kind flag.
     ///
@@ -755,11 +832,13 @@ primary_metrics = [{ name = "sort_ns", direction = "Minimize" }]
                     name: "sort_ns".to_string(),
                     group: "sort/random".to_string(),
                     stat: CriterionStat::Mean,
+                    sources: vec![],
                 },
                 CriterionBenchmark {
                     name: "sort_median_ns".to_string(),
                     group: "sort/random".to_string(),
                     stat: CriterionStat::Median,
+                    sources: vec![],
                 },
             ],
         };
@@ -900,6 +979,7 @@ max_fresh_spawns = 2
                 patterns: vec![RegexPattern {
                     name: metric_name.to_string(),
                     pattern: "([0-9]+)".to_string(),
+                    sources: vec![],
                 }],
             },
             sources: vec![],
@@ -1341,6 +1421,117 @@ primary_metrics = [{ name = "line_coverage", direction = "Maximize" }]
         let config: AutotuneConfig = toml::from_str(toml).unwrap();
         config.validate().unwrap();
         assert!(config.optimizes_runtime_perf());
+    }
+
+    #[test]
+    fn metric_sources_empty_when_nothing_declared() {
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![regex_measure("m", "val")],
+            weighted_sum_score("val"),
+        );
+        assert!(config.metric_sources().is_empty());
+    }
+
+    #[test]
+    fn metric_sources_falls_back_to_measure_level() {
+        // No per-metric sources → inherit the measure's sources.
+        let mut measure = regex_measure("m", "val");
+        measure.sources = vec!["src/m/**".to_string()];
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![measure],
+            weighted_sum_score("val"),
+        );
+        let map = config.metric_sources();
+        assert_eq!(map.get("val"), Some(&vec!["src/m/**".to_string()]));
+    }
+
+    #[test]
+    fn metric_sources_per_metric_overrides_measure_level() {
+        // One measure, two metrics: one declares its own `sources`, the other
+        // inherits the measure-level glob. This is the Part B refinement: a
+        // measure-level glob can't separate co-located metrics.
+        let measure = MeasureConfig {
+            name: "bench".to_string(),
+            command: Some(vec!["cargo".to_string(), "bench".to_string()]),
+            timeout: 30,
+            adaptor: AdaptorConfig::Criterion {
+                benchmarks: vec![
+                    CriterionBenchmark {
+                        name: "micro_cnot".to_string(),
+                        group: "gates/cnot".to_string(),
+                        stat: CriterionStat::Mean,
+                        sources: vec!["src/gates/cnot.rs".to_string()],
+                    },
+                    CriterionBenchmark {
+                        name: "sparse_trim".to_string(),
+                        group: "sparse-vec/trim".to_string(),
+                        stat: CriterionStat::Mean,
+                        sources: vec![], // inherits measure-level
+                    },
+                ],
+            },
+            sources: vec!["src/**".to_string()],
+        };
+        let config = make_config_direct(
+            default_task_with_stop(),
+            default_paths(),
+            vec![],
+            vec![measure],
+            ScoreConfig::WeightedSum {
+                primary_metrics: vec![PrimaryMetric {
+                    name: "micro_cnot".to_string(),
+                    direction: Direction::Minimize,
+                    weight: 1.0,
+                }],
+                guardrail_metrics: vec![],
+                noise_threshold: 0.0,
+                noise_k: 2.0,
+            },
+        );
+        let map = config.metric_sources();
+        // Per-metric override wins for micro_cnot.
+        assert_eq!(
+            map.get("micro_cnot"),
+            Some(&vec!["src/gates/cnot.rs".to_string()])
+        );
+        // sparse_trim inherits the measure-level glob.
+        assert_eq!(map.get("sparse_trim"), Some(&vec!["src/**".to_string()]));
+    }
+
+    #[test]
+    fn per_metric_sources_parse_from_toml() {
+        let toml = r#"
+[task]
+name = "t"
+max_iterations = "5"
+[paths]
+tunable = ["src/**"]
+[[measure]]
+name = "bench"
+command = ["cargo", "bench"]
+sources = ["src/**"]
+adaptor = { type = "criterion", benchmarks = [
+  { name = "micro_cnot", group = "gates/cnot", sources = ["src/gates/cnot.rs"] },
+  { name = "sparse_trim", group = "sparse-vec/trim" },
+] }
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "micro_cnot", direction = "Minimize" }]
+"#;
+        let config: AutotuneConfig = toml::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let map = config.metric_sources();
+        assert_eq!(
+            map.get("micro_cnot"),
+            Some(&vec!["src/gates/cnot.rs".to_string()])
+        );
+        assert_eq!(map.get("sparse_trim"), Some(&vec!["src/**".to_string()]));
     }
 
     #[test]
