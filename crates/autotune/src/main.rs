@@ -159,6 +159,31 @@ fn next_available_task_name(repo_root: &Path, base: &str) -> Result<String> {
     bail!("could not find an available fork name for task '{base}' after 10000 attempts");
 }
 
+/// Retry `op` up to `max_attempts` times, sleeping `backoff(attempt)` (1-based)
+/// between failed tries. Returns the first `Ok`, or the last `Err` once attempts
+/// are exhausted. Used to ride out intermittent agent-spawn failures (a
+/// rate-limited / overloaded `claude` exits non-zero) instead of aborting the
+/// whole run and throwing away the freshly-collected baseline.
+fn retry_with_backoff<T, E>(
+    max_attempts: u32,
+    backoff: impl Fn(u32) -> std::time::Duration,
+    mut op: impl FnMut(u32) -> Result<T, E>,
+) -> Result<T, E> {
+    let mut attempt = 1;
+    loop {
+        match op(attempt) {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if attempt >= max_attempts {
+                    return Err(err);
+                }
+                std::thread::sleep(backoff(attempt));
+                attempt += 1;
+            }
+        }
+    }
+}
+
 fn prepare_run_task_dir(repo_root: &Path, config: &mut AutotuneConfig) -> Result<PathBuf> {
     let mut task_dir = config.task_dir(repo_root);
     if task_dir.exists() {
@@ -773,14 +798,29 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let mut research_config = research_agent_session_config(&config, &repo_root);
     research_config.prompt = research_prompt;
 
-    // Forward streaming events (text, tool use) to stderr.
-    let research_stream = autotune::stream_ui::Stream::research("exploring codebase...");
-    let research_config_with_events = autotune_agent::AgentConfigWithEvents::new(research_config)
-        .with_event_handler(research_stream.handler());
-    let research_response = agent
-        .spawn_streaming(research_config_with_events)
-        .context("failed to spawn research agent")?;
-    research_stream.finish();
+    // Forward streaming events (text, tool use) to stderr. Retry the spawn a
+    // few times: the `claude` CLI exits non-zero on transient API errors
+    // (overload / rate limit), and a single failure shouldn't discard the
+    // freshly-collected baseline and abort the whole run.
+    const MAX_SPAWN_ATTEMPTS: u32 = 4;
+    let research_response = retry_with_backoff(
+        MAX_SPAWN_ATTEMPTS,
+        |attempt| std::time::Duration::from_secs(15 * attempt as u64),
+        |attempt| {
+            if attempt > 1 {
+                aeprintln!(
+                    "[autotune] research agent spawn failed; retrying (attempt {attempt}/{MAX_SPAWN_ATTEMPTS})"
+                );
+            }
+            let research_stream = autotune::stream_ui::Stream::research("exploring codebase...");
+            let cfg = autotune_agent::AgentConfigWithEvents::new(research_config.clone())
+                .with_event_handler(research_stream.handler());
+            let result = agent.spawn_streaming(cfg);
+            research_stream.finish();
+            result
+        },
+    )
+    .context("failed to spawn research agent after retries")?;
 
     // Handle any tool-access requests the agent emitted during initial exploration.
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
@@ -3809,6 +3849,46 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             err.to_string()
                 .contains("failed to load config from .autotune.toml"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn retry_with_backoff_returns_first_success_after_transient_failures() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let result: Result<&str, &str> = retry_with_backoff(
+            4,
+            |_| std::time::Duration::ZERO,
+            |attempt| {
+                calls.set(attempt);
+                if attempt < 3 {
+                    Err("transient")
+                } else {
+                    Ok("ok")
+                }
+            },
+        );
+        assert_eq!(result, Ok("ok"));
+        assert_eq!(calls.get(), 3, "should have succeeded on the 3rd attempt");
+    }
+
+    #[test]
+    fn retry_with_backoff_gives_up_after_max_attempts() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let result: Result<&str, &str> = retry_with_backoff(
+            3,
+            |_| std::time::Duration::ZERO,
+            |attempt| {
+                calls.set(attempt);
+                Err("always")
+            },
+        );
+        assert_eq!(result, Err("always"));
+        assert_eq!(
+            calls.get(),
+            3,
+            "should have tried exactly max_attempts times"
         );
     }
 
