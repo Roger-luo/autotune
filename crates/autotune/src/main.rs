@@ -210,6 +210,31 @@ fn cleanup_leftover_task_git_state(repo_root: &Path, task_name: &str, canonical_
     }
 }
 
+/// Retry `op` up to `max_attempts` times, sleeping `backoff(attempt)` (1-based)
+/// between failed tries. Returns the first `Ok`, or the last `Err` once attempts
+/// are exhausted. Used to ride out intermittent agent-spawn failures (a
+/// rate-limited / overloaded `claude` exits non-zero) instead of aborting the
+/// whole run and throwing away the freshly-collected baseline.
+fn retry_with_backoff<T, E>(
+    max_attempts: u32,
+    backoff: impl Fn(u32) -> std::time::Duration,
+    mut op: impl FnMut(u32) -> Result<T, E>,
+) -> Result<T, E> {
+    let mut attempt = 1;
+    loop {
+        match op(attempt) {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if attempt >= max_attempts {
+                    return Err(err);
+                }
+                std::thread::sleep(backoff(attempt));
+                attempt += 1;
+            }
+        }
+    }
+}
+
 fn prepare_run_task_dir(repo_root: &Path, config: &mut AutotuneConfig) -> Result<PathBuf> {
     let mut task_dir = config.task_dir(repo_root);
     if task_dir.exists() {
@@ -831,14 +856,29 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let mut research_config = research_agent_session_config(&config, &repo_root);
     research_config.prompt = research_prompt;
 
-    // Forward streaming events (text, tool use) to stderr.
-    let research_stream = autotune::stream_ui::Stream::research("exploring codebase...");
-    let research_config_with_events = autotune_agent::AgentConfigWithEvents::new(research_config)
-        .with_event_handler(research_stream.handler());
-    let research_response = agent
-        .spawn_streaming(research_config_with_events)
-        .context("failed to spawn research agent")?;
-    research_stream.finish();
+    // Forward streaming events (text, tool use) to stderr. Retry the spawn a
+    // few times: the `claude` CLI exits non-zero on transient API errors
+    // (overload / rate limit), and a single failure shouldn't discard the
+    // freshly-collected baseline and abort the whole run.
+    const MAX_SPAWN_ATTEMPTS: u32 = 4;
+    let research_response = retry_with_backoff(
+        MAX_SPAWN_ATTEMPTS,
+        |attempt| std::time::Duration::from_secs(15 * attempt as u64),
+        |attempt| {
+            if attempt > 1 {
+                aeprintln!(
+                    "[autotune] research agent spawn failed; retrying (attempt {attempt}/{MAX_SPAWN_ATTEMPTS})"
+                );
+            }
+            let research_stream = autotune::stream_ui::Stream::research("exploring codebase...");
+            let cfg = autotune_agent::AgentConfigWithEvents::new(research_config.clone())
+                .with_event_handler(research_stream.handler());
+            let result = agent.spawn_streaming(cfg);
+            research_stream.finish();
+            result
+        },
+    )
+    .context("failed to spawn research agent after retries")?;
 
     // Handle any tool-access requests the agent emitted during initial exploration.
     let tool_approver = autotune::stream_ui::TerminalToolApprover;
@@ -1366,14 +1406,49 @@ fn build_research_agent_prompt(
 
     p.push_str("\n# What to do\n\n");
     p.push_str(
-        "- Do NOT run the measure, test, or build commands listed above. The CLI owns that.\n",
+        "- The CLI owns the official scoring: do NOT run the configured measure/test commands to score, and do NOT re-collect the baseline. (You MAY run a profiler or a quick exploratory bench under Bash to find the hot path — see \"Forming a high-value hypothesis\" below.)\n",
     );
-    p.push_str("- Do NOT re-collect the baseline — it's already done.\n");
     p.push_str("- Use Read/Glob/Grep to understand the code that produces the target metric(s).\n");
     p.push_str("- When the CLI asks you to plan the next iteration, propose a concrete, scoped hypothesis with specific files to modify.\n");
     p.push_str("- Your planning response format is an XML `<plan>` fragment with `<approach>`, `<hypothesis>`, and a `<files-to-modify>` list of `<file>` entries. The CLI will tell you when to emit one.\n");
     p.push_str("- `<approach>` is a SHORT label — a few words, e.g. `specialize-rzz-fast-path` or `reuse-scratch-buffer`. It names the git branch and the iteration directory, so keep it terse; do NOT put a full sentence or paragraph there. All the detail goes in `<hypothesis>`.\n");
     p.push_str("- The `hypothesis` string is the main prompt passed to the implementation agent, along with the `files_to_modify` list. Write it as concrete instructions: what to change and why. Anything you want the implementer to know must go there.\n");
+
+    p.push_str("\n# Forming a high-value hypothesis\n\n");
+    p.push_str(
+        "Assume the codebase is already reasonably optimized: generic \"best \
+         practice\" changes usually REGRESS. Proposals that just presize a \
+         collection that's already sized, add caching/abstraction, or route a \
+         hot single-element path through a general or batched API tend to add \
+         indirection and get *slower*. To propose changes that actually move the \
+         metrics:\n\n",
+    );
+    p.push_str(
+        "- Find the real hot path FIRST — don't guess. Read the benchmark to see \
+         exactly what it exercises, then trace which functions/loops dominate. \
+         When you can, PROFILE: request `Bash` and use the project's own \
+         profiling tooling if it has any (look for scripts, `cargo flamegraph`, \
+         `samply`, `perf`), or build the relevant bench in release and sample it. \
+         A hypothesis grounded in a measured hot spot beats one from intuition.\n",
+    );
+    p.push_str(
+        "- Target that bottleneck with the SMALLEST change that removes wasted \
+         work — a redundant allocation, clone, hash, recomputation, or bounds \
+         check in the hottest loop. Prefer a surgical edit over a broad rewrite \
+         or a new abstraction.\n",
+    );
+    p.push_str(
+        "- Respect the scoring weights: the highest-weighted metrics dominate the \
+         rank. A change that speeds up a low-weight micro-op but slows a \
+         high-weight end-to-end metric is a net loss and will be discarded.\n",
+    );
+    p.push_str(
+        "- Learn from the ledger: each past iteration shows its approach, status, \
+         rank, and (for the last one) a per-metric Reason. If an approach \
+         regressed a metric, do NOT repeat that class of change — diagnose WHY it \
+         regressed and pick a different lever. Don't re-propose something already \
+         tried.\n",
+    );
 
     p.push_str("\n# Requesting additional tools\n\n");
     p.push_str("You start with read-only tools (Read, Glob, Grep). If you need a tool that isn't available — for example `Bash` to run `cargo tree`, `cargo metadata`, or `git log` — you can request it by emitting an XML fragment in your response:\n\n");
@@ -3283,6 +3358,16 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         assert!(prompt.contains("Do NOT re-run the measure commands"));
         assert!(prompt.contains("<request-tool>"));
         assert!(prompt.contains(&format!("- `{}`", baseline_output_files[0].display())));
+
+        // Hypothesis-quality guidance: profile the hot path, make small changes,
+        // respect weights, and learn from prior regressions.
+        assert!(prompt.contains("Forming a high-value hypothesis"));
+        assert!(prompt.contains("Find the real hot path FIRST"));
+        assert!(prompt.contains("PROFILE"));
+        assert!(prompt.contains("SMALLEST change"));
+        assert!(prompt.contains("Learn from the ledger"));
+        // Profiling must be explicitly permitted despite the "CLI owns scoring" rule.
+        assert!(prompt.contains("You MAY run a profiler"));
     }
 
     #[test]
@@ -3822,6 +3907,46 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
             err.to_string()
                 .contains("failed to load config from .autotune.toml"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn retry_with_backoff_returns_first_success_after_transient_failures() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let result: Result<&str, &str> = retry_with_backoff(
+            4,
+            |_| std::time::Duration::ZERO,
+            |attempt| {
+                calls.set(attempt);
+                if attempt < 3 {
+                    Err("transient")
+                } else {
+                    Ok("ok")
+                }
+            },
+        );
+        assert_eq!(result, Ok("ok"));
+        assert_eq!(calls.get(), 3, "should have succeeded on the 3rd attempt");
+    }
+
+    #[test]
+    fn retry_with_backoff_gives_up_after_max_attempts() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let result: Result<&str, &str> = retry_with_backoff(
+            3,
+            |_| std::time::Duration::ZERO,
+            |attempt| {
+                calls.set(attempt);
+                Err("always")
+            },
+        );
+        assert_eq!(result, Err("always"));
+        assert_eq!(
+            calls.get(),
+            3,
+            "should have tried exactly max_attempts times"
         );
     }
 
