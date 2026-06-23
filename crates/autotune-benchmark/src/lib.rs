@@ -96,7 +96,7 @@ pub fn run_judge_measure(
     };
 
     let (cmd_stdout, cmd_stderr) = if config.command.is_some() {
-        let output = run_command_with_timeout(config, working_dir)?;
+        let output = run_command_with_timeout(config, working_dir, &[])?;
         if !output.status.success() {
             return Err(MeasureError::CommandFailed {
                 name: config.name.clone(),
@@ -219,7 +219,20 @@ pub fn run_measure_with_output(
     config: &MeasureConfig,
     working_dir: &Path,
 ) -> Result<MeasureReport, MeasureError> {
-    let output = run_command_with_timeout(config, working_dir)?;
+    run_measure_with_output_env(config, working_dir, &[])
+}
+
+/// Like [`run_measure_with_output`], but injects extra environment variables
+/// into the measure command's process. Used by baseline replication (option 1)
+/// to force a rebuild between replicates via a per-replicate `RUSTFLAGS` value
+/// (which perturbs Cargo's build fingerprint so codegen/layout actually
+/// changes). The empty-slice path is identical to the original behavior.
+pub fn run_measure_with_output_env(
+    config: &MeasureConfig,
+    working_dir: &Path,
+    extra_env: &[(String, String)],
+) -> Result<MeasureReport, MeasureError> {
+    let output = run_command_with_timeout(config, working_dir, extra_env)?;
 
     if !output.status.success() {
         return Err(MeasureError::CommandFailed {
@@ -279,6 +292,29 @@ pub fn run_all_measures_with_output(
     iteration: u32,
     judge_ctx: Option<&JudgeContext>,
 ) -> Result<(Metrics, Vec<MeasureReport>), MeasureError> {
+    run_all_measures_with_output_env(
+        configs,
+        working_dir,
+        approach_name,
+        iteration,
+        judge_ctx,
+        &[],
+    )
+}
+
+/// Like [`run_all_measures_with_output`], but injects extra environment
+/// variables into each non-judge measure command's process. Used by baseline
+/// replication (option 1) to force a rebuild between replicates. Judge measures
+/// ignore the env (they don't shell out to a build). The empty-slice path is
+/// identical to [`run_all_measures_with_output`].
+pub fn run_all_measures_with_output_env(
+    configs: &[MeasureConfig],
+    working_dir: &Path,
+    approach_name: &str,
+    iteration: u32,
+    judge_ctx: Option<&JudgeContext>,
+    extra_env: &[(String, String)],
+) -> Result<(Metrics, Vec<MeasureReport>), MeasureError> {
     let mut all_metrics = HashMap::new();
     let mut reports = Vec::with_capacity(configs.len());
 
@@ -295,7 +331,7 @@ pub fn run_all_measures_with_output(
                 })?;
                 run_judge_measure(config, working_dir, approach_name, iteration, ctx)?
             }
-            _ => run_measure_with_output(config, working_dir)?,
+            _ => run_measure_with_output_env(config, working_dir, extra_env)?,
         };
         all_metrics.extend(report.metrics.clone());
         reports.push(report);
@@ -388,6 +424,7 @@ pub fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn Metr
 fn run_command_with_timeout(
     config: &MeasureConfig,
     working_dir: &Path,
+    extra_env: &[(String, String)],
 ) -> Result<Output, MeasureError> {
     let command = config.command.as_deref().ok_or_else(|| MeasureError::Io {
         name: config.name.clone(),
@@ -402,6 +439,9 @@ fn run_command_with_timeout(
         .current_dir(working_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
 
     #[cfg(unix)]
     {

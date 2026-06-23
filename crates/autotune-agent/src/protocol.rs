@@ -741,15 +741,23 @@ fn parse_score(reader: &mut Reader<&[u8]>) -> Result<ScoreConfig, AgentError> {
         "weighted_sum" => Ok(ScoreConfig::WeightedSum {
             primary_metrics,
             guardrail_metrics,
-            // Noise-gate tuning is opt-in and hand-edited into `.autotune.toml`;
-            // the init XML protocol uses the backward-compatible identity.
+            // Noise-gate tuning and measurement-robustness knobs are opt-in and
+            // hand-edited into `.autotune.toml`; the init XML protocol uses the
+            // backward-compatible identity (no discounting, no replication, no
+            // confirmation pass).
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         }),
         "threshold" => Ok(ScoreConfig::Threshold {
             conditions,
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         }),
         "script" => Ok(ScoreConfig::Script { command }),
         "command" => Ok(ScoreConfig::Command { command }),

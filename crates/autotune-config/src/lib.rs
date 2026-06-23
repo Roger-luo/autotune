@@ -250,6 +250,26 @@ pub enum ScoreConfig {
         /// envelope from stddev alone (no CI). Default `2.0` (~95% band).
         #[serde(default = "default_noise_k")]
         noise_k: f64,
+        /// Number of EXTRA baseline measurements (each rebuilding the project)
+        /// to take so the spread captures cross-build codegen/layout noise the
+        /// within-run criterion CI can't see (option 1). Default `0` = off
+        /// (identical to legacy: one baseline measurement). Only used when the
+        /// task `optimizes_runtime_perf()`; ignored for deterministic metrics.
+        #[serde(default)]
+        baseline_replicates: u32,
+        /// Whether to rebuild between baseline replicates. Default `true` — the
+        /// rebuild is the POINT (it's what surfaces layout noise). Set `false`
+        /// for a cheaper no-rebuild spread that only captures re-run jitter.
+        #[serde(default = "default_replicate_rebuild")]
+        replicate_rebuild: bool,
+        /// Two-phase confirmation of significant deltas (option 5). When `true`
+        /// and the task `optimizes_runtime_perf()`, a candidate metric whose
+        /// delta drives the keep/discard decision and is SIGNIFICANT (beyond the
+        /// envelope) is re-measured once (rebuild + re-run) before acting; if it
+        /// no longer reproduces as significant, it's treated as noise. Default
+        /// `false` = off (identical to legacy).
+        #[serde(default)]
+        confirm_significant: bool,
     },
     #[serde(rename = "threshold")]
     Threshold {
@@ -258,6 +278,12 @@ pub enum ScoreConfig {
         noise_threshold: f64,
         #[serde(default = "default_noise_k")]
         noise_k: f64,
+        #[serde(default)]
+        baseline_replicates: u32,
+        #[serde(default = "default_replicate_rebuild")]
+        replicate_rebuild: bool,
+        #[serde(default)]
+        confirm_significant: bool,
     },
     #[serde(rename = "script")]
     Script { command: Vec<String> },
@@ -267,6 +293,10 @@ pub enum ScoreConfig {
 
 fn default_noise_k() -> f64 {
     2.0
+}
+
+fn default_replicate_rebuild() -> bool {
+    true
 }
 
 impl ScoreConfig {
@@ -286,6 +316,55 @@ impl ScoreConfig {
                 ..
             } => (*noise_threshold, *noise_k),
             ScoreConfig::Script { .. } | ScoreConfig::Command { .. } => (0.0, default_noise_k()),
+        }
+    }
+
+    /// Number of EXTRA baseline replicate measurements to take (option 1).
+    /// `0` for script/command scorers and the default. The CLI further gates
+    /// this on `AutotuneConfig::optimizes_runtime_perf()` so deterministic
+    /// metrics never pay the replication cost.
+    pub fn baseline_replicates(&self) -> u32 {
+        match self {
+            ScoreConfig::WeightedSum {
+                baseline_replicates,
+                ..
+            }
+            | ScoreConfig::Threshold {
+                baseline_replicates,
+                ..
+            } => *baseline_replicates,
+            ScoreConfig::Script { .. } | ScoreConfig::Command { .. } => 0,
+        }
+    }
+
+    /// Whether to rebuild between baseline replicates (default `true`; the
+    /// rebuild is what surfaces cross-build layout noise).
+    pub fn replicate_rebuild(&self) -> bool {
+        match self {
+            ScoreConfig::WeightedSum {
+                replicate_rebuild, ..
+            }
+            | ScoreConfig::Threshold {
+                replicate_rebuild, ..
+            } => *replicate_rebuild,
+            ScoreConfig::Script { .. } | ScoreConfig::Command { .. } => default_replicate_rebuild(),
+        }
+    }
+
+    /// Whether two-phase confirmation of significant deltas is enabled (option
+    /// 5). `false` for script/command scorers and by default. The CLI further
+    /// gates this on `AutotuneConfig::optimizes_runtime_perf()`.
+    pub fn confirm_significant(&self) -> bool {
+        match self {
+            ScoreConfig::WeightedSum {
+                confirm_significant,
+                ..
+            }
+            | ScoreConfig::Threshold {
+                confirm_significant,
+                ..
+            } => *confirm_significant,
+            ScoreConfig::Script { .. } | ScoreConfig::Command { .. } => false,
         }
     }
 }
@@ -1024,6 +1103,9 @@ max_fresh_spawns = 2
             guardrail_metrics: vec![],
             noise_threshold: 0.0,
             noise_k: 2.0,
+            baseline_replicates: 0,
+            replicate_rebuild: true,
+            confirm_significant: false,
         }
     }
 
@@ -1207,6 +1289,9 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1225,6 +1310,9 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1255,6 +1343,9 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                 }],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1272,6 +1363,9 @@ primary_metrics = [{ name = "val", direction = "Maximize" }]
                 conditions: vec![],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1524,6 +1618,9 @@ primary_metrics = [
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
         );
         let err = config.validate().unwrap_err();
@@ -1600,6 +1697,9 @@ primary_metrics = [
                 guardrail_metrics: vec![],
                 noise_threshold: 0.0,
                 noise_k: 2.0,
+                baseline_replicates: 0,
+                replicate_rebuild: true,
+                confirm_significant: false,
             },
         );
         let map = config.metric_sources();

@@ -67,6 +67,13 @@ impl WeightedSumScorer {
     }
 }
 
+/// The per-metric empirical cross-build noise floor for `name` from the score
+/// input (option 1). `0.0` when none was recorded (`baseline_replicates == 0`),
+/// which leaves the noise envelope at its within-run value.
+fn empirical(input: &ScoreInput, name: &str) -> f64 {
+    input.empirical_envelope.get(name).copied().unwrap_or(0.0)
+}
+
 pub fn improvement(best: f64, candidate: f64, direction: Direction) -> f64 {
     if best == 0.0 {
         match direction {
@@ -130,6 +137,7 @@ impl ScoreCalculator for WeightedSumScorer {
                     best_val,
                     input.candidate_variances.get(&guardrail.name),
                     input.best_variances.get(&guardrail.name),
+                    empirical(input, &guardrail.name),
                     &input.noise,
                 )
             {
@@ -173,6 +181,7 @@ impl ScoreCalculator for WeightedSumScorer {
                     best_val,
                     input.candidate_variances.get(&guardrail.name),
                     input.best_variances.get(&guardrail.name),
+                    empirical(input, &guardrail.name),
                     &input.noise,
                 )
             {
@@ -219,6 +228,7 @@ impl ScoreCalculator for WeightedSumScorer {
                     best_val,
                     input.candidate_variances.get(&primary.name),
                     input.best_variances.get(&primary.name),
+                    empirical(input, &primary.name),
                     &input.noise,
                 );
 
@@ -398,6 +408,43 @@ mod tests {
         assert!((tp.contribution - 0.075).abs() < 1e-12);
     }
 
+    /// BACKWARD-COMPAT pin for the measurement-robustness stack: with an EMPTY
+    /// `empirical_envelope` (the default — `baseline_replicates == 0`) and no
+    /// variances, the rank, decision, and details are bit-for-bit identical to
+    /// the #18 scorer. The new option-1 floor only ever ADDS to the envelope; an
+    /// empty map is a no-op.
+    #[test]
+    fn empty_empirical_envelope_reproduces_legacy_rank_exactly() {
+        let scorer = WeightedSumScorer::new(
+            vec![
+                PrimaryMetricDef {
+                    name: "throughput".to_string(),
+                    direction: Direction::Maximize,
+                    weight: 0.75,
+                },
+                PrimaryMetricDef {
+                    name: "latency".to_string(),
+                    direction: Direction::Minimize,
+                    weight: 0.25,
+                },
+            ],
+            vec![],
+        );
+        let inp = input(
+            &[("throughput", 100.0), ("latency", 50.0)],
+            &[("throughput", 110.0), ("latency", 40.0)],
+        );
+        // `inp.empirical_envelope` is empty (the default).
+        assert!(inp.empirical_envelope.is_empty());
+        let out = scorer.calculate(&inp).unwrap();
+        // The documented #18 legacy value.
+        assert!((out.rank - 0.125).abs() < 1e-12, "rank {}", out.rank);
+        assert_eq!(out.decision, "keep");
+        for d in out.details.unwrap() {
+            assert!(!d.within_noise, "{} flagged noisy under defaults", d.name);
+        }
+    }
+
     /// A regression whose magnitude falls inside the CI noise envelope is
     /// excluded: it contributes 0 to the rank and is flagged `within_noise`.
     /// This is the Clifford episode in miniature — a "+31% regression" that is
@@ -495,6 +542,61 @@ mod tests {
 
         let out = scorer.calculate(&score_input).unwrap();
         assert_eq!(out.decision, "keep", "noise guardrail should not discard");
+    }
+
+    /// Option 1: a candidate delta that EXCEEDS the within-run CI is still
+    /// discounted when it falls inside the empirical CROSS-BUILD envelope. This
+    /// is the ppvm #149 failure mode — a real-looking swing that is actually
+    /// rebuild jitter the per-run CI couldn't see.
+    #[test]
+    fn empirical_cross_build_envelope_discounts_delta_beyond_ci() {
+        let scorer = WeightedSumScorer::new(objective("bench_ns", Direction::Minimize), vec![]);
+        // best 100 → candidate 125 (a 25% "regression"). The within-run CI is
+        // tight (half-width 5 each → envelope 10) so |25| > 10 would normally be
+        // significant. But the empirical cross-build floor is 35, so |25| <= 35
+        // → within noise, zero contribution.
+        let mut score_input = input(&[("bench_ns", 100.0)], &[("bench_ns", 125.0)]);
+        let tight = MetricVariance {
+            stddev: Some(2.0),
+            ci_lower: Some(95.0),
+            ci_upper: Some(105.0),
+        };
+        score_input.candidate_variances = variances(&[("bench_ns", tight)]);
+        score_input.best_variances = variances(&[("bench_ns", tight)]);
+        score_input.empirical_envelope = [("bench_ns".to_string(), 35.0)].into_iter().collect();
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(
+            out.rank, 0.0,
+            "delta inside the empirical cross-build envelope must not move the rank"
+        );
+        let d = &out.details.unwrap()[0];
+        assert!(
+            d.within_noise,
+            "must be flagged within_noise via empirical floor"
+        );
+    }
+
+    /// The empirical floor never SHRINKS a genuinely wide within-run CI: with a
+    /// small empirical floor and a wide CI, a sub-CI delta is still discounted.
+    #[test]
+    fn empirical_floor_does_not_shrink_wide_ci() {
+        let scorer = WeightedSumScorer::new(objective("m", Direction::Minimize), vec![]);
+        // Wide within-run CI (half-width 40 each → 80). Tiny empirical floor 5.
+        // A 30-unit delta is inside the 80 envelope → within noise.
+        let mut score_input = input(&[("m", 100.0)], &[("m", 130.0)]);
+        let wide = MetricVariance {
+            stddev: Some(20.0),
+            ci_lower: Some(60.0),
+            ci_upper: Some(140.0),
+        };
+        score_input.candidate_variances = variances(&[("m", wide)]);
+        score_input.best_variances = variances(&[("m", wide)]);
+        score_input.empirical_envelope = [("m".to_string(), 5.0)].into_iter().collect();
+
+        let out = scorer.calculate(&score_input).unwrap();
+        assert_eq!(out.rank, 0.0);
+        assert!(out.details.unwrap()[0].within_noise);
     }
 
     /// Relative `noise_threshold` (no variance present) discounts a small delta.
