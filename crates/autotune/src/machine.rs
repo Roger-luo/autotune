@@ -98,7 +98,7 @@ pub fn run_single_phase(
             run_measuring(config, store, state, judge_ctx)?;
         }
         Phase::Scoring => {
-            run_scoring(scorer, store, state)?;
+            run_scoring(config, scorer, store, state)?;
         }
         Phase::Integrating => {
             run_integrating(config, agent, repo_root, store, state, &research_session)?;
@@ -445,6 +445,7 @@ fn run_planning(
         fresh_spawns: 0,
         fix_history: Vec::new(),
         score_reason: None,
+        score_breakdown: None,
     });
     state.current_phase = Phase::Implementing;
     store.save_state(state)?;
@@ -1194,6 +1195,7 @@ fn best_metrics_from_ledger(ledger: &[IterationRecord]) -> Metrics {
 }
 
 fn run_scoring(
+    config: &AutotuneConfig,
     scorer: &dyn ScoreCalculator,
     store: &TaskStore,
     state: &mut TaskState,
@@ -1232,9 +1234,15 @@ fn run_scoring(
 
     let score_output = scorer.calculate(&score_input).context("scoring failed")?;
 
+    // Assemble the structured per-metric breakdown for the analysis artifact.
+    // The scorer supplies weight + weighted contribution (weighted-sum only);
+    // the values + raw deltas + direction come from the CLI's view here.
+    let breakdown = build_score_breakdown(config, &score_input, &score_output);
+
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.rank = Some(score_output.rank);
     approach_mut.score_reason = Some(score_output.reason.clone());
+    approach_mut.score_breakdown = Some(breakdown);
 
     let (score_line, metrics_line) =
         format_scoring_status_lines(state.current_iteration, &score_output, &candidate_metrics);
@@ -1264,6 +1272,112 @@ fn run_scoring(
         record_discard(state, store, &score_output.reason)?;
     }
     Ok(())
+}
+
+/// Map each scored metric's config direction to the analysis artifact's
+/// `"higher"`/`"lower"` string. Built from whichever score config declares
+/// directions (weighted-sum primaries or threshold conditions); script/command
+/// scorers declare none, yielding an empty map (direction = `None`).
+fn metric_directions(config: &AutotuneConfig) -> HashMap<String, &'static str> {
+    let dir = |d: autotune_config::Direction| match d {
+        autotune_config::Direction::Maximize => "higher",
+        autotune_config::Direction::Minimize => "lower",
+    };
+    match &config.score {
+        autotune_config::ScoreConfig::WeightedSum {
+            primary_metrics, ..
+        } => primary_metrics
+            .iter()
+            .map(|m| (m.name.clone(), dir(m.direction)))
+            .collect(),
+        autotune_config::ScoreConfig::Threshold { conditions } => conditions
+            .iter()
+            .map(|c| (c.metric.clone(), dir(c.direction)))
+            .collect(),
+        autotune_config::ScoreConfig::Script { .. }
+        | autotune_config::ScoreConfig::Command { .. } => HashMap::new(),
+    }
+}
+
+/// Build the structured per-metric score breakdown persisted on the ledger.
+///
+/// One [`autotune_state::MetricBreakdown`] is produced per scored metric. The
+/// set of metric names is the union of: the metrics the scorer declares a
+/// direction for (config), the scorer's own `details` (weighted-sum), and the
+/// candidate/baseline/best maps the scoring used. Values + raw deltas come from
+/// the [`ScoreInput`]; weight + normalized improvement + contribution come from
+/// the scorer's `details` when present (weighted-sum); direction comes from
+/// config.
+fn build_score_breakdown(
+    config: &AutotuneConfig,
+    input: &ScoreInput,
+    output: &ScoreOutput,
+) -> autotune_state::ScoreBreakdown {
+    let directions = metric_directions(config);
+    let contributions: HashMap<&str, &autotune_score::ScoreMetricContribution> = output
+        .details
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+
+    // Collect the union of metric names, preserving a stable order: scorer
+    // detail order first (the weighted-sum primaries in config order), then any
+    // direction-declared metric not already seen, then any remaining candidate
+    // metric. This keeps the common (weighted-sum) case ordered like the config.
+    let mut names: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let push =
+        |name: &str, names: &mut Vec<String>, seen: &mut std::collections::HashSet<String>| {
+            if seen.insert(name.to_string()) {
+                names.push(name.to_string());
+            }
+        };
+    for c in output.details.as_deref().unwrap_or_default() {
+        push(&c.name, &mut names, &mut seen);
+    }
+    for name in directions.keys() {
+        push(name, &mut names, &mut seen);
+    }
+    let mut candidate_names: Vec<&String> = input.candidate.keys().collect();
+    candidate_names.sort();
+    for name in candidate_names {
+        push(name, &mut names, &mut seen);
+    }
+
+    let metrics = names
+        .into_iter()
+        .map(|name| {
+            let baseline = input.baseline.get(&name).copied();
+            let candidate = input.candidate.get(&name).copied();
+            let best = input.best.get(&name).copied();
+            let contribution = contributions.get(name.as_str());
+            autotune_state::MetricBreakdown {
+                delta_vs_baseline: match (candidate, baseline) {
+                    (Some(c), Some(b)) => Some(c - b),
+                    _ => None,
+                },
+                delta_vs_best: match (candidate, best) {
+                    (Some(c), Some(b)) => Some(c - b),
+                    _ => None,
+                },
+                direction: directions.get(name.as_str()).map(|d| d.to_string()),
+                weight: contribution.map(|c| c.weight),
+                improvement_vs_best: contribution.map(|c| c.delta),
+                contribution: contribution.map(|c| c.contribution),
+                baseline,
+                candidate,
+                best,
+                name,
+            }
+        })
+        .collect();
+
+    autotune_state::ScoreBreakdown {
+        decision: output.decision.clone(),
+        metrics,
+    }
 }
 
 fn format_metrics_status(metrics: &std::collections::HashMap<String, f64>) -> String {
@@ -1298,6 +1412,7 @@ fn build_kept_record(
     iteration: usize,
     approach: &ApproachState,
     commit_sha: Option<String>,
+    changed_files: Option<Vec<String>>,
 ) -> IterationRecord {
     IterationRecord {
         iteration,
@@ -1312,6 +1427,8 @@ fn build_kept_record(
         fresh_spawns: approach.fresh_spawns,
         commit_sha,
         reverted_iteration: None,
+        score_breakdown: approach.score_breakdown.clone(),
+        changed_files,
         timestamp: Utc::now(),
     }
 }
@@ -1434,13 +1551,26 @@ fn run_integrating(
     autotune_git::merge_ff_only(&advancing_wt, &approach.branch_name)
         .context("fast-forward advancing branch failed")?;
 
+    // Record which files this iteration's commit changed vs its parent on the
+    // advancing branch. Best-effort: a missing SHA or a git error leaves it
+    // `None` rather than failing integration. Feeds the analysis artifact so a
+    // downstream analyzer can check a metric delta against the touched files.
+    let changed_files = advancing_sha
+        .as_deref()
+        .and_then(|sha| autotune_git::diff_name_only(&advancing_wt, sha).ok());
+
     let metrics = approach.metrics.clone().unwrap_or_default();
 
     // Save iteration metrics
     let _ = store.save_iteration_metrics(state.current_iteration, &approach.name, &metrics);
 
     // Record as kept in ledger
-    let record = build_kept_record(state.current_iteration, approach, advancing_sha);
+    let record = build_kept_record(
+        state.current_iteration,
+        approach,
+        advancing_sha,
+        changed_files,
+    );
     store.append_ledger(&record)?;
 
     state.current_phase = Phase::Recorded;
@@ -1588,6 +1718,8 @@ fn record_crash(state: &mut TaskState, store: &TaskStore) -> Result<()> {
         fresh_spawns: approach.fresh_spawns,
         commit_sha: None,
         reverted_iteration: None,
+        score_breakdown: None,
+        changed_files: None,
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -1626,6 +1758,11 @@ fn record_discard(state: &mut TaskState, store: &TaskStore, reason: &str) -> Res
         fresh_spawns: approach.fresh_spawns,
         commit_sha: None,
         reverted_iteration: None,
+        // A scorer-driven discard carries a breakdown explaining why it lost;
+        // a pre-scoring discard (test/hook failure) leaves it `None`. Discarded
+        // rows never produced an integrated commit, so `changed_files` is None.
+        score_breakdown: approach.score_breakdown.clone(),
+        changed_files: None,
         timestamp: Utc::now(),
     };
     store.append_ledger(&record)?;
@@ -1727,7 +1864,7 @@ fn should_stop(config: &AutotuneConfig, store: &TaskStore) -> Result<bool> {
 mod tests {
     use super::*;
     use autotune_mock::MockAgent;
-    use autotune_score::ScoreError;
+    use autotune_score::{ScoreError, ScoreMetricContribution};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -1784,6 +1921,8 @@ mod tests {
             fresh_spawns: 0,
             commit_sha: None,
             reverted_iteration: None,
+            score_breakdown: None,
+            changed_files: None,
             timestamp: Utc::now(),
         }
     }
@@ -1863,6 +2002,7 @@ mod tests {
             fresh_spawns: 0,
             fix_history: vec![],
             score_reason: None,
+            score_breakdown: None,
         }
     }
 
@@ -1967,6 +2107,7 @@ mod tests {
             rank: 0.1234,
             decision: "keep".to_string(),
             reason: "better".to_string(),
+            details: None,
         };
 
         let (score_line, metrics_line) = format_scoring_status_lines(3, &score_output, &metrics);
@@ -2061,6 +2202,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: None,
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2079,6 +2222,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: Some("sha-a".to_string()),
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2097,6 +2242,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: None,
                 reverted_iteration: Some(1),
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2122,6 +2269,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: None,
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2139,6 +2288,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: Some("sha-b".to_string()),
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2345,6 +2496,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: None,
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2353,19 +2506,23 @@ mod tests {
                 rank: 0.25,
                 decision: "keep".to_string(),
                 reason: "improved".to_string(),
+                details: None,
             },
         };
+        let config = make_minimal_config(None, None);
         let worktree = tempfile::tempdir().unwrap();
         let mut state = make_state_with_approach(Phase::Scoring, 2, worktree.path().to_path_buf());
         state.current_approach.as_mut().unwrap().metrics =
             Some(HashMap::from([("metric".to_string(), 8.0)]));
 
-        run_scoring(&scorer, &store, &mut state).unwrap();
+        run_scoring(&config, &scorer, &store, &mut state).unwrap();
 
         assert_eq!(state.current_phase, Phase::Integrating);
         let approach = state.current_approach.as_ref().unwrap();
         assert_eq!(approach.rank, Some(0.25));
         assert_eq!(approach.score_reason.as_deref(), Some("improved"));
+        // The structured breakdown is captured onto the approach at scoring.
+        assert!(approach.score_breakdown.is_some());
         assert_eq!(
             store.load_state().unwrap().current_phase,
             Phase::Integrating
@@ -2389,6 +2546,8 @@ mod tests {
                 fresh_spawns: 0,
                 commit_sha: None,
                 reverted_iteration: None,
+                score_breakdown: None,
+                changed_files: None,
                 timestamp: Utc::now(),
             })
             .unwrap();
@@ -2397,14 +2556,16 @@ mod tests {
                 rank: -0.1,
                 decision: "discard".to_string(),
                 reason: "regressed".to_string(),
+                details: None,
             },
         };
+        let config = make_minimal_config(None, None);
         let worktree = tempfile::tempdir().unwrap();
         let mut state = make_state_with_approach(Phase::Scoring, 6, worktree.path().to_path_buf());
         state.current_approach.as_mut().unwrap().metrics =
             Some(HashMap::from([("metric".to_string(), 12.0)]));
 
-        run_scoring(&scorer, &store, &mut state).unwrap();
+        run_scoring(&config, &scorer, &store, &mut state).unwrap();
 
         assert_eq!(state.current_phase, Phase::Recorded);
         assert!(state.current_approach.is_none());
@@ -2728,6 +2889,7 @@ mod tests {
             fresh_spawns: 0,
             fix_history: vec![],
             score_reason: None,
+            score_breakdown: None,
         };
 
         let session = implementation_session_from_approach(&approach).unwrap();
@@ -2793,6 +2955,7 @@ mod tests {
             fresh_spawns: 0,
             fix_history: vec![],
             score_reason: None,
+            score_breakdown: None,
         };
 
         assert!(!can_continue_implementation_session(&approach, false));
@@ -2854,6 +3017,8 @@ mod tests {
             fresh_spawns: 0,
             commit_sha: None,
             reverted_iteration: None,
+            score_breakdown: None,
+            changed_files: None,
             timestamp: Utc::now(),
         }
     }
@@ -2931,6 +3096,8 @@ mod tests {
             fresh_spawns: 0,
             commit_sha: None,
             reverted_iteration: None,
+            score_breakdown: None,
+            changed_files: None,
             timestamp: Utc::now(),
         }
     }
@@ -3000,10 +3167,31 @@ mod tests {
             fresh_spawns: 0,
             fix_history: vec![],
             score_reason: Some("coverage improved".to_string()),
+            score_breakdown: Some(autotune_state::ScoreBreakdown {
+                decision: "keep".to_string(),
+                metrics: vec![autotune_state::MetricBreakdown {
+                    name: "line_coverage".to_string(),
+                    baseline: Some(74.1),
+                    candidate: Some(78.9),
+                    best: Some(74.1),
+                    delta_vs_baseline: Some(4.8),
+                    delta_vs_best: Some(4.8),
+                    direction: Some("higher".to_string()),
+                    weight: Some(1.0),
+                    improvement_vs_best: Some(0.064),
+                    contribution: Some(0.064),
+                }],
+            }),
         };
 
-        // build_kept_record now takes the post-integration advancing SHA.
-        let record = build_kept_record(2, &approach, Some("abc123advancing".to_string()));
+        // build_kept_record now takes the post-integration advancing SHA and
+        // the changed-files list captured at integration.
+        let record = build_kept_record(
+            2,
+            &approach,
+            Some("abc123advancing".to_string()),
+            Some(vec!["src/lib.rs".to_string()]),
+        );
 
         assert_eq!(record.iteration, 2);
         assert_eq!(record.score.as_deref(), Some("keep"));
@@ -3011,5 +3199,82 @@ mod tests {
         assert_eq!(record.metrics.get("line_coverage"), Some(&78.9));
         assert_eq!(record.commit_sha.as_deref(), Some("abc123advancing"));
         assert_eq!(record.reverted_iteration, None);
+        // The structured breakdown and changed files propagate onto the row.
+        let bd = record.score_breakdown.expect("breakdown must propagate");
+        assert_eq!(bd.metrics[0].name, "line_coverage");
+        assert_eq!(bd.metrics[0].contribution, Some(0.064));
+        assert_eq!(
+            record.changed_files.unwrap(),
+            vec!["src/lib.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_score_breakdown_weighted_sum_populates_values_and_contribution() {
+        let config = make_minimal_config(None, None);
+        let input = ScoreInput {
+            baseline: HashMap::from([("perf".to_string(), 100.0)]),
+            candidate: HashMap::from([("perf".to_string(), 120.0)]),
+            best: HashMap::from([("perf".to_string(), 110.0)]),
+        };
+        // perf is Maximize, weight 1.0 in make_minimal_config.
+        let output = ScoreOutput {
+            rank: 0.0909,
+            decision: "keep".to_string(),
+            reason: "perf: 9.09%".to_string(),
+            details: Some(vec![ScoreMetricContribution {
+                name: "perf".to_string(),
+                delta: 0.0909,
+                weight: 1.0,
+                contribution: 0.0909,
+            }]),
+        };
+
+        let bd = build_score_breakdown(&config, &input, &output);
+        assert_eq!(bd.decision, "keep");
+        assert_eq!(bd.metrics.len(), 1);
+        let m = &bd.metrics[0];
+        assert_eq!(m.name, "perf");
+        assert_eq!(m.baseline, Some(100.0));
+        assert_eq!(m.candidate, Some(120.0));
+        assert_eq!(m.best, Some(110.0));
+        assert_eq!(m.delta_vs_baseline, Some(20.0));
+        assert_eq!(m.delta_vs_best, Some(10.0));
+        assert_eq!(m.direction.as_deref(), Some("higher"));
+        assert_eq!(m.weight, Some(1.0));
+        assert_eq!(m.improvement_vs_best, Some(0.0909));
+        assert_eq!(m.contribution, Some(0.0909));
+    }
+
+    /// A script scorer declares no directions and supplies no `details`, so the
+    /// breakdown still records values + raw deltas but leaves the
+    /// scorer-specific fields `None`.
+    #[test]
+    fn build_score_breakdown_script_scorer_records_values_without_weights() {
+        let mut config = make_minimal_config(None, None);
+        config.score = autotune_config::ScoreConfig::Script {
+            command: vec!["true".to_string()],
+        };
+        let input = ScoreInput {
+            baseline: HashMap::from([("perf".to_string(), 100.0)]),
+            candidate: HashMap::from([("perf".to_string(), 120.0)]),
+            best: HashMap::from([("perf".to_string(), 110.0)]),
+        };
+        let output = ScoreOutput {
+            rank: 1.0,
+            decision: "keep".to_string(),
+            reason: "looks good".to_string(),
+            details: None,
+        };
+
+        let bd = build_score_breakdown(&config, &input, &output);
+        assert_eq!(bd.metrics.len(), 1);
+        let m = &bd.metrics[0];
+        assert_eq!(m.name, "perf");
+        assert_eq!(m.delta_vs_baseline, Some(20.0));
+        assert_eq!(m.delta_vs_best, Some(10.0));
+        assert_eq!(m.direction, None);
+        assert_eq!(m.weight, None);
+        assert_eq!(m.contribution, None);
     }
 }

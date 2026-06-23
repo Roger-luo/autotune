@@ -104,6 +104,15 @@ pub enum Commands {
         #[arg(long)]
         output: String,
     },
+    /// Emit the self-contained, machine-readable analysis artifact for a task
+    Analyze {
+        /// Task name (defaults to the task in .autotune.toml)
+        #[arg(long)]
+        task: Option<String>,
+        /// Output file path (defaults to stdout)
+        #[arg(long)]
+        output: Option<String>,
+    },
     /// Revert a kept iteration's change on the advancing branch
     Revert {
         /// Iteration number to revert

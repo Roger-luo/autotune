@@ -47,6 +47,7 @@ fn sample_approach() -> ApproachState {
         fresh_spawns: 0,
         fix_history: Vec::new(),
         score_reason: None,
+        score_breakdown: None,
     }
 }
 
@@ -64,6 +65,8 @@ fn sample_record(iteration: usize, approach: &str) -> IterationRecord {
         fresh_spawns: 0,
         commit_sha: None,
         reverted_iteration: None,
+        score_breakdown: None,
+        changed_files: None,
         timestamp: Utc.with_ymd_and_hms(2026, 4, 11, 12, 0, 0).unwrap(),
     }
 }

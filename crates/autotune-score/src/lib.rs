@@ -47,6 +47,32 @@ pub struct ScoreOutput {
     pub rank: f64,
     pub decision: String,
     pub reason: String,
+    /// Optional structured per-metric breakdown of how the rank was produced.
+    /// `WeightedSumScorer` populates this (one entry per primary metric, with
+    /// the weight and weighted contribution to the rank); other scorers leave
+    /// it `None`. `#[serde(default)]` keeps script-scorer JSON output that
+    /// omits the field deserializable, so the `ScoreCalculator` trait stays
+    /// backward compatible across all scorers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<ScoreMetricContribution>>,
+}
+
+/// One scorer-provided primary-metric contribution to a weighted-sum rank.
+///
+/// This is the *scorer's* view: it knows the weight it applied and the
+/// resulting weighted contribution. The richer per-metric breakdown that also
+/// records baseline/candidate/best values and deltas is assembled by the CLI
+/// (which holds those values) — see `autotune_state::MetricBreakdown`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScoreMetricContribution {
+    /// Metric name.
+    pub name: String,
+    /// Per-metric improvement vs `best`, as a fraction (e.g. `0.09` = 9%).
+    pub delta: f64,
+    /// The weight this metric carried in the weighted sum.
+    pub weight: f64,
+    /// `weight * delta` — this metric's contribution to the overall rank.
+    pub contribution: f64,
 }
 
 pub trait ScoreCalculator {

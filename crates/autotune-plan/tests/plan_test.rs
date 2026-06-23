@@ -151,6 +151,8 @@ fn build_planning_prompt_includes_last_iteration() {
         fresh_spawns: 0,
         commit_sha: None,
         reverted_iteration: None,
+        score_breakdown: None,
+        changed_files: None,
         timestamp: Utc::now(),
     };
 
