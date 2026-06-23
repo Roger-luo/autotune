@@ -126,6 +126,23 @@ per-iteration `variances` map, and feed noise-aware scoring. The raw
 so it survives the worktree removal. See [scoring-and-rank.md](scoring-and-rank.md)
 for the noise model.
 
+## Measurement robustness (cross-build envelope + confirmation pass)
+
+The opt-in `[score] baseline_replicates` / `confirm_significant` knobs
+(see [scoring-and-rank.md](scoring-and-rank.md)) surface in the artifact without
+a schema bump:
+
+- When a confirmation pass runs (option 5), the recorded `reason` (the ledger's
+  free-text `score`, surfaced as `iterations[].reason`) is suffixed with a
+  bracketed note — e.g. `… [confirmation pass: mem_ns did NOT reproduce and was
+  treated as noise]` — and the re-measured candidate `metrics`/`variances`
+  replace the one-off values on the row. A metric the confirmation demoted to
+  noise shows `within_noise = true` in its `score_breakdown`, exactly like any
+  other within-noise metric.
+- The cross-build empirical envelope (option 1) is task-wide, not per-row; it
+  lives in `noise_envelope.json` (not the artifact) and manifests in the artifact
+  as `within_noise = true` on a metric whose delta the floor discounted.
+
 See:
 
 - `crates/autotune/src/main.rs` — `build_analysis_json`, `cmd_analyze`,
