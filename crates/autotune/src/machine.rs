@@ -1381,17 +1381,32 @@ fn run_integrating(
         return record_discard(state, store, &format!("rebase conflict: {e}"));
     }
 
-    // Remove worktree first so the branch is no longer attached, then
-    // fast-forward the advancing branch to the rebased commits.
-    let _ = autotune_git::remove_worktree(repo_root, &approach.worktree_path);
-    autotune_git::checkout(repo_root, &state.advancing_branch)?;
-    autotune_git::merge_ff_only(repo_root, &approach.branch_name)
-        .context("fast-forward advancing branch failed")?;
-
-    // The SHA now on the advancing branch — what `autotune revert` targets.
-    // Equals approach.commit_sha in the no-conflict case; differs when a
+    // Capture the rebased HEAD from the worktree (the worktree branch now
+    // points at the commits replayed onto the advancing branch) before removing
+    // the worktree. This SHA is what `autotune revert` targets; it equals
+    // approach.commit_sha in the no-conflict case and differs when a
     // conflict-rebase replayed the commit into a new SHA.
-    let advancing_sha = autotune_git::latest_commit_sha(repo_root).ok();
+    let advancing_sha = autotune_git::latest_commit_sha(&wt).ok();
+
+    // Remove the worktree so its branch is no longer attached.
+    let _ = autotune_git::remove_worktree(repo_root, &approach.worktree_path);
+
+    // Advance the advancing branch to the rebased commits by moving its ref —
+    // do NOT `git checkout` it in the canonical repo. The rebase already made
+    // the advancing branch an ancestor of these commits (so this is a
+    // fast-forward), and the canonical working tree may be dirty or on another
+    // branch (e.g. the user's own WIP); checking out there would fail or clobber
+    // their work. Autotune must leave the canonical checkout untouched.
+    match &advancing_sha {
+        Some(sha) => autotune_git::set_branch_ref(repo_root, &state.advancing_branch, sha)
+            .context("failed to advance the advancing branch to the integrated commit")?,
+        None => {
+            // Couldn't read the rebased SHA — fall back to the ff-merge path.
+            autotune_git::checkout(repo_root, &state.advancing_branch)?;
+            autotune_git::merge_ff_only(repo_root, &approach.branch_name)
+                .context("fast-forward advancing branch failed")?;
+        }
+    }
 
     let metrics = approach.metrics.clone().unwrap_or_default();
 

@@ -254,6 +254,75 @@ fn test_single_iteration_kept() {
     );
 }
 
+/// Regression: integration must advance the advancing branch WITHOUT checking it
+/// out in the canonical repo. Reproduces the dogfooding crash where the user's
+/// canonical checkout had uncommitted WIP and `git checkout <advancing>` either
+/// failed ("local changes would be overwritten") or silently switched the
+/// canonical checkout off its branch.
+#[test]
+fn test_integration_leaves_dirty_canonical_checkout_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_root = tmp.path();
+
+    init_temp_repo(repo_root);
+    write_config(repo_root);
+    let config = load_test_config(repo_root);
+    let store = setup_task(repo_root, &config);
+
+    // Simulate the user having uncommitted WIP in the canonical checkout — a
+    // realistic state. Integration must not `git checkout` over / off it.
+    std::fs::write(
+        repo_root.join("README.md"),
+        "# test repo\nuncommitted user WIP\n",
+    )
+    .unwrap();
+
+    let agent = MockAgent::builder()
+        .hypothesis("opt-1", "reduce allocations", &["src/lib.rs"])
+        .build();
+    let scorer = build_test_scorer();
+    let shutdown = AtomicBool::new(false);
+
+    autotune::machine::run_task(
+        &config,
+        &agent,
+        &scorer,
+        repo_root,
+        &store,
+        &shutdown,
+        &autotune::machine::RunContext {
+            approver: None,
+            judge_ctx: None,
+        },
+    )
+    .expect("run_task failed with a dirty canonical checkout");
+
+    // The kept iteration was integrated...
+    let ledger = store.load_ledger().unwrap();
+    assert_eq!(
+        ledger[1].status,
+        IterationStatus::Kept,
+        "iteration should be kept + integrated despite the dirty canonical checkout"
+    );
+    let state = store.load_state().unwrap();
+    assert!(
+        autotune_git::has_commits_ahead(repo_root, "main", &state.advancing_branch).unwrap(),
+        "advancing branch should be ahead of main"
+    );
+
+    // ...but the canonical checkout is left untouched: still on `main`, WIP intact.
+    assert_eq!(
+        autotune_git::current_branch(repo_root).unwrap(),
+        "main",
+        "integration must not switch the canonical checkout off its branch"
+    );
+    let wip = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+    assert!(
+        wip.contains("uncommitted user WIP"),
+        "uncommitted canonical changes must be preserved"
+    );
+}
+
 // ===========================================================================
 // Test: multiple iterations (mix of keep and discard)
 // ===========================================================================

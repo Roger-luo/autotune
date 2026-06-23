@@ -583,6 +583,24 @@ pub fn merge_ff_only(dir: &Path, branch: &str) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Point `branch` at `commit` by moving its ref (`git branch -f`), **without**
+/// checking it out. Used to advance the advancing branch to integrated commits
+/// without disturbing the canonical working tree (which may be dirty or on
+/// another branch). `git branch -f` refuses if `branch` is currently checked
+/// out in any worktree, so this can't silently desync a working tree.
+pub fn set_branch_ref(dir: &Path, branch: &str, commit: &str) -> Result<(), GitError> {
+    git(
+        dir,
+        &[
+            OsStr::new("branch"),
+            OsStr::new("-f"),
+            OsStr::new(branch),
+            OsStr::new(commit),
+        ],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,6 +648,46 @@ mod tests {
             root.ends_with(dir.path().file_name().unwrap()),
             "repo_root {root:?} should end with temp dir name"
         );
+    }
+
+    #[test]
+    fn set_branch_ref_moves_branch_without_changing_checkout() {
+        let dir = make_repo();
+        let p = dir.path();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(p)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "git {args:?} failed"
+            );
+        };
+        // A branch at the initial commit, then a second commit on main.
+        run(&["branch", "target", "main"]);
+        fs::write(p.join("README.md"), b"v2").unwrap();
+        run(&["commit", "-am", "second"]);
+        let second = latest_commit_sha(p).unwrap();
+
+        // Move `target` to the second commit without checking it out.
+        set_branch_ref(p, "target", &second).unwrap();
+
+        // HEAD is still on `main`, and `target` now points at the second commit.
+        assert_eq!(current_branch(p).unwrap(), "main");
+        let target_sha = String::from_utf8_lossy(
+            &std::process::Command::new("git")
+                .args(["rev-parse", "target"])
+                .current_dir(p)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        assert_eq!(target_sha, second);
     }
 
     #[test]
