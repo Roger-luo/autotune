@@ -69,8 +69,32 @@ pub fn resolve_precommit_runner(repo_root: &Path) -> Option<&'static str> {
     }
 }
 
-/// Tracked files matching the `tunable` globs and not the `denied` globs, via
-/// `git ls-files` pathspecs (so git does the glob matching). Capped to `limit`.
+/// Build a `GlobSet` from gitignore-style globs (`*` is single-segment, `**`
+/// crosses directories). Invalid globs are skipped; an all-skip build yields an
+/// empty set that matches nothing.
+fn build_globset(globs: &[String]) -> globset::GlobSet {
+    let mut builder = globset::GlobSetBuilder::new();
+    for g in globs {
+        if let Ok(glob) = globset::GlobBuilder::new(g).literal_separator(true).build() {
+            builder.add(glob);
+        }
+    }
+    builder
+        .build()
+        .unwrap_or_else(|_| globset::GlobSet::empty())
+}
+
+/// Tracked files matching the `tunable` globs, with the `denied` globs filtered
+/// out. Capped to `limit`.
+///
+/// The positive globs are matched by `git ls-files` (so only *tracked* files
+/// count); `denied` is then applied in Rust with `globset`. We deliberately do
+/// NOT pass git `:(exclude,…)` pathspecs: git 2.50 (Apple) was observed in a
+/// large repo to return **zero** results whenever any exclude pathspec is
+/// combined with a `:(glob)` positive — even a non-matching exclude — which
+/// silently emptied this list and made the whole preflight a no-op for every
+/// config that sets `denied` paths. Filtering in Rust is portable and doesn't
+/// depend on that pathspec behavior.
 fn tunable_files(
     repo_root: &Path,
     tunable: &[String],
@@ -80,9 +104,6 @@ fn tunable_files(
     let mut args: Vec<String> = vec!["ls-files".into(), "-z".into(), "--".into()];
     for g in tunable {
         args.push(format!(":(glob){g}"));
-    }
-    for g in denied {
-        args.push(format!(":(exclude,glob){g}"));
     }
     let Ok(out) = Command::new("git")
         .args(&args)
@@ -94,9 +115,11 @@ fn tunable_files(
     if !out.status.success() {
         return Vec::new();
     }
+    let denied_set = build_globset(denied);
     String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter(|s| !s.is_empty())
+        .filter(|&p| !denied_set.is_match(p))
         .take(limit)
         .map(str::to_string)
         .collect()
@@ -214,26 +237,34 @@ mod tests {
     }
 
     #[test]
-    fn tunable_files_matches_globs_and_excludes_denied() {
+    fn tunable_files_matches_globs_and_filters_denied() {
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
         std::fs::create_dir_all(dir.path().join("src/sub")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/snapshots")).unwrap();
         std::fs::create_dir_all(dir.path().join("target")).unwrap();
         std::fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(dir.path().join("src/sub/b.rs"), "fn b() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/snapshots/snap.rs"), "// snap\n").unwrap();
         std::fs::write(dir.path().join("src/c.txt"), "no\n").unwrap();
         std::fs::write(dir.path().join("target/d.rs"), "fn d() {}\n").unwrap();
         git(dir.path(), &["add", "-A"]);
         git(dir.path(), &["commit", "-qm", "init"]);
 
+        // `src/snapshots/snap.rs` matches the tunable glob but is denied, so the
+        // Rust-side filter (not a git exclude pathspec) must drop it.
         let files = tunable_files(
             dir.path(),
             &["src/**/*.rs".to_string()],
-            &["target/**".to_string()],
+            &["target/**".to_string(), "src/snapshots/**".to_string()],
             100,
         );
         assert!(files.contains(&"src/a.rs".to_string()), "got {files:?}");
         assert!(files.contains(&"src/sub/b.rs".to_string()), "got {files:?}");
+        assert!(
+            !files.iter().any(|f| f.contains("snapshots")),
+            "denied snapshots path must be filtered, got {files:?}"
+        );
         assert!(!files.iter().any(|f| f.ends_with(".txt")), "got {files:?}");
         assert!(
             !files.iter().any(|f| f.starts_with("target/")),

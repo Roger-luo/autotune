@@ -125,6 +125,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "dialoguer",
+ "globset",
  "predicates",
  "scenario",
  "serde_json",

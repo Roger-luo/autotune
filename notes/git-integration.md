@@ -46,11 +46,22 @@ tests, before baseline) catches this up front:
   `.pre-commit-config.yaml`) plus the runner being on `PATH`. No framework ⇒
   no-op.
 - It runs the framework **scoped to the task's tunable file types**, not
-  `--all-files`: it lists the tunable files with `git ls-files -- :(glob)…
-  :(exclude,glob)…` and passes them to `<runner> run --files …`. The
+  `--all-files`: it lists the tunable files with `git ls-files -- :(glob)…`
+  (positive pathspecs only), filters the `denied` globs out **in Rust** with
+  `globset`, and passes the result to `<runner> run --files …`. The
   `pass_filenames = false` hooks (fmt/clippy/check) then run workspace-wide
   anyway, while the *type-gated* hooks only fire for the file types a candidate
   commit would actually stage.
+
+  > **Git pathspec footgun:** the denied filter is done in Rust, *not* via git
+  > `:(exclude,glob)…` pathspecs, because git 2.50 (Apple) was observed in a
+  > large repo (ppvm) to return **zero** results whenever any exclude pathspec
+  > is combined with a `:(glob)` positive — even a *non-matching* exclude. That
+  > silently emptied the file list, hit the `files.is_empty()` early-return, and
+  > made the preflight a **no-op for every config that sets `denied` paths**
+  > (i.e. all real configs). It still "passed" tests because the small
+  > temp-repo fixtures didn't reproduce the quirk. Lesson: don't trust git
+  > exclude pathspecs to compose with `:(glob)` positives across git versions.
 - A non-zero exit aborts the whole run with an actionable message; a green run
   is a no-op that lets tuning proceed.
 
