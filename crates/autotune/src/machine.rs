@@ -98,7 +98,7 @@ pub fn run_single_phase(
             run_measuring(config, store, state, judge_ctx)?;
         }
         Phase::Scoring => {
-            run_scoring(config, scorer, store, state)?;
+            run_scoring(config, scorer, store, state, judge_ctx)?;
         }
         Phase::Integrating => {
             run_integrating(config, agent, repo_root, store, state, &research_session)?;
@@ -1301,6 +1301,7 @@ fn run_scoring(
     scorer: &dyn ScoreCalculator,
     store: &TaskStore,
     state: &mut TaskState,
+    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
 ) -> Result<()> {
     let approach_name = state
         .current_approach
@@ -1318,7 +1319,7 @@ fn run_scoring(
         .as_ref()
         .and_then(|a| a.metrics.clone())
         .context("no metrics in Scoring phase")?;
-    let candidate_variances = state
+    let mut candidate_variances = state
         .current_approach
         .as_ref()
         .map(|a| a.variances.clone())
@@ -1364,7 +1365,7 @@ fn run_scoring(
     let empirical_envelope = store.load_empirical_envelope().unwrap_or_default();
 
     let (noise_threshold, noise_k) = config.score.noise_params();
-    let score_input = ScoreInput {
+    let mut score_input = ScoreInput {
         baseline: baseline_metrics,
         candidate: candidate_metrics.clone(),
         best: best_metrics,
@@ -1378,7 +1379,32 @@ fn run_scoring(
         empirical_envelope,
     };
 
-    let score_output = scorer.calculate(&score_input).context("scoring failed")?;
+    let mut score_output = scorer.calculate(&score_input).context("scoring failed")?;
+
+    // Option 5: two-phase confirmation of significant deltas. When enabled for a
+    // perf task, re-measure the candidate and re-check the metric(s) that drove
+    // a significant keep/discard; any that no longer reproduce as significant
+    // are treated as noise and the candidate is re-scored, so the loop never
+    // acts on a one-off swing. No-op when off or nothing significant drove it.
+    let mut confirmation: Option<ConfirmationOutcome> = None;
+    if config.score.confirm_significant()
+        && config.optimizes_runtime_perf()
+        && let Some(outcome) = run_confirmation_pass(
+            config,
+            scorer,
+            state,
+            &score_input,
+            &score_output,
+            judge_ctx,
+        )?
+    {
+        score_input = outcome.score_input.clone();
+        score_output = outcome.score_output.clone();
+        // The breakdown and persisted variances must reflect the confirmed
+        // (re-measured) candidate, not the one-off measurement.
+        candidate_variances = outcome.remeasured_variances.clone();
+        confirmation = Some(outcome);
+    }
 
     // Assemble the structured per-metric breakdown for the analysis artifact.
     // The scorer supplies weight + weighted contribution (weighted-sum only);
@@ -1391,23 +1417,50 @@ fn run_scoring(
         candidate_changed_files.as_deref(),
     );
 
+    // The metrics actually recorded reflect the confirmation pass when one ran
+    // (the re-measured candidate replaces the one-off measurement).
+    let recorded_metrics = score_input.candidate.clone();
+
+    // Fold a confirmation note into the persisted reason so the ledger and the
+    // analysis artifact record that a confirmation pass ran and its outcome.
+    let recorded_reason = match &confirmation {
+        Some(outcome) => format!("{} [{}]", score_output.reason, outcome.note),
+        None => score_output.reason.clone(),
+    };
+
     let approach_mut = state.current_approach.as_mut().unwrap();
     approach_mut.rank = Some(score_output.rank);
-    approach_mut.score_reason = Some(score_output.reason.clone());
+    approach_mut.score_reason = Some(recorded_reason.clone());
     approach_mut.score_breakdown = Some(breakdown);
+    // Persist the re-measured metrics + variances on the approach so a kept row
+    // carries the confirmed values, not the one-off measurement that triggered
+    // the pass. (`candidate_variances` already tracks the confirmed dispersion.)
+    if confirmation.is_some() {
+        approach_mut.metrics = Some(recorded_metrics.clone());
+        approach_mut.variances = candidate_variances.clone();
+    }
 
     let (score_line, metrics_line) =
-        format_scoring_status_lines(state.current_iteration, &score_output, &candidate_metrics);
+        format_scoring_status_lines(state.current_iteration, &score_output, &recorded_metrics);
     aprintln!("{score_line}");
     aprintln!("{metrics_line}");
+    if let Some(outcome) = &confirmation {
+        aprintln!("[autotune] confirmation pass: {}", outcome.note);
+    }
     autotune_agent::trace::record(
         "phase.decision",
         serde_json::json!({
             "phase": "Scoring",
             "branch": score_output.decision,
             "rank": score_output.rank,
-            "reason": score_output.reason,
-            "metrics": candidate_metrics,
+            "reason": recorded_reason,
+            "metrics": recorded_metrics,
+            "confirmation": confirmation.as_ref().map(|c| serde_json::json!({
+                "ran": true,
+                "reproduced": c.reproduced,
+                "remeasured_metrics": c.remeasured.keys().collect::<Vec<_>>(),
+                "note": c.note,
+            })),
         }),
     );
 
@@ -1419,11 +1472,233 @@ fn run_scoring(
         let _ = store.save_iteration_metrics(
             state.current_iteration,
             &approach_name,
-            &candidate_metrics,
+            &recorded_metrics,
         );
-        record_discard(state, store, &score_output.reason)?;
+        record_discard(state, store, &recorded_reason)?;
     }
     Ok(())
+}
+
+/// Outcome of an option-5 confirmation pass: the re-scored input/output after
+/// re-measuring the candidate, plus a human-readable note for the ledger.
+struct ConfirmationOutcome {
+    score_input: ScoreInput,
+    score_output: ScoreOutput,
+    /// The re-measured candidate metric values (only the driving metrics are
+    /// re-evaluated for significance, but a re-measure produces all of them).
+    remeasured: Metrics,
+    /// Per-metric variances captured on the confirmation re-measure, so the
+    /// kept/discarded row and breakdown carry the confirmed dispersion.
+    remeasured_variances: autotune_state::Variances,
+    /// True when at least one driving metric still reproduced as significant on
+    /// the confirmation pass (so the original decision stands).
+    reproduced: bool,
+    /// Human-readable summary recorded in the ledger reason and the trace.
+    note: String,
+}
+
+/// Option 5: re-measure the candidate once (rebuild + re-run) and re-check the
+/// metric(s) that drove a SIGNIFICANT keep/discard. Any driving metric whose
+/// re-measured delta no longer exceeds the noise envelope is treated as noise
+/// (added to `excluded_metrics`) and the candidate is re-scored. Returns `None`
+/// when no significant metric drove the decision (nothing to confirm) — the
+/// common case, so most iterations pay no confirmation cost.
+///
+/// Cost is bounded to ONE extra full measurement pass. The measure command
+/// produces every metric together, so we can't isolate a single bench; the
+/// targeting is in *which metrics' significance we re-check* (only the drivers),
+/// not in trying to run one metric alone.
+fn run_confirmation_pass(
+    config: &AutotuneConfig,
+    scorer: &dyn ScoreCalculator,
+    state: &TaskState,
+    score_input: &ScoreInput,
+    score_output: &ScoreOutput,
+    judge_ctx: Option<&autotune_benchmark::JudgeContext>,
+) -> Result<Option<ConfirmationOutcome>> {
+    // Which metrics DROVE this decision and were significant (beyond the
+    // envelope, not already excluded)? Only those are worth re-confirming.
+    let drivers = significant_driving_metrics(config, score_input, score_output);
+    if drivers.is_empty() {
+        return Ok(None);
+    }
+
+    let approach = state
+        .current_approach
+        .as_ref()
+        .context("no current approach in confirmation pass")?;
+    let worktree_path = approach.worktree_path.clone();
+    let approach_name = approach.name.clone();
+    let iteration = state.current_iteration as u32;
+
+    aprintln!(
+        "[autotune] confirming {} significant metric(s) with a re-measure (rebuild + re-run)",
+        drivers.len()
+    );
+
+    // One extra measurement pass, rebuilding so codegen/layout is re-rolled —
+    // a one-off swing won't reproduce, a real change will.
+    let rebuild = config.score.replicate_rebuild();
+    let extra_env: Vec<(String, String)> = if rebuild {
+        vec![(
+            "RUSTFLAGS".to_string(),
+            "--cfg autotune_confirmation_pass".to_string(),
+        )]
+    } else {
+        Vec::new()
+    };
+    let (remeasured, reports) = autotune_benchmark::run_all_measures_with_output_env(
+        &config.measure,
+        &worktree_path,
+        &approach_name,
+        iteration,
+        judge_ctx,
+        &extra_env,
+    )
+    .context("confirmation re-measure failed")?;
+    let remeasured_variances =
+        adaptor_to_state_variances(&autotune_benchmark::merge_variances(&reports));
+
+    // Re-evaluate each driving metric's significance with the re-measured value.
+    // A driver that no longer exceeds the envelope is treated as noise.
+    let mut newly_excluded: Vec<String> = Vec::new();
+    let mut reproduced_metrics: Vec<String> = Vec::new();
+    let cand_score_var = to_score_variances(&remeasured_variances);
+    for name in &drivers {
+        let best = score_input.best.get(name).copied().unwrap_or(0.0);
+        let Some(&new_val) = remeasured.get(name) else {
+            continue;
+        };
+        let empirical = score_input
+            .empirical_envelope
+            .get(name)
+            .copied()
+            .unwrap_or(0.0);
+        let still_significant = !autotune_score::within_noise(
+            new_val - best,
+            best,
+            cand_score_var.get(name),
+            score_input.best_variances.get(name),
+            empirical,
+            &score_input.noise,
+        );
+        if still_significant {
+            reproduced_metrics.push(name.clone());
+        } else {
+            newly_excluded.push(name.clone());
+        }
+    }
+
+    // Re-score with the re-measured candidate metrics and any drivers that
+    // didn't reproduce excluded as noise.
+    let mut confirmed_input = score_input.clone();
+    confirmed_input.candidate = remeasured.clone();
+    confirmed_input.candidate_variances = cand_score_var;
+    for name in &newly_excluded {
+        confirmed_input.excluded_metrics.insert(name.clone());
+    }
+    let confirmed_output = scorer
+        .calculate(&confirmed_input)
+        .context("re-scoring after confirmation failed")?;
+
+    let reproduced = !reproduced_metrics.is_empty();
+    let note = if newly_excluded.is_empty() {
+        format!(
+            "confirmation pass reproduced significance for {}",
+            reproduced_metrics.join(", ")
+        )
+    } else if reproduced {
+        format!(
+            "confirmation pass: {} reproduced; {} did not and were treated as noise",
+            reproduced_metrics.join(", "),
+            newly_excluded.join(", ")
+        )
+    } else {
+        format!(
+            "confirmation pass: {} did NOT reproduce and were treated as noise",
+            newly_excluded.join(", ")
+        )
+    };
+
+    Ok(Some(ConfirmationOutcome {
+        score_input: confirmed_input,
+        score_output: confirmed_output,
+        remeasured,
+        remeasured_variances,
+        reproduced,
+        note,
+    }))
+}
+
+/// The metrics that drove a significant keep/discard and are therefore worth
+/// re-confirming (option 5). A metric qualifies when its candidate-vs-best delta
+/// EXCEEDS the noise envelope (significant), it is a scored metric (a
+/// weighted-sum primary/guardrail or a threshold condition), and it isn't
+/// already excluded as causally-unrelated. Returns an empty set when nothing
+/// significant participated — then there's nothing to confirm.
+fn significant_driving_metrics(
+    config: &AutotuneConfig,
+    score_input: &ScoreInput,
+    score_output: &ScoreOutput,
+) -> Vec<String> {
+    let scored = scored_metric_names(config);
+    let mut drivers = Vec::new();
+    for name in scored {
+        if score_input.excluded_metrics.contains(&name) {
+            continue;
+        }
+        let (Some(&cand), Some(&best)) = (
+            score_input.candidate.get(&name),
+            score_input.best.get(&name),
+        ) else {
+            continue;
+        };
+        let empirical = score_input
+            .empirical_envelope
+            .get(&name)
+            .copied()
+            .unwrap_or(0.0);
+        let significant = !autotune_score::within_noise(
+            cand - best,
+            best,
+            score_input.candidate_variances.get(&name),
+            score_input.best_variances.get(&name),
+            empirical,
+            &score_input.noise,
+        );
+        if significant {
+            drivers.push(name);
+        }
+    }
+    // A guardrail-veto discard short-circuits with empty `details`; the driving
+    // metric is still in `scored`, so the loop above already captured it. Keep
+    // the order stable for deterministic ledger notes.
+    let _ = score_output;
+    drivers.sort();
+    drivers.dedup();
+    drivers
+}
+
+/// Names of every metric the active scorer actually scores (weighted-sum
+/// primaries + guardrails, or threshold conditions). Script/command scorers own
+/// their full decision opaquely, so they expose no scored names here.
+fn scored_metric_names(config: &AutotuneConfig) -> Vec<String> {
+    match &config.score {
+        autotune_config::ScoreConfig::WeightedSum {
+            primary_metrics,
+            guardrail_metrics,
+            ..
+        } => primary_metrics
+            .iter()
+            .map(|m| m.name.clone())
+            .chain(guardrail_metrics.iter().map(|g| g.name.clone()))
+            .collect(),
+        autotune_config::ScoreConfig::Threshold { conditions, .. } => {
+            conditions.iter().map(|c| c.metric.clone()).collect()
+        }
+        autotune_config::ScoreConfig::Script { .. }
+        | autotune_config::ScoreConfig::Command { .. } => Vec::new(),
+    }
 }
 
 /// Map each scored metric's config direction to the analysis artifact's
@@ -2774,7 +3049,7 @@ mod tests {
         state.current_approach.as_mut().unwrap().metrics =
             Some(HashMap::from([("metric".to_string(), 8.0)]));
 
-        run_scoring(&config, &scorer, &store, &mut state).unwrap();
+        run_scoring(&config, &scorer, &store, &mut state, None).unwrap();
 
         assert_eq!(state.current_phase, Phase::Integrating);
         let approach = state.current_approach.as_ref().unwrap();
@@ -2825,7 +3100,7 @@ mod tests {
         state.current_approach.as_mut().unwrap().metrics =
             Some(HashMap::from([("metric".to_string(), 12.0)]));
 
-        run_scoring(&config, &scorer, &store, &mut state).unwrap();
+        run_scoring(&config, &scorer, &store, &mut state, None).unwrap();
 
         assert_eq!(state.current_phase, Phase::Recorded);
         assert!(state.current_approach.is_none());
