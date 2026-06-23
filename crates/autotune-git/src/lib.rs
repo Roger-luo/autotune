@@ -543,6 +543,14 @@ pub fn delete_branch(dir: &Path, branch_name: &str) -> Result<(), GitError> {
     Ok(())
 }
 
+/// Prune worktree administrative entries whose working directory is gone
+/// (equivalent to `git worktree prune`). This lets a branch that *was* checked
+/// out in a now-deleted worktree be deleted again.
+pub fn prune_worktrees(dir: &Path) -> Result<(), GitError> {
+    git(dir, &[OsStr::new("worktree"), OsStr::new("prune")])?;
+    Ok(())
+}
+
 /// List all local branches whose ref starts with `refs/heads/<prefix>`.
 pub fn list_branches_with_prefix(dir: &Path, prefix: &str) -> Result<Vec<String>, GitError> {
     let pattern = format!("refs/heads/{prefix}*");

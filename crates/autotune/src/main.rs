@@ -159,6 +159,57 @@ fn next_available_task_name(repo_root: &Path, base: &str) -> Result<String> {
     bail!("could not find an available fork name for task '{base}' after 10000 attempts");
 }
 
+/// Best-effort cleanup of git state left behind by an interrupted prior run of
+/// the same task whose incomplete task dir we just removed: the advancing
+/// branch `autotune/<name>-main` and any worktree branches `autotune/<name>/*`.
+///
+/// Without this, a fresh re-run that reuses the task name fails to create the
+/// advancing branch ("a branch named '…' already exists"), and the repo may be
+/// stuck checked out on the leftover advancing branch (an interrupted
+/// integration can leave the canonical checkout there). Every step is
+/// best-effort: a non-git dir or absent branches are a no-op, and a failure is
+/// logged but does not abort — the subsequent advancing-branch creation will
+/// surface any genuine problem with a clear error.
+fn cleanup_leftover_task_git_state(repo_root: &Path, task_name: &str, canonical_branch: &str) {
+    let advancing = format!("autotune/{task_name}-main");
+    let worktree_prefix = format!("autotune/{task_name}/");
+
+    // A now-deleted worktree may still pin its branch; prune so it can be deleted.
+    let _ = autotune_git::prune_worktrees(repo_root);
+
+    // Branches can't be deleted while checked out — if the repo is on a leftover
+    // task branch, switch back to canonical first.
+    if let Ok(current) = autotune_git::current_branch(repo_root)
+        && (current == advancing || current.starts_with(&worktree_prefix))
+        && let Err(e) = autotune_git::checkout(repo_root, canonical_branch)
+    {
+        aeprintln!(
+            "[autotune] warning: could not restore '{canonical_branch}' before cleaning leftover branches: {e}"
+        );
+        return;
+    }
+
+    let mut leftovers: Vec<String> = Vec::new();
+    if autotune_git::branch_exists(repo_root, &advancing).unwrap_or(false) {
+        leftovers.push(advancing);
+    }
+    if let Ok(worktree_branches) =
+        autotune_git::list_branches_with_prefix(repo_root, &worktree_prefix)
+    {
+        leftovers.extend(worktree_branches);
+    }
+    for branch in leftovers {
+        match autotune_git::delete_branch(repo_root, &branch) {
+            Ok(()) => aprintln!(
+                "[autotune] cleaned up leftover branch '{branch}' from a prior incomplete run"
+            ),
+            Err(e) => {
+                aeprintln!("[autotune] warning: could not delete leftover branch '{branch}': {e}")
+            }
+        }
+    }
+}
+
 /// Retry `op` up to `max_attempts` times, sleeping `backoff(attempt)` (1-based)
 /// between failed tries. Returns the first `Ok`, or the last `Err` once attempts
 /// are exhausted. Used to ride out intermittent agent-spawn failures (a
@@ -196,6 +247,13 @@ fn prepare_run_task_dir(repo_root: &Path, config: &mut AutotuneConfig) -> Result
             );
             std::fs::remove_dir_all(&task_dir)
                 .context("failed to remove incomplete task directory")?;
+            // Also clear the git state from that interrupted run, else creating
+            // this fresh run's advancing branch collides with the leftover.
+            cleanup_leftover_task_git_state(
+                repo_root,
+                &config.task.name,
+                &config.task.canonical_branch,
+            );
         } else {
             // Task already exists — auto-fork by appending a numeric suffix so
             // each `run` invocation starts fresh. Users who want to continue
@@ -3908,6 +3966,40 @@ primary_metrics = [{ name = "metric", direction = "Minimize" }]
         assert_eq!(config.task.name, "demo");
         assert_eq!(task_dir, incomplete_dir);
         assert!(!task_dir.exists());
+    }
+
+    #[test]
+    fn prepare_run_task_dir_cleans_leftover_advancing_branch() {
+        // Reproduces the dogfooding crash: an interrupted prior run left an
+        // incomplete task dir (no state.json), the advancing branch, a worktree
+        // branch, and the repo stuck checked out on the advancing branch. A
+        // fresh re-run reusing the name must clean all of that, or creating the
+        // advancing branch later fails with "a branch named '…' already exists".
+        let repo = init_git_repo();
+        let _guard = CommandTestGuard::enter(repo.path());
+        write_project_config(repo.path(), "demo");
+
+        std::fs::create_dir_all(repo.path().join(".autotune/tasks/demo")).unwrap();
+        run_git(repo.path(), &["branch", "autotune/demo-main", "main"]);
+        run_git(
+            repo.path(),
+            &["branch", "autotune/demo/some-approach", "main"],
+        );
+        run_git(repo.path(), &["checkout", "autotune/demo-main"]);
+
+        let mut config = load_config(repo.path()).unwrap();
+        let task_dir = prepare_run_task_dir(repo.path(), &mut config).unwrap();
+
+        assert_eq!(config.task.name, "demo");
+        assert!(!task_dir.exists());
+        // Leftover task branches cleaned, repo restored to canonical.
+        let leftover =
+            autotune_git::list_branches_with_prefix(repo.path(), "autotune/demo").unwrap();
+        assert!(
+            leftover.is_empty(),
+            "leftover branches not cleaned: {leftover:?}"
+        );
+        assert_eq!(autotune_git::current_branch(repo.path()).unwrap(), "main");
     }
 
     #[test]
