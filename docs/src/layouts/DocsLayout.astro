@@ -2,6 +2,7 @@
 import type { MarkdownHeading } from 'astro';
 import Sidebar from '../components/Sidebar.astro';
 import ThemeToggle from '../components/ThemeToggle.astro';
+import { withBase } from '../lib/base';
 import '../styles/global.css';
 
 interface Props {
@@ -21,7 +22,7 @@ const pageTitle = title === SITE_TITLE ? title : `${title} · ${SITE_TITLE}`;
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href={withBase('/favicon.svg')} />
     <title>{pageTitle}</title>
     {description && <meta name="description" content={description} />}
     {/* Resolve the theme before first paint to avoid a flash of the wrong colors. */}
@@ -42,8 +43,8 @@ const pageTitle = title === SITE_TITLE ? title : `${title} · ${SITE_TITLE}`;
   <body>
     <header class="site-header">
       <div class="header-inner">
-        <a class="brand" href="/">
-          <img src="/favicon.svg" alt="" width="22" height="22" />
+        <a class="brand" href={withBase('/')}>
+          <img src={withBase('/favicon.svg')} alt="" width="22" height="22" />
           <span>{SITE_TITLE}</span>
         </a>
         <ThemeToggle />

@@ -15,11 +15,39 @@ import { defineConfig } from 'astro/config';
 const site = process.env.AUTOTUNE_SITE ?? 'https://rogerluo.dev';
 const base = process.env.AUTOTUNE_BASE ?? '/';
 
+// Astro prepends `base` to asset URLs it controls, but NOT to links we write by
+// hand in Markdown content (`[x](/configuration/)`). Under a non-root base
+// (project pages live at /autotune) those root-absolute links would 404. This
+// rehype plugin rewrites internal, root-absolute href/src in rendered Markdown
+// to include the base. Component links (.astro) use `withBase()` from
+// src/lib/base.ts instead. Kept dependency-free (no unist-util-visit) by
+// walking the hast tree directly.
+function rehypeBasePaths() {
+  const prefix = base.replace(/\/+$/, ''); // '' when base is '/', else e.g. '/autotune'
+  if (!prefix) return () => {}; // root base: nothing to prepend
+  /** @type {Record<string, string>} */
+  const ATTRS = { a: 'href', img: 'src' };
+  /** @param {any} node */
+  const walk = (node) => {
+    if (node.type === 'element') {
+      const attr = ATTRS[node.tagName];
+      const val = attr && node.properties?.[attr];
+      // Only internal, root-absolute URLs: "/x" — never "//host", protocols, or hashes.
+      if (typeof val === 'string' && val.startsWith('/') && !val.startsWith('//')) {
+        node.properties[attr] = prefix + val;
+      }
+    }
+    if (node.children) for (const child of node.children) walk(child);
+  };
+  return (/** @type {any} */ tree) => walk(tree);
+}
+
 export default defineConfig({
   site,
   base,
   trailingSlash: 'ignore',
   markdown: {
+    rehypePlugins: [rehypeBasePaths],
     shikiConfig: {
       themes: {
         light: 'github-light',

@@ -1,5 +1,6 @@
 ---
 import { getCollection } from 'astro:content';
+import { withBase } from '../lib/base';
 
 // Sections are rendered in this order; any others are appended alphabetically.
 const SECTION_ORDER = ['Guides', 'Crates', 'API Reference'];
@@ -13,13 +14,13 @@ const items = [
     label: entry.data.sidebarLabel ?? entry.data.title,
     order: entry.data.order,
     section: entry.data.section,
-    href: entry.id === 'index' ? '/' : `/${entry.id}/`,
+    href: withBase(entry.id === 'index' ? '/' : `/${entry.id}/`),
   })),
   ...apiEntries.map((entry) => ({
     label: entry.data.sidebarLabel ?? entry.data.title,
     order: entry.data.order,
     section: entry.data.section,
-    href: `/api/${entry.id}/`,
+    href: withBase(`/api/${entry.id}/`),
   })),
 ];
 

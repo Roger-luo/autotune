@@ -93,3 +93,24 @@ redirects to the custom domain).
 - **Pages is already enabled** on the `gh-pages` branch (root). If it ever
   needs re-enabling after the branch is recreated:
   `gh api -X POST repos/Roger-luo/autotune/pages -f 'source[branch]=gh-pages' -f 'source[path]=/'`.
+
+### Base-path footgun: hand-written links are NOT auto-prefixed
+
+Astro prepends `base` to the asset URLs *it* controls (CSS/JS, `astro:assets`
+images) but **not** to root-absolute links you write by hand — `<a href="/x">`
+in a component, or `[x](/x)` in Markdown. Under the `/autotune` base those
+all 404 (they point at `/x`, the page is at `/autotune/x`). The site is
+authored with root-absolute links, so both sides are handled explicitly:
+
+- **`.astro` components** (`Sidebar`, `DocsLayout`) wrap every internal link in
+  `withBase()` (`src/lib/base.ts`), which prepends `import.meta.env.BASE_URL`.
+- **Markdown content** is fixed at build time by the dependency-free
+  `rehypeBasePaths` rehype plugin in `astro.config.mjs`, which rewrites internal
+  root-absolute `href`/`src` in rendered Markdown. (The generated API pages emit
+  no internal links, so only the hand-written guides actually rely on it.)
+
+When adding a new hand-written link, use `withBase()` (components) or just a
+normal root-absolute Markdown link (the rehype plugin handles it). Both no-op
+under the local `base=/` default, so local dev and production stay in sync —
+verify with `grep -rhoE '(href|src)="/[^"/]' docs/dist` after a prod build
+(`AUTOTUNE_BASE=/autotune pnpm build`): every hit should start `/autotune/`.
