@@ -1219,6 +1219,7 @@ fn run_measuring(
     copy_criterion_estimates(
         &config.measure,
         &worktree_path,
+        &target_env,
         store,
         state.current_iteration,
         &approach_name,
@@ -1256,9 +1257,14 @@ fn adaptor_to_state_variances(
 /// Copy each criterion measure's resolved `estimates.json` into the iteration
 /// dir under `measures/<metric>.estimates.json`, so the raw CI/stddev data
 /// survives after the per-iteration worktree is removed at integration.
+///
+/// `target_env` is the same env the measure ran with (carrying the shared
+/// `CARGO_TARGET_DIR`); criterion writes under `<CARGO_TARGET_DIR>/criterion`,
+/// so resolution must honor it rather than assume `<worktree>/target`.
 fn copy_criterion_estimates(
     measures: &[autotune_config::MeasureConfig],
     worktree_path: &Path,
+    target_env: &[(String, String)],
     store: &TaskStore,
     iteration: usize,
     approach_name: &str,
@@ -1267,7 +1273,11 @@ fn copy_criterion_estimates(
         .iteration_dir(iteration, approach_name)
         .join("measures");
     for measure in measures {
-        let files = autotune_benchmark::criterion_estimates_files(measure, worktree_path);
+        let files = autotune_benchmark::criterion_estimates_files_with_env(
+            measure,
+            worktree_path,
+            target_env,
+        );
         if files.is_empty() {
             continue;
         }

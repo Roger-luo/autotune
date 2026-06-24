@@ -134,7 +134,7 @@ timeout = 10
 
 [[measure]]
 name = "gate-bench"
-command = ["sh", "-c", "mkdir -p target/criterion/gate_bench/new && printf '{\"mean\":{\"point_estimate\":100.0},\"median\":{\"point_estimate\":98.0},\"std_dev\":{\"point_estimate\":5.0}}' > target/criterion/gate_bench/new/estimates.json"]
+command = ["sh", "-c", "t=\"${CARGO_TARGET_DIR:-target}\"; mkdir -p \"$t/criterion/gate_bench/new\" && printf '{\"mean\":{\"point_estimate\":100.0},\"median\":{\"point_estimate\":98.0},\"std_dev\":{\"point_estimate\":5.0}}' > \"$t/criterion/gate_bench/new/estimates.json\""]
 timeout = 30
 adaptor = { type = "criterion", benchmarks = [{ name = "gate_mean_ns", group = "gate_bench", stat = "mean" }] }
 
