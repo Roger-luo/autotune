@@ -32,7 +32,14 @@ pub struct RunContext<'a> {
 #[derive(Debug)]
 enum PhaseFailure {
     ExitCleanly,
-    WaitAndRetry { until: DateTime<Utc> },
+    WaitAndRetry {
+        until: DateTime<Utc>,
+    },
+    /// A build/test/measure command reported "No space left on device". This is
+    /// an infrastructure problem, not a code problem, so abort the whole run
+    /// cleanly with an actionable message instead of crashing or routing it into
+    /// the implementer's fix-retry loop.
+    DiskFull(anyhow::Error),
     Fatal(anyhow::Error),
 }
 
@@ -156,6 +163,17 @@ pub fn run_task(
                         sleep_until(until, Utc::now());
                         continue;
                     }
+                    PhaseFailure::DiskFull(e) => {
+                        // Disk full is infrastructure, not code: save state so
+                        // `resume` can pick up once space is freed, and abort
+                        // cleanly with an actionable error (no fix-retry loop,
+                        // no panic/exit-101).
+                        store.save_state(&state)?;
+                        return Err(e.context(
+                            "build/measure failed: disk full (No space left on device) — \
+                             free space and resume",
+                        ));
+                    }
                     PhaseFailure::Fatal(e) => return Err(e),
                 }
             }
@@ -184,6 +202,11 @@ fn classify_phase_failure(
     }
     if let Some(until) = extract_rate_limit_reset(&err, now) {
         return PhaseFailure::WaitAndRetry { until };
+    }
+    // A disk-full marker anywhere in the chain is infrastructure, not code —
+    // abort cleanly rather than treating it as a generic fatal error.
+    if is_enospc_error(&err) {
+        return PhaseFailure::DiskFull(err);
     }
     PhaseFailure::Fatal(err)
 }
@@ -652,8 +675,13 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
         approach.name
     );
 
-    let test_results = autotune_test::run_all_tests(&config.test, &approach.worktree_path)
-        .context("test execution failed")?;
+    // Point cargo at the task's shared target dir so this iteration's worktree
+    // reuses the one compiled `target/` instead of building its own (which,
+    // ×N iterations, fills the disk).
+    let target_env = shared_target_env(store.root());
+    let test_results =
+        autotune_test::run_all_tests_with_env(&config.test, &approach.worktree_path, &target_env)
+            .context("test execution failed")?;
 
     let all_pass = autotune_test::all_passed(&test_results);
 
@@ -701,6 +729,17 @@ fn run_testing(config: &AutotuneConfig, store: &TaskStore, state: &mut TaskState
             })
             .collect();
         let _ = store.save_test_output(state.current_iteration, &approach_mut.name, &test_output);
+
+        // A test that failed because the disk filled up is an infrastructure
+        // problem, not a code problem the implementer can fix. Abort the run
+        // cleanly (the loop's DiskFull classification) instead of burning the
+        // fix-retry budget on a non-code error.
+        if is_enospc_output(&test_output) {
+            anyhow::bail!(
+                "test '{}' failed: disk full (No space left on device)",
+                approach_mut.name
+            );
+        }
 
         // Decide whether to hand off to Fixing or discard outright. Budget
         // lives on the implementation role; absent config defaults are
@@ -1146,12 +1185,16 @@ fn run_measuring(
     let iteration = state.current_iteration as u32;
     let worktree_path = approach.worktree_path.clone();
 
-    let (metrics, reports) = autotune_benchmark::run_all_measures_with_output(
+    // Share the task's compiled target dir across all sub-worktrees (see
+    // `shared_target_dir`): cargo benches/tests reuse one `target/`.
+    let target_env = shared_target_env(store.root());
+    let (metrics, reports) = autotune_benchmark::run_all_measures_with_output_env(
         &config.measure,
         &worktree_path,
         &approach_name,
         iteration,
         judge_ctx,
+        &target_env,
     )
     .context("measuring failed")?;
 
@@ -1392,6 +1435,7 @@ fn run_scoring(
         && let Some(outcome) = run_confirmation_pass(
             config,
             scorer,
+            store.root(),
             state,
             &score_input,
             &score_output,
@@ -1511,6 +1555,7 @@ struct ConfirmationOutcome {
 fn run_confirmation_pass(
     config: &AutotuneConfig,
     scorer: &dyn ScoreCalculator,
+    task_dir: &Path,
     state: &TaskState,
     score_input: &ScoreInput,
     score_output: &ScoreOutput,
@@ -1537,16 +1582,16 @@ fn run_confirmation_pass(
     );
 
     // One extra measurement pass, rebuilding so codegen/layout is re-rolled —
-    // a one-off swing won't reproduce, a real change will.
+    // a one-off swing won't reproduce, a real change will. Always share the
+    // task's target dir; merge the rebuild-forcing RUSTFLAGS on top of it.
     let rebuild = config.score.replicate_rebuild();
-    let extra_env: Vec<(String, String)> = if rebuild {
-        vec![(
+    let mut extra_env: Vec<(String, String)> = shared_target_env(task_dir);
+    if rebuild {
+        extra_env.push((
             "RUSTFLAGS".to_string(),
             "--cfg autotune_confirmation_pass".to_string(),
-        )]
-    } else {
-        Vec::new()
-    };
+        ));
+    }
     let (remeasured, reports) = autotune_benchmark::run_all_measures_with_output_env(
         &config.measure,
         &worktree_path,
@@ -1971,6 +2016,107 @@ fn format_metrics_status_sorts_all_metrics() {
 /// place it lives as a working tree.
 pub fn advancing_worktree_path(task_dir: &Path) -> std::path::PathBuf {
     task_dir.join("advancing")
+}
+
+/// Absolute path of the task's shared Cargo target directory, a sibling of
+/// `advancing/` and `worktrees/` under the task dir.
+///
+/// Every cargo invocation for the task (baseline measurement, per-iteration
+/// testing/measuring in the sub-worktrees, and the post-integration re-measure
+/// in the advancing worktree) sets `CARGO_TARGET_DIR` to this path, so the
+/// project's dependencies compile once and ALL sub-worktrees reuse them — a
+/// fresh per-worktree `target/` for a mid-size project is ~1.6 GB, so N
+/// iterations × N targets fills the disk.
+///
+/// The path MUST be absolute: cargo resolves a relative `CARGO_TARGET_DIR`
+/// against the process cwd, which differs per worktree, so a relative value
+/// would scatter targets back into each worktree and defeat the sharing. We
+/// canonicalize when the directory already exists; otherwise we fall back to
+/// joining `task_dir` onto the current working directory (canonicalizing the
+/// nearest existing ancestor) so the result is absolute even before the dir is
+/// created.
+pub fn shared_target_dir(task_dir: &Path) -> std::path::PathBuf {
+    absolutize(&task_dir.join("target"))
+}
+
+/// Make a path absolute without requiring it (or any of its descendants) to
+/// exist yet. Canonicalizes the longest existing ancestor and re-appends the
+/// remaining components, so symlinks in the existing prefix are resolved while
+/// not-yet-created leaves are preserved. Falls back to `cwd`-prefixing for a
+/// relative path whose ancestors don't exist at all.
+fn absolutize(path: &Path) -> std::path::PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+    // Walk up to the nearest existing ancestor, canonicalize it, then re-attach
+    // the trailing (not-yet-created) components.
+    let mut existing = path;
+    let mut tail = std::path::PathBuf::new();
+    loop {
+        if existing.exists() {
+            break;
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail = Path::new(name).join(&tail);
+                existing = parent;
+            }
+            _ => break,
+        }
+    }
+    let base = existing
+        .canonicalize()
+        .unwrap_or_else(|_| existing.to_path_buf());
+    let joined = if tail.as_os_str().is_empty() {
+        base
+    } else {
+        base.join(tail)
+    };
+    if joined.is_absolute() {
+        joined
+    } else {
+        // Last resort: anchor on the current working directory.
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&joined))
+            .unwrap_or(joined)
+    }
+}
+
+/// Build the `CARGO_TARGET_DIR` env pair pointing every task cargo invocation at
+/// the shared target dir. Returned as a single-element vec so call sites can
+/// merge it with any other per-invocation env (e.g. baseline-replicate
+/// `RUSTFLAGS`) before handing it to the test/measure runner.
+pub fn shared_target_env(task_dir: &Path) -> Vec<(String, String)> {
+    vec![(
+        "CARGO_TARGET_DIR".to_string(),
+        shared_target_dir(task_dir).to_string_lossy().into_owned(),
+    )]
+}
+
+/// Remove the task's shared Cargo target dir (rm -rf), a no-op if it's already
+/// absent. Tied to the advancing worktree's lifecycle: called wherever the
+/// advancing branch/worktree is torn down (`cmd_ff`, leftover-state cleanup),
+/// NEVER mid-run — sub-worktrees share it across iterations.
+pub fn remove_shared_target(task_dir: &Path) {
+    let dir = task_dir.join("target");
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// True when a build/test/measure command's captured output indicates the disk
+/// filled up (ENOSPC). These are INFRASTRUCTURE failures, not code problems:
+/// they must abort the run cleanly rather than crash (exit 101) or be fed into
+/// the implementer's fix-retry loop, which can't fix "no space left".
+pub fn is_enospc_output(text: &str) -> bool {
+    text.contains("No space left on device")
+}
+
+/// True when an error chain (from a measure/integration step) carries an ENOSPC
+/// marker in any of its messages — used by the run loop to abort cleanly.
+fn is_enospc_error(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| is_enospc_output(&cause.to_string()))
 }
 
 /// Ensure the advancing-branch worktree exists, (re)creating it if a prior
@@ -3972,5 +4118,133 @@ mod tests {
             !excluded.contains("micro_cnot"),
             "metric whose per-metric sources the diff hit must NOT be excluded"
         );
+    }
+
+    // ── shared target dir ──────────────────────────────────────────────────
+
+    #[test]
+    fn shared_target_dir_is_absolute_and_points_at_task_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task_dir = tmp.path().join(".autotune/tasks/my-task");
+        std::fs::create_dir_all(&task_dir).unwrap();
+
+        let target = shared_target_dir(&task_dir);
+        assert!(
+            target.is_absolute(),
+            "shared target dir must be absolute (cargo resolves a relative \
+             CARGO_TARGET_DIR against per-worktree cwd): {}",
+            target.display()
+        );
+        assert!(
+            target.ends_with("my-task/target"),
+            "shared target must be <task_dir>/target: {}",
+            target.display()
+        );
+    }
+
+    #[test]
+    fn shared_target_dir_is_absolute_even_before_dir_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Neither the task dir nor its `target/` exist yet.
+        let task_dir = tmp.path().join(".autotune/tasks/not-created-yet");
+
+        let target = shared_target_dir(&task_dir);
+        assert!(
+            target.is_absolute(),
+            "must be absolute even when the target dir doesn't exist yet: {}",
+            target.display()
+        );
+        assert!(target.ends_with("not-created-yet/target"));
+    }
+
+    #[test]
+    fn shared_target_env_sets_cargo_target_dir_to_shared_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task_dir = tmp.path().join("task");
+        std::fs::create_dir_all(&task_dir).unwrap();
+
+        let env = shared_target_env(&task_dir);
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "CARGO_TARGET_DIR");
+        assert_eq!(env[0].1, shared_target_dir(&task_dir).to_string_lossy());
+        assert!(Path::new(&env[0].1).is_absolute());
+    }
+
+    #[test]
+    fn remove_shared_target_deletes_dir_and_is_noop_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let task_dir = tmp.path().join("task");
+        let target = task_dir.join("target");
+        std::fs::create_dir_all(target.join("debug")).unwrap();
+        std::fs::write(target.join("debug").join("artifact.bin"), b"x").unwrap();
+        assert!(target.exists());
+
+        remove_shared_target(&task_dir);
+        assert!(
+            !target.exists(),
+            "remove_shared_target must rm -rf the target"
+        );
+
+        // Idempotent: a second call (now absent) is a clean no-op.
+        remove_shared_target(&task_dir);
+        assert!(!target.exists());
+    }
+
+    // ── ENOSPC classification ──────────────────────────────────────────────
+
+    #[test]
+    fn is_enospc_output_matches_disk_full_and_ignores_unrelated() {
+        assert!(is_enospc_output(
+            "error: failed to write: No space left on device (os error 28)"
+        ));
+        assert!(is_enospc_output("rustc: No space left on device"));
+
+        assert!(!is_enospc_output(""));
+        assert!(!is_enospc_output("error[E0599]: no method named `foo`"));
+        assert!(
+            !is_enospc_output("test failed: assertion `left == right` failed"),
+            "unrelated test failures must NOT be classified as disk-full"
+        );
+        assert!(
+            !is_enospc_output("No space-separated tokens found"),
+            "a superstring 'No space' that isn't the ENOSPC marker must not match"
+        );
+    }
+
+    #[test]
+    fn classify_phase_failure_routes_enospc_to_diskfull() {
+        let err = anyhow::anyhow!(
+            "measure 'bench' command failed (exit code 1): No space left on device"
+        );
+        let now = Utc::now();
+        assert!(
+            matches!(
+                classify_phase_failure(err, false, now),
+                PhaseFailure::DiskFull(_)
+            ),
+            "an ENOSPC error must classify as DiskFull, not Fatal"
+        );
+    }
+
+    #[test]
+    fn classify_phase_failure_routes_enospc_in_context_chain() {
+        // The marker can be buried under an added `.context(...)`; the classifier
+        // walks the whole chain.
+        let err = anyhow::anyhow!("rustc: No space left on device")
+            .context("measuring failed")
+            .context("phase Measuring failed");
+        assert!(matches!(
+            classify_phase_failure(err, false, Utc::now()),
+            PhaseFailure::DiskFull(_)
+        ));
+    }
+
+    #[test]
+    fn classify_phase_failure_unrelated_error_stays_fatal() {
+        let err = anyhow::anyhow!("compile error: cannot find type `Foo`");
+        assert!(matches!(
+            classify_phase_failure(err, false, Utc::now()),
+            PhaseFailure::Fatal(_)
+        ));
     }
 }

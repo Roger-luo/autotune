@@ -747,6 +747,37 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
     }
 
     #[test]
+    fn run_measure_with_output_env_injects_env_var() {
+        // The measure emits a marker only when CARGO_TARGET_DIR matches the
+        // injected path, proving the env reached the child process.
+        let config = MeasureConfig {
+            name: "env-check".to_string(),
+            command: Some(vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "if [ \"$CARGO_TARGET_DIR\" = /shared/target ]; then echo 'ok: 1'; else echo 'ok: 0'; fi".to_string(),
+            ]),
+            timeout: 30,
+            adaptor: AdaptorConfig::Regex {
+                patterns: vec![RegexPattern {
+                    name: "ok".to_string(),
+                    pattern: r"ok: ([0-9]+)".to_string(),
+                    sources: vec![],
+                }],
+            },
+            sources: vec![],
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let env = vec![("CARGO_TARGET_DIR".to_string(), "/shared/target".to_string())];
+        let report = run_measure_with_output_env(&config, tmp.path(), &env).unwrap();
+        assert_eq!(
+            *report.metrics.get("ok").unwrap(),
+            1.0,
+            "measure command should observe the injected CARGO_TARGET_DIR"
+        );
+    }
+
+    #[test]
     fn run_measure_returns_error_on_command_failure() {
         let config = MeasureConfig {
             name: "fail-test".to_string(),

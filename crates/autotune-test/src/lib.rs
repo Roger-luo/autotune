@@ -36,22 +36,39 @@ pub struct TestResult {
 }
 
 pub fn run_test(config: &TestConfig, working_dir: &Path) -> Result<TestResult, TestError> {
+    run_test_with_env(config, working_dir, &[])
+}
+
+/// Like [`run_test`], but injects extra environment variables into the test
+/// command's process. Used to point the task's cargo invocations at a shared
+/// `CARGO_TARGET_DIR` so every sub-worktree reuses one compiled `target/`
+/// instead of each building its own (which fills the disk). The empty-slice
+/// path is identical to [`run_test`].
+pub fn run_test_with_env(
+    config: &TestConfig,
+    working_dir: &Path,
+    extra_env: &[(String, String)],
+) -> Result<TestResult, TestError> {
     let start = Instant::now();
     let timeout = Duration::from_secs(config.timeout);
 
     let program = &config.command[0];
     let args = &config.command[1..];
 
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(working_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| TestError::Io {
-            name: config.name.clone(),
-            source,
-        })?;
+        .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+
+    let mut child = command.spawn().map_err(|source| TestError::Io {
+        name: config.name.clone(),
+        source,
+    })?;
 
     let stdout_reader = spawn_output_reader(child.stdout.take(), &config.name)?;
     let stderr_reader = spawn_output_reader(child.stderr.take(), &config.name)?;
@@ -141,10 +158,21 @@ pub fn run_all_tests(
     configs: &[TestConfig],
     working_dir: &Path,
 ) -> Result<Vec<TestResult>, TestError> {
+    run_all_tests_with_env(configs, working_dir, &[])
+}
+
+/// Like [`run_all_tests`], but injects extra environment variables (e.g. the
+/// task's shared `CARGO_TARGET_DIR`) into each test command's process. The
+/// empty-slice path is identical to [`run_all_tests`].
+pub fn run_all_tests_with_env(
+    configs: &[TestConfig],
+    working_dir: &Path,
+    extra_env: &[(String, String)],
+) -> Result<Vec<TestResult>, TestError> {
     let mut results = Vec::new();
 
     for config in configs {
-        let result = run_test(config, working_dir)?;
+        let result = run_test_with_env(config, working_dir, extra_env)?;
         let passed = result.passed;
         results.push(result);
         if !passed {
@@ -295,6 +323,37 @@ mod tests {
             }
             other => panic!("expected timeout error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn run_test_with_env_injects_env_var_into_command() {
+        let tmp = std::env::temp_dir();
+        // The test passes only if CARGO_TARGET_DIR is the injected value.
+        let config = make_config(
+            "env-check",
+            &["sh", "-c", "test \"$CARGO_TARGET_DIR\" = /shared/target"],
+        );
+        let env = vec![("CARGO_TARGET_DIR".to_string(), "/shared/target".to_string())];
+        let result = run_test_with_env(&config, &tmp, &env).unwrap();
+        assert!(
+            result.passed,
+            "test should see the injected CARGO_TARGET_DIR.\nstdout:{}\nstderr:{}",
+            result.stdout, result.stderr
+        );
+    }
+
+    #[test]
+    fn run_test_without_env_does_not_set_var() {
+        let tmp = std::env::temp_dir();
+        // Fails (exit 1) only if CARGO_TARGET_DIR happens to be set; the empty-env
+        // path must not introduce it.
+        let config = make_config("env-absent", &["sh", "-c", "test -z \"$CARGO_TARGET_DIR\""]);
+        // Guard against the ambient env leaking a value into the test process.
+        if std::env::var_os("CARGO_TARGET_DIR").is_some() {
+            return;
+        }
+        let result = run_test(&config, &tmp).unwrap();
+        assert!(result.passed, "run_test must not set CARGO_TARGET_DIR");
     }
 
     #[test]

@@ -97,12 +97,24 @@ Leaf crates have no internal workspace dependencies. This means you can work on 
 ├── config_snapshot.toml    # frozen config at task start
 ├── ledger.json             # append-only iteration records
 ├── log.md                  # research agent durable findings
+├── advancing/              # dedicated worktree on the advancing branch
+├── worktrees/              # per-iteration sub-worktrees
+├── target/                 # shared CARGO_TARGET_DIR (one per task; see notes/git-integration.md)
 └── iterations/
     └── 001-approach-name/
         ├── metrics.json    # task measurement results
         ├── prompt.md       # implementation agent prompt
         └── test_output.txt # saved on test failure
 ```
+
+Every cargo invocation for the task sets `CARGO_TARGET_DIR` to the **absolute**
+`target/` above, so deps compile once and all sub-worktrees reuse them (a fresh
+per-worktree `target/` is multi-GB; N iterations would fill the disk). It's torn
+down with the advancing worktree (`cmd_ff` / re-run cleanup), never mid-run, and
+because Cargo locks a target dir this relies on iterations being sequential. A
+build/test/measure that reports "No space left on device" aborts the run cleanly
+(infrastructure failure) rather than crashing or entering fix-retry — see
+[notes/git-integration.md](notes/git-integration.md) § Shared Cargo target dir.
 
 ### ClaudeAgent Session Model
 
