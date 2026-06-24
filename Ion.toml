@@ -16,6 +16,7 @@ verification-before-completion = { source = "obra/superpowers/skills/verificatio
 writing-plans = { source = "obra/superpowers/skills/writing-plans" }
 writing-skills = { source = "obra/superpowers/skills/writing-skills" }
 dogfooding-autotune = { type = "local", path = ".agents/skills/dogfooding-autotune" }
+autotune = { type = "local", path = ".agents/skills/autotune" }
 
 [options]
 
