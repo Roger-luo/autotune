@@ -88,6 +88,10 @@ jobs:
         env:
           AUTOTUNE_SITE: https://rogerluo.dev
           AUTOTUNE_BASE: ${{ steps.compute-base.outputs.base }}
+          # Read-only; used only to fetch the public star count for the header
+          # button without hitting the unauthenticated 60/hr API limit. The job
+          # token stays read-only (it cannot push to gh-pages).
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm build
 
       - name: Upload built site

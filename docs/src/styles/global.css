@@ -137,6 +137,54 @@ a:hover {
 }
 
 /* ------------------------------------------------------------------ *
+ * Header actions (GitHub star + theme toggle)
+ * ------------------------------------------------------------------ */
+.header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* Pill matches .theme-toggle so the two controls read as a set. */
+.gh-star {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 550;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.gh-star:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  text-decoration: none;
+}
+
+.gh-star-mark {
+  display: block;
+}
+
+.gh-star-count {
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--border);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* On narrow screens keep just the mark + count to save room. */
+@media (max-width: 640px) {
+  .gh-star-text {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Theme toggle
  * ------------------------------------------------------------------ */
 .theme-toggle {
