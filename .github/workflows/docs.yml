@@ -2,8 +2,8 @@ name: Docs
 
 # Deploy the Astro docs site at `docs/` to GitHub Pages via the gh-pages branch.
 #
-# The repo is a public GitHub *project* page, so the site lives under
-# https://roger-luo.github.io/autotune/ (base path `/autotune`).
+# Pages serves this repo under the owner's custom apex domain, so the site
+# lives at https://rogerluo.dev/autotune/ (base path `/autotune`).
 #
 # Behaviour:
 # - Push to `main`            → build with AUTOTUNE_BASE=/autotune and publish
@@ -86,7 +86,7 @@ jobs:
       - name: Build site
         working-directory: docs
         env:
-          AUTOTUNE_SITE: https://roger-luo.github.io
+          AUTOTUNE_SITE: https://rogerluo.dev
           AUTOTUNE_BASE: ${{ steps.compute-base.outputs.base }}
         run: pnpm build
 

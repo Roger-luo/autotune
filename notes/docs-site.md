@@ -64,13 +64,15 @@ and the `StructuralPartialEq`/`StructuralEq` marker traits.
 ## Deployment (GitHub Pages via the `gh-pages` branch)
 
 `.github/workflows/docs.yml` builds the site and publishes it to the
-`gh-pages` branch. The repo is a public GitHub **project** page, so the site
-serves at `https://roger-luo.github.io/autotune/` — note the `/autotune` base
-path (a *project* page lives under `/<repo>`, unlike a user/org page at root).
+`gh-pages` branch. The owner's user site has a custom apex domain
+(`rogerluo.dev`), so this project repo's Pages serve at
+`https://rogerluo.dev/autotune/` — note the `/autotune` base path (a *project*
+page lives under `/<repo>`; the `roger-luo.github.io/autotune/` URL just
+redirects to the custom domain).
 
 - **`site` + `base` are env-driven** (`astro.config.mjs` reads `AUTOTUNE_SITE`
   / `AUTOTUNE_BASE`) so one config powers local dev (defaults: site =
-  `roger-luo.github.io`, base `/`), the main deploy (base `/autotune`), and PR
+  `rogerluo.dev`, base `/`), the main deploy (base `/autotune`), and PR
   previews (base `/autotune/pr-preview/pr-<N>`). A plain local `pnpm build`
   uses base `/`; CI always passes the real base, so production is correct
   regardless of the default. **If you ever build for production by hand, set
@@ -88,6 +90,6 @@ path (a *project* page lives under `/<repo>`, unlike a user/org page at root).
   repo** — fork PRs get a read-only token and the deploy job is skipped (the
   build job still runs). The build job is deliberately read-only; only the
   deploy jobs can push to gh-pages.
-- **One-time setup after the first `main` deploy creates the branch:** enable
-  Pages on the `gh-pages` branch (root) — Settings → Pages, or
-  `gh api -X POST repos/Roger-luo/autotune/pages -f source.branch=gh-pages -f source.path=/`.
+- **Pages is already enabled** on the `gh-pages` branch (root). If it ever
+  needs re-enabling after the branch is recreated:
+  `gh api -X POST repos/Roger-luo/autotune/pages -f 'source[branch]=gh-pages' -f 'source[path]=/'`.
