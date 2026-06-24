@@ -1828,6 +1828,117 @@ fn scenario_ff_removes_shared_target_dir() {
     );
 }
 
+/// Config whose criterion measure stands in for `cargo bench`: instead of
+/// building, the command writes a criterion-shaped `estimates.json` UNDER
+/// `$CARGO_TARGET_DIR/criterion/...` (exactly where criterion writes when the
+/// task injects a shared `CARGO_TARGET_DIR`, PR #22), then exits. The adaptor
+/// must resolve estimates.json under the redirected target dir, not under
+/// `<worktree>/target`. Regression guard for the #22 shared-target break.
+const SHARED_TARGET_CRITERION_CONFIG_TOML: &str = r#"
+[task]
+name = "scenario-task"
+description = "criterion under shared target scenario"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "criterion-bench"
+command = ["sh", "-c", "test -n \"$CARGO_TARGET_DIR\" || exit 3; d=\"$CARGO_TARGET_DIR/criterion/stim-circuits/cultivation_d5/new\"; mkdir -p \"$d\"; printf '{\"mean\":{\"confidence_interval\":{\"confidence_level\":0.95,\"lower_bound\":95.0,\"upper_bound\":105.0},\"point_estimate\":100.0},\"median\":{\"point_estimate\":99.0},\"std_dev\":{\"point_estimate\":3.0}}' > \"$d/estimates.json\""]
+timeout = 10
+adaptor = { type = "criterion", benchmarks = [{ name = "cultivation_ns", group = "stim-circuits/cultivation_d5", stat = "mean" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "cultivation_ns", direction = "Minimize", weight = 1.0 }]
+guardrail_metrics = []
+"#;
+
+/// A criterion measure whose results live under the shared `CARGO_TARGET_DIR`
+/// (not `<worktree>/target`) must still extract its metric. Before the fix the
+/// adaptor looked under `<worktree>/target/criterion/...` and every criterion
+/// measure failed with `criterion estimates.json not found`, aborting the
+/// baseline. The run must complete and the ledger must carry the extracted
+/// value (100.0 mean).
+#[test]
+fn scenario_run_extracts_criterion_under_shared_cargo_target_dir() {
+    let project = Project::empty()
+        .file(".autotune.toml", SHARED_TARGET_CRITERION_CONFIG_TOML)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>touch-src</approach>\
+               <hypothesis>criterion results under the shared target dir extract</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        // No ambient CARGO_TARGET_DIR — the value the measure sees must come
+        // from autotune's per-task injection.
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "run should complete; before the fix the criterion baseline measure \
+         failed with 'estimates.json not found'.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The measure must NOT have failed to find its estimates.json.
+    assert!(
+        !stderr.contains("estimates.json not found")
+            && !stdout.contains("estimates.json not found"),
+        "criterion estimates.json must resolve under the shared target dir.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // The extracted mean (100.0) must reach the ledger — proving the criterion
+    // adaptor resolved estimates.json under the redirected target dir.
+    let ledger = project
+        .path()
+        .join(".autotune/tasks/scenario-task/ledger.json");
+    let text = std::fs::read_to_string(&ledger).unwrap();
+    assert!(
+        text.contains("cultivation_ns") && text.contains("100.0"),
+        "ledger should carry the criterion metric extracted from the shared \
+         target dir.\nledger:\n{text}"
+    );
+
+    // The estimates.json must physically live under the shared target dir
+    // (where criterion wrote it), confirming resolution wasn't a fluke.
+    let shared_estimates = project.path().join(
+        ".autotune/tasks/scenario-task/target/criterion/stim-circuits/cultivation_d5/new/estimates.json",
+    );
+    assert!(
+        shared_estimates.exists(),
+        "criterion estimates.json should live under the shared target dir at {}",
+        shared_estimates.display()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ENOSPC graceful abort
 // ---------------------------------------------------------------------------

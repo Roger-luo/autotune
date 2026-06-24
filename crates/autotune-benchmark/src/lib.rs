@@ -250,7 +250,12 @@ pub fn run_measure_with_output_env(
         stderr: stderr.clone(),
     };
 
-    let adaptor = build_adaptor(&config.adaptor, working_dir);
+    // Criterion writes its results under `<CARGO_TARGET_DIR>/criterion/...`.
+    // When the task injects a shared `CARGO_TARGET_DIR` (PR #22), that is NOT
+    // `<working_dir>/target`, so the adaptor must resolve estimates.json under
+    // the EFFECTIVE target dir the bench actually built into.
+    let target_dir = effective_target_dir(working_dir, extra_env);
+    let adaptor = build_adaptor_with_target_dir(&config.adaptor, working_dir, &target_dir);
     let metrics = adaptor
         .extract(&bench_output)
         .map_err(|source| MeasureError::Extraction {
@@ -340,19 +345,26 @@ pub fn run_all_measures_with_output_env(
     Ok((all_metrics, reports))
 }
 
-/// For a criterion measure, resolve the on-disk `estimates.json` files it
-/// reads so a caller can copy them into the iteration dir for post-hoc
-/// analysis (the iteration worktree is removed after integration). Returns
-/// `(metric_name, source_path)` pairs. Non-criterion measures yield nothing.
-pub fn criterion_estimates_files(
-    config: &MeasureConfig,
-    working_dir: &Path,
-) -> Vec<(String, PathBuf)> {
-    let AdaptorConfig::Criterion { benchmarks } = &config.adaptor else {
-        return Vec::new();
-    };
+/// The directory cargo actually builds into for this measure: the injected
+/// `CARGO_TARGET_DIR` (PR #22 shares one per task) if `extra_env` carries it,
+/// else the conventional `<working_dir>/target`. Criterion writes its results
+/// under `<this>/criterion/...`, so result resolution must use the same base.
+pub fn effective_target_dir(working_dir: &Path, extra_env: &[(String, String)]) -> PathBuf {
+    extra_env
+        .iter()
+        .find(|(k, _)| k == "CARGO_TARGET_DIR")
+        .map(|(_, v)| PathBuf::from(v))
+        .unwrap_or_else(|| working_dir.join("target"))
+}
+
+/// Translate the config benchmark list into the adaptor's entry type, then
+/// build a [`CriterionAdaptor`] rooted at `<target_dir>/criterion`.
+fn criterion_adaptor_for(
+    benchmarks: &[autotune_config::CriterionBenchmark],
+    target_dir: &Path,
+) -> CriterionAdaptor {
     use autotune_adaptor::criterion::{CriterionBenchmarkEntry, CriterionStat};
-    let criterion_dir = working_dir.join("target").join("criterion");
+    let criterion_dir = target_dir.join("criterion");
     let entries = benchmarks
         .iter()
         .map(|b| CriterionBenchmarkEntry {
@@ -365,7 +377,37 @@ pub fn criterion_estimates_files(
             },
         })
         .collect();
-    CriterionAdaptor::new(&criterion_dir, entries).estimates_files()
+    CriterionAdaptor::new(&criterion_dir, entries)
+}
+
+/// For a criterion measure, resolve the on-disk `estimates.json` files it
+/// reads so a caller can copy them into the iteration dir for post-hoc
+/// analysis (the iteration worktree is removed after integration). Returns
+/// `(metric_name, source_path)` pairs. Non-criterion measures yield nothing.
+///
+/// Resolves under `<working_dir>/target/criterion`. Use
+/// [`criterion_estimates_files_with_env`] when the bench ran with an injected
+/// `CARGO_TARGET_DIR` (PR #22 shared target dir).
+pub fn criterion_estimates_files(
+    config: &MeasureConfig,
+    working_dir: &Path,
+) -> Vec<(String, PathBuf)> {
+    criterion_estimates_files_with_env(config, working_dir, &[])
+}
+
+/// Like [`criterion_estimates_files`], but resolves under the EFFECTIVE target
+/// dir given the `extra_env` the bench ran with (honoring `CARGO_TARGET_DIR`).
+/// The empty-slice path is identical to [`criterion_estimates_files`].
+pub fn criterion_estimates_files_with_env(
+    config: &MeasureConfig,
+    working_dir: &Path,
+    extra_env: &[(String, String)],
+) -> Vec<(String, PathBuf)> {
+    let AdaptorConfig::Criterion { benchmarks } = &config.adaptor else {
+        return Vec::new();
+    };
+    let target_dir = effective_target_dir(working_dir, extra_env);
+    criterion_adaptor_for(benchmarks, &target_dir).estimates_files()
 }
 
 /// Merge the per-measure `variances` maps from a slice of reports into one map
@@ -380,8 +422,24 @@ pub fn merge_variances(reports: &[MeasureReport]) -> Variances {
     merged
 }
 
-/// Build a MetricAdaptor from config.
+/// Build a MetricAdaptor from config, resolving criterion results under
+/// `<working_dir>/target/criterion`. For a measure that ran with an injected
+/// `CARGO_TARGET_DIR`, use [`build_adaptor_with_target_dir`] so criterion finds
+/// its estimates.json under the redirected target dir (PR #22 shared target).
 pub fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn MetricAdaptor> {
+    build_adaptor_with_target_dir(config, working_dir, &working_dir.join("target"))
+}
+
+/// Build a MetricAdaptor from config, rooting criterion result resolution at
+/// `<target_dir>/criterion`. `target_dir` is the EFFECTIVE Cargo target dir the
+/// bench built into — `<working_dir>/target` by default, or the injected
+/// `CARGO_TARGET_DIR` when the task shares one per-task target dir (PR #22).
+/// `working_dir` is still used for the script adaptor's process cwd.
+pub fn build_adaptor_with_target_dir(
+    config: &AdaptorConfig,
+    working_dir: &Path,
+    target_dir: &Path,
+) -> Box<dyn MetricAdaptor> {
     match config {
         AdaptorConfig::Regex { patterns } => {
             let configs: Vec<RegexPatternConfig> = patterns
@@ -394,21 +452,7 @@ pub fn build_adaptor(config: &AdaptorConfig, working_dir: &Path) -> Box<dyn Metr
             Box::new(RegexAdaptor::new(configs))
         }
         AdaptorConfig::Criterion { benchmarks } => {
-            use autotune_adaptor::criterion::{CriterionBenchmarkEntry, CriterionStat};
-            let criterion_dir = working_dir.join("target").join("criterion");
-            let entries = benchmarks
-                .iter()
-                .map(|b| CriterionBenchmarkEntry {
-                    name: b.name.clone(),
-                    group: b.group.clone(),
-                    stat: match b.stat {
-                        autotune_config::CriterionStat::Mean => CriterionStat::Mean,
-                        autotune_config::CriterionStat::Median => CriterionStat::Median,
-                        autotune_config::CriterionStat::StdDev => CriterionStat::StdDev,
-                    },
-                })
-                .collect();
-            Box::new(CriterionAdaptor::new(&criterion_dir, entries))
+            Box::new(criterion_adaptor_for(benchmarks, target_dir))
         }
         AdaptorConfig::Script { command } => Box::new(ScriptAdaptorWithWorkingDir::new(
             command.clone(),
@@ -775,6 +819,114 @@ echo "{\"stdin_bytes\": $bytes, \"pwd_ok\": 1}"
             1.0,
             "measure command should observe the injected CARGO_TARGET_DIR"
         );
+    }
+
+    /// Write a criterion `estimates.json` for `group` under
+    /// `<target_dir>/criterion/<group>/new/estimates.json`, the way criterion
+    /// lays it out below `CARGO_TARGET_DIR`.
+    fn write_criterion_estimates(target_dir: &Path, group: &str, mean: f64) {
+        let new_dir = target_dir.join("criterion").join(group).join("new");
+        fs::create_dir_all(&new_dir).unwrap();
+        let json = format!(
+            r#"{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":{lo},"upper_bound":{hi}}},"point_estimate":{mean}}},"median":{{"point_estimate":{mean}}},"std_dev":{{"point_estimate":3.0}}}}"#,
+            lo = mean - 5.0,
+            hi = mean + 5.0,
+        );
+        fs::write(new_dir.join("estimates.json"), json).unwrap();
+    }
+
+    fn criterion_measure(group: &str, metric: &str) -> MeasureConfig {
+        use autotune_config::CriterionBenchmark;
+        MeasureConfig {
+            name: "bench".to_string(),
+            // A no-op command stands in for `cargo bench`; the estimates.json is
+            // pre-seeded by the test under the redirected target dir.
+            command: Some(vec!["true".to_string()]),
+            timeout: 30,
+            adaptor: AdaptorConfig::Criterion {
+                benchmarks: vec![CriterionBenchmark {
+                    name: metric.to_string(),
+                    group: group.to_string(),
+                    stat: autotune_config::CriterionStat::Mean,
+                    sources: vec![],
+                }],
+            },
+            sources: vec![],
+        }
+    }
+
+    /// Regression for the PR #22 shared-target interaction: when
+    /// `CARGO_TARGET_DIR` is injected via `extra_env`, criterion writes its
+    /// results under `<CARGO_TARGET_DIR>/criterion/...`, NOT
+    /// `<working_dir>/target/criterion/...`. The adaptor must resolve the
+    /// estimates.json under the effective (redirected) target dir.
+    #[test]
+    fn run_measure_resolves_criterion_under_redirected_cargo_target_dir() {
+        let working = tempfile::tempdir().unwrap();
+        let shared_target = tempfile::tempdir().unwrap();
+        // Results live under the REDIRECTED target, not <working>/target.
+        write_criterion_estimates(shared_target.path(), "stim-circuits/cultivation_d5", 100.0);
+
+        let config = criterion_measure("stim-circuits/cultivation_d5", "cultivation_ns");
+        let env = vec![(
+            "CARGO_TARGET_DIR".to_string(),
+            shared_target.path().to_string_lossy().into_owned(),
+        )];
+
+        let report = run_measure_with_output_env(&config, working.path(), &env).unwrap();
+        assert_eq!(*report.metrics.get("cultivation_ns").unwrap(), 100.0);
+        // Variance (#20 envelope path) must resolve under the same target dir.
+        let v = report.variances.get("cultivation_ns").unwrap();
+        assert_eq!(v.stddev, Some(3.0));
+        assert_eq!(v.ci_lower, Some(95.0));
+        assert_eq!(v.ci_upper, Some(105.0));
+    }
+
+    /// With no `CARGO_TARGET_DIR` injected, criterion results are resolved under
+    /// `<working_dir>/target/criterion/...` exactly as before (#22 regression
+    /// must not change the default-path behavior).
+    #[test]
+    fn run_measure_resolves_criterion_under_working_dir_target_by_default() {
+        let working = tempfile::tempdir().unwrap();
+        write_criterion_estimates(&working.path().join("target"), "grp/fn", 50.0);
+
+        let config = criterion_measure("grp/fn", "grp_ns");
+        let report = run_measure_with_output_env(&config, working.path(), &[]).unwrap();
+        assert_eq!(*report.metrics.get("grp_ns").unwrap(), 50.0);
+    }
+
+    /// `criterion_estimates_files` (the post-hoc copy for the #20 envelope) must
+    /// also resolve under the redirected target dir.
+    #[test]
+    fn criterion_estimates_files_resolves_under_redirected_target() {
+        let working = tempfile::tempdir().unwrap();
+        let shared_target = tempfile::tempdir().unwrap();
+        write_criterion_estimates(shared_target.path(), "grp/fn", 7.0);
+
+        let config = criterion_measure("grp/fn", "grp_ns");
+        let env = vec![(
+            "CARGO_TARGET_DIR".to_string(),
+            shared_target.path().to_string_lossy().into_owned(),
+        )];
+        let files = criterion_estimates_files_with_env(&config, working.path(), &env);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "grp_ns");
+        assert!(
+            files[0].1.is_file(),
+            "resolved path: {}",
+            files[0].1.display()
+        );
+        assert!(files[0].1.starts_with(shared_target.path()));
+    }
+
+    /// `effective_target_dir` honors an injected `CARGO_TARGET_DIR` and falls
+    /// back to `<working_dir>/target` otherwise.
+    #[test]
+    fn effective_target_dir_prefers_injected_cargo_target_dir() {
+        let working = Path::new("/wd");
+        assert_eq!(effective_target_dir(working, &[]), Path::new("/wd/target"));
+        let env = vec![("CARGO_TARGET_DIR".to_string(), "/shared/t".to_string())];
+        assert_eq!(effective_target_dir(working, &env), Path::new("/shared/t"));
     }
 
     #[test]

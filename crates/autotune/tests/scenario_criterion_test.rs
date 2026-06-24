@@ -37,7 +37,7 @@ timeout = 10
 
 [[measure]]
 name = "gate-bench"
-command = ["sh", "-c", "mkdir -p target/criterion/gate_bench/new && printf '{\"mean\":{\"point_estimate\":100.0},\"median\":{\"point_estimate\":98.0},\"std_dev\":{\"point_estimate\":5.0}}' > target/criterion/gate_bench/new/estimates.json"]
+command = ["sh", "-c", "t=\"${CARGO_TARGET_DIR:-target}\"; mkdir -p \"$t/criterion/gate_bench/new\" && printf '{\"mean\":{\"point_estimate\":100.0},\"median\":{\"point_estimate\":98.0},\"std_dev\":{\"point_estimate\":5.0}}' > \"$t/criterion/gate_bench/new/estimates.json\""]
 timeout = 30
 adaptor = { type = "criterion", benchmarks = [{ name = "gate_mean_ns", group = "gate_bench", stat = "mean" }] }
 
@@ -171,7 +171,8 @@ timeout = 10
 [[measure]]
 name = "benches"
 command = ["sh", "-c", """
-mkdir -p target/criterion/fast/new target/criterion/noisy/new
+t="${CARGO_TARGET_DIR:-target}"
+mkdir -p "$t/criterion/fast/new" "$t/criterion/noisy/new"
 if grep -q OPTIMIZED src/lib.rs; then
   fast=80.0
   noisy=131.0
@@ -179,8 +180,8 @@ else
   fast=100.0
   noisy=100.0
 fi
-printf '{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s},"point_estimate":%s},"median":{"point_estimate":%s},"std_dev":{"point_estimate":5.0}}' "$fast" "$fast" "$fast" "$fast" > target/criterion/fast/new/estimates.json
-printf '{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":60.0,"upper_bound":140.0},"point_estimate":%s},"median":{"point_estimate":%s},"std_dev":{"point_estimate":40.0}}' "$noisy" "$noisy" > target/criterion/noisy/new/estimates.json
+printf '{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s},"point_estimate":%s},"median":{"point_estimate":%s},"std_dev":{"point_estimate":5.0}}' "$fast" "$fast" "$fast" "$fast" > "$t/criterion/fast/new/estimates.json"
+printf '{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":60.0,"upper_bound":140.0},"point_estimate":%s},"median":{"point_estimate":%s},"std_dev":{"point_estimate":40.0}}' "$noisy" "$noisy" > "$t/criterion/noisy/new/estimates.json"
 """]
 timeout = 30
 adaptor = { type = "criterion", benchmarks = [{ name = "fast_ns", group = "fast", stat = "mean" }, { name = "noisy_ns", group = "noisy", stat = "mean" }] }
@@ -398,7 +399,8 @@ timeout = 10
 [[measure]]
 name = "benches"
 command = ["sh", "-c", """
-mkdir -p target/criterion/fast/new target/criterion/mem/new
+t="${{CARGO_TARGET_DIR:-target}}"
+mkdir -p "$t/criterion/fast/new" "$t/criterion/mem/new"
 if grep -q OPTIMIZED src/lib.rs; then
   fast=80.0
   mem={mem_candidate}
@@ -410,8 +412,8 @@ else
   mlo=95.0
   mhi=105.0
 fi
-printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":2.0}}}}' "$fast" "$fast" "$fast" "$fast" > target/criterion/fast/new/estimates.json
-printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":2.0}}}}' "$mlo" "$mhi" "$mem" "$mem" > target/criterion/mem/new/estimates.json
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":2.0}}}}' "$fast" "$fast" "$fast" "$fast" > "$t/criterion/fast/new/estimates.json"
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":2.0}}}}' "$mlo" "$mhi" "$mem" "$mem" > "$t/criterion/mem/new/estimates.json"
 """]
 timeout = 30
 adaptor = {{ type = "criterion", benchmarks = [{{ name = "fast_ns", group = "fast", stat = "mean" }}, {{ name = "mem_ns", group = "mem", stat = "mean" }}] }}
@@ -612,7 +614,8 @@ timeout = 10
 [[measure]]
 name = "bench"
 command = ["sh", "-c", """
-mkdir -p target/criterion/b/new
+t="${CARGO_TARGET_DIR:-target}"
+mkdir -p "$t/criterion/b/new"
 # Stable per-invocation counter at the main repo .git (git-common-dir is the
 # same from the baseline cwd and the iteration worktree, unlike --show-toplevel).
 gcd=$(git rev-parse --git-common-dir 2>/dev/null)
@@ -631,7 +634,7 @@ else
     *) val=90.0;  lo=88.0;  hi=92.0;;
   esac
 fi
-printf '{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s},"point_estimate":%s},"median":{"point_estimate":%s},"std_dev":{"point_estimate":1.0}}' "$lo" "$hi" "$val" "$val" > target/criterion/b/new/estimates.json
+printf '{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s},"point_estimate":%s},"median":{"point_estimate":%s},"std_dev":{"point_estimate":1.0}}' "$lo" "$hi" "$val" "$val" > "$t/criterion/b/new/estimates.json"
 """]
 timeout = 30
 adaptor = { type = "criterion", benchmarks = [{ name = "b_ns", group = "b", stat = "mean" }] }
@@ -697,7 +700,8 @@ timeout = 10
 [[measure]]
 name = "benches"
 command = ["sh", "-c", """
-mkdir -p target/criterion/fast/new target/criterion/mem/new
+t="${{CARGO_TARGET_DIR:-target}}"
+mkdir -p "$t/criterion/fast/new" "$t/criterion/mem/new"
 gcd=$(git rev-parse --git-common-dir 2>/dev/null)
 case "$gcd" in /*) ;; *) gcd="$PWD/$gcd";; esac
 counter_file="$gcd/autotune-measure-count"
@@ -716,8 +720,8 @@ else
   mem=100.0
 fi
 mlo=$(awk "BEGIN{{print $mem-3}}"); mhi=$(awk "BEGIN{{print $mem+3}}")
-printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":1.0}}}}' "$fast" "$fast" "$fast" "$fast" > target/criterion/fast/new/estimates.json
-printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":1.0}}}}' "$mlo" "$mhi" "$mem" "$mem" > target/criterion/mem/new/estimates.json
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":1.0}}}}' "$fast" "$fast" "$fast" "$fast" > "$t/criterion/fast/new/estimates.json"
+printf '{{"mean":{{"confidence_interval":{{"confidence_level":0.95,"lower_bound":%s,"upper_bound":%s}},"point_estimate":%s}},"median":{{"point_estimate":%s}},"std_dev":{{"point_estimate":1.0}}}}' "$mlo" "$mhi" "$mem" "$mem" > "$t/criterion/mem/new/estimates.json"
 """]
 timeout = 30
 adaptor = {{ type = "criterion", benchmarks = [{{ name = "fast_ns", group = "fast", stat = "mean" }}, {{ name = "mem_ns", group = "mem", stat = "mean" }}] }}

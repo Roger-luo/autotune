@@ -181,6 +181,36 @@ worktree.
   branch) and `cleanup_leftover_task_git_state` (re-run cleanup). It's **never**
   removed mid-run — sub-worktrees reuse it across iterations.
 
+### Criterion result resolution must follow `CARGO_TARGET_DIR` (footgun)
+
+Criterion writes `estimates.json` under **`<CARGO_TARGET_DIR>/criterion/<group>/new/`**,
+*not* `<cwd>/target/criterion`. So once the shared target dir is injected, a
+`CriterionAdaptor` rooted at `<working_dir>/target/criterion` looks in the wrong
+place and every criterion measure fails with *"criterion estimates.json not
+found at: `<worktree>/target/criterion/.../estimates.json`"* — which aborts the
+**baseline** measure immediately (it runs first), so the whole run dies before
+iteration 1. (This was the regression #22 introduced; the adaptor still assumed
+`<working_dir>/target`.)
+
+The resolution must use the **effective** target dir:
+`autotune_benchmark::effective_target_dir(working_dir, extra_env)` returns the
+`CARGO_TARGET_DIR` from the same `extra_env` the bench ran with, else
+`<working_dir>/target`. `run_measure_with_output_env` threads it into
+`build_adaptor_with_target_dir`, and `criterion_estimates_files_with_env` (the
+post-hoc estimates.json copy for the #20 noise envelope) uses the same base.
+`build_adaptor`/`criterion_estimates_files` (no env) keep the old
+`<working_dir>/target` default — used by the trial-run validation path, which
+inherits the ambient env and sets no shared target. The regex/script/judge
+adaptors don't read `target/`, so they're unaffected.
+
+**Test footgun:** scenario fixtures whose measure command *fakes* `cargo bench`
+by writing an `estimates.json` must write it under the **effective** target dir,
+e.g. `t="${CARGO_TARGET_DIR:-target}"; mkdir -p "$t/criterion/<group>/new"`. A
+fixture that hardcodes `target/criterion/...` (relative to cwd) silently wrote
+to `<worktree>/target` and *masked* this regression — the buggy adaptor read the
+same wrong path, so writer and reader agreed. After the fix the adaptor reads
+the shared target dir, so those fixtures must write there too.
+
 ### ENOSPC graceful abort
 
 A build/test/measure command whose captured output contains *"No space left on

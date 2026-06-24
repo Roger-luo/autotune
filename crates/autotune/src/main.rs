@@ -1018,7 +1018,13 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
     let baseline_variances =
         state_variances_from_benchmark(&autotune_benchmark::merge_variances(&baseline_reports));
     for measure in &config.measure {
-        let files = autotune_benchmark::criterion_estimates_files(measure, &repo_root);
+        // The baseline ran with `target_env` (shared CARGO_TARGET_DIR); resolve
+        // criterion results under the same effective target dir.
+        let files = autotune_benchmark::criterion_estimates_files_with_env(
+            measure,
+            &repo_root,
+            &target_env,
+        );
         if files.is_empty() {
             continue;
         }
