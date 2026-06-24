@@ -60,3 +60,34 @@ and the `StructuralPartialEq`/`StructuralEq` marker traits.
 - **Sidebar sections.** Nav is grouped by a `section` content field
   (`Guides` / `Crates` / `API Reference`), ordered in `Sidebar.astro`, which
   merges the `docs` and `api` collections. `sidebarLabel` overrides the label.
+
+## Deployment (GitHub Pages via the `gh-pages` branch)
+
+`.github/workflows/docs.yml` builds the site and publishes it to the
+`gh-pages` branch. The repo is a public GitHub **project** page, so the site
+serves at `https://roger-luo.github.io/autotune/` — note the `/autotune` base
+path (a *project* page lives under `/<repo>`, unlike a user/org page at root).
+
+- **`site` + `base` are env-driven** (`astro.config.mjs` reads `AUTOTUNE_SITE`
+  / `AUTOTUNE_BASE`) so one config powers local dev (defaults: site =
+  `roger-luo.github.io`, base `/`), the main deploy (base `/autotune`), and PR
+  previews (base `/autotune/pr-preview/pr-<N>`). A plain local `pnpm build`
+  uses base `/`; CI always passes the real base, so production is correct
+  regardless of the default. **If you ever build for production by hand, set
+  `AUTOTUNE_BASE=/autotune`** or every asset URL 404s under the project path.
+- **No Rust toolchain in CI.** The API JSON under `docs/.rustdoc/*.json` is
+  committed, so the workflow only needs Node 22 + pnpm 11 (pinned to match the
+  `allowBuilds` workspace key). Regenerate the JSON locally with
+  `pnpm api:rustdoc` when crate APIs change — CI will not do it for you.
+- **Push to `main`** → build + publish to the gh-pages root via
+  `peaceiris/actions-gh-pages` with `keep_files: true` (so live PR previews
+  under `/pr-preview/` survive a main deploy).
+- **PR previews** → `rossjrw/pr-preview-action` publishes each PR build to
+  `gh-pages/pr-preview/pr-<N>/` and comments the URL; a `pull_request_target:
+  closed` job removes it. Previews only deploy for PRs from branches **in this
+  repo** — fork PRs get a read-only token and the deploy job is skipped (the
+  build job still runs). The build job is deliberately read-only; only the
+  deploy jobs can push to gh-pages.
+- **One-time setup after the first `main` deploy creates the branch:** enable
+  Pages on the `gh-pages` branch (root) — Settings → Pages, or
+  `gh api -X POST repos/Roger-luo/autotune/pages -f source.branch=gh-pages -f source.path=/`.
