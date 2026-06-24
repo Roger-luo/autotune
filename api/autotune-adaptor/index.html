@@ -1,0 +1,108 @@
+<!DOCTYPE html><html lang="en" data-theme="light" data-theme-mode="auto"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>autotune-adaptor · Autotune</title><meta name="description" content="API reference for the autotune-adaptor crate, generated from rustdoc."><script>
+      (function () {
+        try {
+          var v = localStorage.getItem('theme');
+          var mode = v === 'light' || v === 'dark' || v === 'auto' ? v : 'auto';
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+          var root = document.documentElement;
+          root.dataset.theme = resolved;
+          root.dataset.themeMode = mode;
+        } catch (e) {}
+      })();
+    </script><link rel="stylesheet" href="/autotune/_astro/_slug_.CsS9INMh.css"></head> <body> <header class="site-header"> <div class="header-inner"> <a class="brand" href="/"> <img src="/favicon.svg" alt="" width="22" height="22"> <span>Autotune</span> </a> <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch color theme"> <span class="theme-icon" data-icon="auto" aria-hidden="true">◐</span> <span class="theme-icon" data-icon="light" aria-hidden="true">☀</span> <span class="theme-icon" data-icon="dark" aria-hidden="true">☾</span> <span class="theme-label"></span> </button> <script type="module">const r="theme",n=["auto","light","dark"],s=window.matchMedia("(prefers-color-scheme: dark)");function o(){const t=localStorage.getItem(r);return t==="light"||t==="dark"||t==="auto"?t:"auto"}function i(t){return t==="auto"?s.matches?"dark":"light":t}function a(t){const c=document.documentElement;c.dataset.theme=i(t),c.dataset.themeMode=t;const e=document.getElementById("theme-toggle");if(!e)return;e.dataset.mode=t;const l=e.querySelector(".theme-label");l&&(l.textContent=t.charAt(0).toUpperCase()+t.slice(1)),e.setAttribute("title",`Theme: ${t} (click to change)`)}a(o());document.getElementById("theme-toggle")?.addEventListener("click",()=>{const t=n[(n.indexOf(o())+1)%n.length];localStorage.setItem(r,t),a(t)});s.addEventListener("change",()=>{o()==="auto"&&a("auto")});</script> </div> </header> <div class="layout"> <aside class="sidebar-col"> <nav class="sidebar" aria-label="Documentation"> <div class="nav-group"> <p class="nav-group-title">Guides</p> <ul> <li> <a href="/" class="nav-link"> Overview </a> </li><li> <a href="/getting-started/" class="nav-link"> Getting started </a> </li><li> <a href="/configuration/" class="nav-link"> Configuration </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">Crates</p> <ul> <li> <a href="/crates/" class="nav-link"> Overview </a> </li><li> <a href="/crates/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/crates/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/crates/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/crates/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/crates/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/crates/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/crates/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/crates/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/crates/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/crates/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/crates/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/crates/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/crates/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/crates/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">API Reference</p> <ul> <li> <a href="/api/" class="nav-link"> Overview </a> </li><li> <a href="/api/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/api/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/api/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/api/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/api/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/api/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/api/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/api/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/api/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/api/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/api/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/api/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/api/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/api/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div> </nav> </aside> <main class="content"> <article class="prose"> <h1>autotune-adaptor</h1> <p class="lead">API reference for the autotune-adaptor crate, generated from rustdoc.</p>  <blockquote>
+<p>Generated from rustdoc. Run <code>pnpm api:rustdoc</code> to refresh after changing the crate.</p>
+</blockquote>
+<h2 id="structs">Structs</h2>
+<h3 id="criterionadaptor">CriterionAdaptor</h3>
+<p><code>autotune_adaptor::criterion::CriterionAdaptor</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> CriterionAdaptor</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p><em>All fields are private.</em></p>
+<h4 id="methods">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(criterion_dir</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Path</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, benchmarks</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">CriterionBenchmarkEntry</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>MetricAdaptor</code></p>
+<h3 id="criterionbenchmarkentry">CriterionBenchmarkEntry</h3>
+<p><code>autotune_adaptor::criterion::CriterionBenchmarkEntry</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> CriterionBenchmarkEntry</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>group: String</code></li>
+<li><code>stat: CriterionStat</code></li>
+</ul>
+<h3 id="measureoutput">MeasureOutput</h3>
+<p><code>autotune_adaptor::MeasureOutput</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> MeasureOutput</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>Output from a measure command - the raw text an adaptor processes.</p>
+<h4 id="fields-1">Fields</h4>
+<ul>
+<li><code>stdout: String</code></li>
+<li><code>stderr: String</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="regexadaptor">RegexAdaptor</h3>
+<p><code>autotune_adaptor::regex::RegexAdaptor</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> RegexAdaptor</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>Extracts metrics from measure output using regex capture groups.</p>
+<p><em>All fields are private.</em></p>
+<h4 id="methods-1">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(patterns</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">RegexPatternConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>MetricAdaptor</code></p>
+<h3 id="regexpatternconfig">RegexPatternConfig</h3>
+<p><code>autotune_adaptor::regex::RegexPatternConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> RegexPatternConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>Configuration for a single regex pattern.</p>
+<h4 id="fields-2">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>pattern: String</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="scriptadaptor">ScriptAdaptor</h3>
+<p><code>autotune_adaptor::script::ScriptAdaptor</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScriptAdaptor</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>Runs a user-provided script that reads measure output from stdin
+and writes JSON metrics to stdout.</p>
+<p><em>All fields are private.</em></p>
+<h4 id="methods-2">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(command</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">String</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>MetricAdaptor</code></p>
+<h2 id="enums">Enums</h2>
+<h3 id="adaptorerror">AdaptorError</h3>
+<p><code>autotune_adaptor::AdaptorError</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AdaptorError</span></span></code></pre>
+<h4 id="variants">Variants</h4>
+<ul>
+<li><code>RegexCompile { pattern, source }</code></li>
+<li><code>RegexNoMatch { name, pattern }</code></li>
+<li><code>ParseFloat { name, value }</code></li>
+<li><code>CriterionNotFound { path }</code></li>
+<li><code>CriterionParse { source }</code></li>
+<li><code>ScriptFailed { code, stderr }</code></li>
+<li><code>ScriptEmptyCommand</code></li>
+<li><code>ScriptOutputParse { source }</code></li>
+<li><code>Io { source }</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Debug</code>, <code>Display</code>, <code>Error</code>, <code>From&#x3C;Error></code></p>
+<h3 id="criterionstat">CriterionStat</h3>
+<p><code>autotune_adaptor::criterion::CriterionStat</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> CriterionStat</span></span></code></pre>
+<h4 id="variants-1">Variants</h4>
+<ul>
+<li><code>Mean</code></li>
+<li><code>Median</code></li>
+<li><code>StdDev</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>PartialEq</code></p>
+<h2 id="traits">Traits</h2>
+<h3 id="metricadaptor">MetricAdaptor</h3>
+<p><code>autotune_adaptor::MetricAdaptor</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">trait</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> MetricAdaptor</span></span></code></pre>
+<p>The adaptor trait. Takes measure output, produces metrics.</p>
+<h4 id="required--provided-methods">Required / provided methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> extract</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, output</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">MeasureOutput</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Metrics</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AdaptorError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<h2 id="type-aliases">Type aliases</h2>
+<h3 id="metrics">Metrics</h3>
+<p><code>autotune_adaptor::Metrics</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Metrics</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> std</span><span style="color:#D73A49;--shiki-dark:#F97583">::</span><span style="color:#6F42C1;--shiki-dark:#B392F0">collections</span><span style="color:#D73A49;--shiki-dark:#F97583">::</span><span style="color:#6F42C1;--shiki-dark:#B392F0">HashMap</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">String</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>;</span></span></code></pre>
+<p>All adaptors produce this: a map of metric name -> numeric value.</p>  </article> <footer class="content-footer"> <p>Autotune documentation · built with Astro</p> </footer> </main> <aside class="toc-col"> <nav class="toc" aria-label="On this page"> <p class="toc-title">On this page</p> <ul> <li class="toc-depth-2"> <a href="#structs">Structs</a> </li><li class="toc-depth-3"> <a href="#criterionadaptor">CriterionAdaptor</a> </li><li class="toc-depth-3"> <a href="#criterionbenchmarkentry">CriterionBenchmarkEntry</a> </li><li class="toc-depth-3"> <a href="#measureoutput">MeasureOutput</a> </li><li class="toc-depth-3"> <a href="#regexadaptor">RegexAdaptor</a> </li><li class="toc-depth-3"> <a href="#regexpatternconfig">RegexPatternConfig</a> </li><li class="toc-depth-3"> <a href="#scriptadaptor">ScriptAdaptor</a> </li><li class="toc-depth-2"> <a href="#enums">Enums</a> </li><li class="toc-depth-3"> <a href="#adaptorerror">AdaptorError</a> </li><li class="toc-depth-3"> <a href="#criterionstat">CriterionStat</a> </li><li class="toc-depth-2"> <a href="#traits">Traits</a> </li><li class="toc-depth-3"> <a href="#metricadaptor">MetricAdaptor</a> </li><li class="toc-depth-2"> <a href="#type-aliases">Type aliases</a> </li><li class="toc-depth-3"> <a href="#metrics">Metrics</a> </li> </ul> </nav> </aside> </div> </body></html>

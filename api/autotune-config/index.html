@@ -1,0 +1,292 @@
+<!DOCTYPE html><html lang="en" data-theme="light" data-theme-mode="auto"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>autotune-config · Autotune</title><meta name="description" content="API reference for the autotune-config crate, generated from rustdoc."><script>
+      (function () {
+        try {
+          var v = localStorage.getItem('theme');
+          var mode = v === 'light' || v === 'dark' || v === 'auto' ? v : 'auto';
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+          var root = document.documentElement;
+          root.dataset.theme = resolved;
+          root.dataset.themeMode = mode;
+        } catch (e) {}
+      })();
+    </script><link rel="stylesheet" href="/autotune/_astro/_slug_.CsS9INMh.css"></head> <body> <header class="site-header"> <div class="header-inner"> <a class="brand" href="/"> <img src="/favicon.svg" alt="" width="22" height="22"> <span>Autotune</span> </a> <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch color theme"> <span class="theme-icon" data-icon="auto" aria-hidden="true">◐</span> <span class="theme-icon" data-icon="light" aria-hidden="true">☀</span> <span class="theme-icon" data-icon="dark" aria-hidden="true">☾</span> <span class="theme-label"></span> </button> <script type="module">const r="theme",n=["auto","light","dark"],s=window.matchMedia("(prefers-color-scheme: dark)");function o(){const t=localStorage.getItem(r);return t==="light"||t==="dark"||t==="auto"?t:"auto"}function i(t){return t==="auto"?s.matches?"dark":"light":t}function a(t){const c=document.documentElement;c.dataset.theme=i(t),c.dataset.themeMode=t;const e=document.getElementById("theme-toggle");if(!e)return;e.dataset.mode=t;const l=e.querySelector(".theme-label");l&&(l.textContent=t.charAt(0).toUpperCase()+t.slice(1)),e.setAttribute("title",`Theme: ${t} (click to change)`)}a(o());document.getElementById("theme-toggle")?.addEventListener("click",()=>{const t=n[(n.indexOf(o())+1)%n.length];localStorage.setItem(r,t),a(t)});s.addEventListener("change",()=>{o()==="auto"&&a("auto")});</script> </div> </header> <div class="layout"> <aside class="sidebar-col"> <nav class="sidebar" aria-label="Documentation"> <div class="nav-group"> <p class="nav-group-title">Guides</p> <ul> <li> <a href="/" class="nav-link"> Overview </a> </li><li> <a href="/getting-started/" class="nav-link"> Getting started </a> </li><li> <a href="/configuration/" class="nav-link"> Configuration </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">Crates</p> <ul> <li> <a href="/crates/" class="nav-link"> Overview </a> </li><li> <a href="/crates/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/crates/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/crates/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/crates/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/crates/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/crates/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/crates/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/crates/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/crates/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/crates/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/crates/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/crates/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/crates/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/crates/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">API Reference</p> <ul> <li> <a href="/api/" class="nav-link"> Overview </a> </li><li> <a href="/api/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/api/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/api/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/api/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/api/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/api/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/api/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/api/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/api/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/api/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/api/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/api/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/api/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/api/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div> </nav> </aside> <main class="content"> <article class="prose"> <h1>autotune-config</h1> <p class="lead">API reference for the autotune-config crate, generated from rustdoc.</p>  <blockquote>
+<p>Generated from rustdoc. Run <code>pnpm api:rustdoc</code> to refresh after changing the crate.</p>
+</blockquote>
+<h2 id="structs">Structs</h2>
+<h3 id="agentconfig">AgentConfig</h3>
+<p><code>autotune_config::AgentConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields">Fields</h4>
+<ul>
+<li><code>backend: Option&#x3C;String></code></li>
+<li><code>model: Option&#x3C;String></code></li>
+<li><code>max_turns: Option&#x3C;u64></code></li>
+<li><code>reasoning_effort: Option&#x3C;ReasoningEffort></code></li>
+<li><code>max_fix_attempts: Option&#x3C;u32></code></li>
+<li><code>max_fresh_spawns: Option&#x3C;u32></code></li>
+<li><code>research: Option&#x3C;AgentRoleConfig></code></li>
+<li><code>implementation: Option&#x3C;AgentRoleConfig></code></li>
+<li><code>init: Option&#x3C;AgentRoleConfig></code></li>
+<li><code>judge: Option&#x3C;AgentRoleConfig></code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Default</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="agentroleconfig">AgentRoleConfig</h3>
+<p><code>autotune_config::AgentRoleConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentRoleConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-1">Fields</h4>
+<ul>
+<li><code>backend: Option&#x3C;String></code></li>
+<li><code>model: Option&#x3C;String></code></li>
+<li><code>max_turns: Option&#x3C;u64></code></li>
+<li><code>reasoning_effort: Option&#x3C;ReasoningEffort></code></li>
+<li><code>max_fix_attempts: Option&#x3C;u32></code> — Total implementer fix-retry turns allowed per iteration when tests fail. Counts both session-continuation turns and fresh respawns. <code>0</code> disables retry (tests fail → discard immediately, legacy behavior). <code>None</code> (field absent) is treated as the default by [<code>AgentRoleConfig::effective_max_fix_attempts</code>]. Only read off the <code>implementation</code> role; ignored elsewhere.</li>
+<li><code>max_fresh_spawns: Option&#x3C;u32></code> — Of the <code>max_fix_attempts</code> budget, how many may be fresh respawns (context reset, new CLI invocation on the same worktree). <code>0</code> disables fresh spawns (session-continuation only). <code>None</code> is treated as the default by [<code>AgentRoleConfig::effective_max_fresh_spawns</code>].</li>
+</ul>
+<h4 id="methods">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> effective_max_fix_attempts</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> u32</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> effective_max_fresh_spawns</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> u32</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> overlay</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, defaults</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentRoleConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentRoleConfig</span></span></code></pre>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="autotuneconfig">AutotuneConfig</h3>
+<p><code>autotune_config::AutotuneConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AutotuneConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-2">Fields</h4>
+<ul>
+<li><code>task: TaskConfig</code></li>
+<li><code>paths: PathsConfig</code></li>
+<li><code>test: Vec&#x3C;TestConfig></code></li>
+<li><code>measure: Vec&#x3C;MeasureConfig></code></li>
+<li><code>score: ScoreConfig</code></li>
+<li><code>agent: AgentConfig</code></li>
+</ul>
+<h4 id="methods-1">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> load</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(path</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Path</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">Self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">ConfigError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Load config from a TOML file at the given path.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> validate</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;(), </span><span style="color:#6F42C1;--shiki-dark:#B392F0">ConfigError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Validate all config constraints. Called automatically by <code>load</code>.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> task_dir</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, root</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Path</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PathBuf</span></span></code></pre>
+<p>Resolve the task directory path: <code>.autotune/tasks/&#x3C;name>/</code></p>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="criterionbenchmark">CriterionBenchmark</h3>
+<p><code>autotune_config::CriterionBenchmark</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> CriterionBenchmark</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-3">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>group: String</code></li>
+<li><code>stat: CriterionStat</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="globalconfig">GlobalConfig</h3>
+<p><code>autotune_config::global::GlobalConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> GlobalConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>Global user config. Only agent defaults — project-specific
+settings live in <code>.autotune.toml</code>.</p>
+<h4 id="fields-4">Fields</h4>
+<ul>
+<li><code>agent: Option&#x3C;AgentConfig></code></li>
+</ul>
+<h4 id="methods-2">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> load</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">Self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">ConfigError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Load from the user config path (~/.config/autotune/config.toml).
+Returns empty config if the file is missing.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> load_from</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(path</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Path</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">Self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">ConfigError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Load from a single explicit path. Returns empty config if file is missing.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> load_layered</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(paths</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#24292E;--shiki-dark:#E1E4E8">[</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Path</span><span style="color:#24292E;--shiki-dark:#E1E4E8">]) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">Self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">ConfigError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Load from an ordered list of paths (earlier = lower priority).
+Missing files are silently skipped.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> user_config_path</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Option</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">PathBuf</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Path to the user-level config file (~/.config/autotune/config.toml).</p>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Default</code>, <code>Deserialize&#x3C;'de></code></p>
+<h3 id="guardrailmetric">GuardrailMetric</h3>
+<p><code>autotune_config::GuardrailMetric</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> GuardrailMetric</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-5">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>direction: Direction</code></li>
+<li><code>max_regression: f64</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="measureconfig">MeasureConfig</h3>
+<p><code>autotune_config::MeasureConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> MeasureConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-6">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>command: Option&#x3C;Vec&#x3C;String>></code></li>
+<li><code>timeout: u64</code></li>
+<li><code>adaptor: AdaptorConfig</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="pathsconfig">PathsConfig</h3>
+<p><code>autotune_config::PathsConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PathsConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-7">Fields</h4>
+<ul>
+<li><code>tunable: Vec&#x3C;String></code></li>
+<li><code>denied: Vec&#x3C;String></code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="primarymetric">PrimaryMetric</h3>
+<p><code>autotune_config::PrimaryMetric</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PrimaryMetric</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-8">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>direction: Direction</code></li>
+<li><code>weight: f64</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="regexpattern">RegexPattern</h3>
+<p><code>autotune_config::RegexPattern</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> RegexPattern</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-9">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>pattern: String</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="rubricconfig">RubricConfig</h3>
+<p><code>autotune_config::RubricConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> RubricConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-10">Fields</h4>
+<ul>
+<li><code>id: String</code></li>
+<li><code>title: String</code></li>
+<li><code>instruction: String</code></li>
+<li><code>score_range: ScoreRangeConfig</code></li>
+<li><code>guidance: Option&#x3C;String></code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="scorerangeconfig">ScoreRangeConfig</h3>
+<p><code>autotune_config::ScoreRangeConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScoreRangeConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-11">Fields</h4>
+<ul>
+<li><code>min: i32</code></li>
+<li><code>max: i32</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="targetmetric">TargetMetric</h3>
+<p><code>autotune_config::TargetMetric</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> TargetMetric</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>A metric threshold that acts as a stop condition.</p>
+<p>For <code>direction = Maximize</code>, stops when the metric value is <code>>= value</code>.
+For <code>direction = Minimize</code>, stops when the metric value is <code>&#x3C;= value</code>.</p>
+<h4 id="fields-12">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>value: f64</code></li>
+<li><code>direction: Direction</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="taskconfig">TaskConfig</h3>
+<p><code>autotune_config::TaskConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> TaskConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-13">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>description: Option&#x3C;String></code></li>
+<li><code>canonical_branch: String</code></li>
+<li><code>max_iterations: Option&#x3C;StopValue></code></li>
+<li><code>target_improvement: Option&#x3C;f64></code></li>
+<li><code>max_duration: Option&#x3C;String></code></li>
+<li><code>target_metric: Vec&#x3C;TargetMetric></code> — Stop when specific metrics reach absolute thresholds. All listed metrics must meet their threshold (AND semantics).</li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="testconfig">TestConfig</h3>
+<p><code>autotune_config::TestConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> TestConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-14">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>command: Vec&#x3C;String></code></li>
+<li><code>timeout: u64</code></li>
+<li><code>allow_test_edits: bool</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="thresholdcondition">ThresholdCondition</h3>
+<p><code>autotune_config::ThresholdCondition</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ThresholdCondition</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-15">Fields</h4>
+<ul>
+<li><code>metric: String</code></li>
+<li><code>direction: Direction</code></li>
+<li><code>threshold: f64</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h2 id="enums">Enums</h2>
+<h3 id="adaptorconfig">AdaptorConfig</h3>
+<p><code>autotune_config::AdaptorConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AdaptorConfig</span></span></code></pre>
+<h4 id="variants">Variants</h4>
+<ul>
+<li><code>Regex { patterns }</code></li>
+<li><code>Criterion { benchmarks }</code></li>
+<li><code>Script { command }</code></li>
+<li><code>Judge { persona, rubrics }</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="configerror">ConfigError</h3>
+<p><code>autotune_config::ConfigError</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ConfigError</span></span></code></pre>
+<h4 id="variants-1">Variants</h4>
+<ul>
+<li><code>NotFound { path }</code></li>
+<li><code>Parse { source }</code></li>
+<li><code>Validation { message }</code></li>
+<li><code>Io { source }</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Debug</code>, <code>Display</code>, <code>Error</code>, <code>From&#x3C;Error></code></p>
+<h3 id="criterionstat">CriterionStat</h3>
+<p><code>autotune_config::CriterionStat</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> CriterionStat</span></span></code></pre>
+<h4 id="variants-2">Variants</h4>
+<ul>
+<li><code>Mean</code></li>
+<li><code>Median</code></li>
+<li><code>StdDev</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Default</code>, <code>Deserialize&#x3C;'de></code>, <code>PartialEq</code>, <code>Serialize</code></p>
+<h3 id="direction">Direction</h3>
+<p><code>autotune_config::Direction</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Direction</span></span></code></pre>
+<h4 id="variants-3">Variants</h4>
+<ul>
+<li><code>Minimize</code></li>
+<li><code>Maximize</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Copy</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Eq</code>, <code>PartialEq</code>, <code>Serialize</code></p>
+<h3 id="reasoningeffort">ReasoningEffort</h3>
+<p><code>autotune_config::ReasoningEffort</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ReasoningEffort</span></span></code></pre>
+<h4 id="variants-4">Variants</h4>
+<ul>
+<li><code>Low</code></li>
+<li><code>Medium</code></li>
+<li><code>High</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Copy</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Eq</code>, <code>PartialEq</code>, <code>Serialize</code></p>
+<h3 id="scoreconfig">ScoreConfig</h3>
+<p><code>autotune_config::ScoreConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScoreConfig</span></span></code></pre>
+<h4 id="variants-5">Variants</h4>
+<ul>
+<li><code>WeightedSum { primary_metrics, guardrail_metrics }</code></li>
+<li><code>Threshold { conditions }</code></li>
+<li><code>Script { command }</code></li>
+<li><code>Command { command }</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="stopvalue">StopValue</h3>
+<p><code>autotune_config::StopValue</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> StopValue</span></span></code></pre>
+<p>Either a finite number or “inf” for unbounded.</p>
+<h4 id="variants-6">Variants</h4>
+<ul>
+<li><code>Finite(u64)</code></li>
+<li><code>Infinite</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>  </article> <footer class="content-footer"> <p>Autotune documentation · built with Astro</p> </footer> </main> <aside class="toc-col"> <nav class="toc" aria-label="On this page"> <p class="toc-title">On this page</p> <ul> <li class="toc-depth-2"> <a href="#structs">Structs</a> </li><li class="toc-depth-3"> <a href="#agentconfig">AgentConfig</a> </li><li class="toc-depth-3"> <a href="#agentroleconfig">AgentRoleConfig</a> </li><li class="toc-depth-3"> <a href="#autotuneconfig">AutotuneConfig</a> </li><li class="toc-depth-3"> <a href="#criterionbenchmark">CriterionBenchmark</a> </li><li class="toc-depth-3"> <a href="#globalconfig">GlobalConfig</a> </li><li class="toc-depth-3"> <a href="#guardrailmetric">GuardrailMetric</a> </li><li class="toc-depth-3"> <a href="#measureconfig">MeasureConfig</a> </li><li class="toc-depth-3"> <a href="#pathsconfig">PathsConfig</a> </li><li class="toc-depth-3"> <a href="#primarymetric">PrimaryMetric</a> </li><li class="toc-depth-3"> <a href="#regexpattern">RegexPattern</a> </li><li class="toc-depth-3"> <a href="#rubricconfig">RubricConfig</a> </li><li class="toc-depth-3"> <a href="#scorerangeconfig">ScoreRangeConfig</a> </li><li class="toc-depth-3"> <a href="#targetmetric">TargetMetric</a> </li><li class="toc-depth-3"> <a href="#taskconfig">TaskConfig</a> </li><li class="toc-depth-3"> <a href="#testconfig">TestConfig</a> </li><li class="toc-depth-3"> <a href="#thresholdcondition">ThresholdCondition</a> </li><li class="toc-depth-2"> <a href="#enums">Enums</a> </li><li class="toc-depth-3"> <a href="#adaptorconfig">AdaptorConfig</a> </li><li class="toc-depth-3"> <a href="#configerror">ConfigError</a> </li><li class="toc-depth-3"> <a href="#criterionstat">CriterionStat</a> </li><li class="toc-depth-3"> <a href="#direction">Direction</a> </li><li class="toc-depth-3"> <a href="#reasoningeffort">ReasoningEffort</a> </li><li class="toc-depth-3"> <a href="#scoreconfig">ScoreConfig</a> </li><li class="toc-depth-3"> <a href="#stopvalue">StopValue</a> </li> </ul> </nav> </aside> </div> </body></html>

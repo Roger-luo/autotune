@@ -1,0 +1,138 @@
+<!DOCTYPE html><html lang="en" data-theme="light" data-theme-mode="auto"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>autotune-score · Autotune</title><meta name="description" content="API reference for the autotune-score crate, generated from rustdoc."><script>
+      (function () {
+        try {
+          var v = localStorage.getItem('theme');
+          var mode = v === 'light' || v === 'dark' || v === 'auto' ? v : 'auto';
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+          var root = document.documentElement;
+          root.dataset.theme = resolved;
+          root.dataset.themeMode = mode;
+        } catch (e) {}
+      })();
+    </script><link rel="stylesheet" href="/autotune/_astro/_slug_.CsS9INMh.css"></head> <body> <header class="site-header"> <div class="header-inner"> <a class="brand" href="/"> <img src="/favicon.svg" alt="" width="22" height="22"> <span>Autotune</span> </a> <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch color theme"> <span class="theme-icon" data-icon="auto" aria-hidden="true">◐</span> <span class="theme-icon" data-icon="light" aria-hidden="true">☀</span> <span class="theme-icon" data-icon="dark" aria-hidden="true">☾</span> <span class="theme-label"></span> </button> <script type="module">const r="theme",n=["auto","light","dark"],s=window.matchMedia("(prefers-color-scheme: dark)");function o(){const t=localStorage.getItem(r);return t==="light"||t==="dark"||t==="auto"?t:"auto"}function i(t){return t==="auto"?s.matches?"dark":"light":t}function a(t){const c=document.documentElement;c.dataset.theme=i(t),c.dataset.themeMode=t;const e=document.getElementById("theme-toggle");if(!e)return;e.dataset.mode=t;const l=e.querySelector(".theme-label");l&&(l.textContent=t.charAt(0).toUpperCase()+t.slice(1)),e.setAttribute("title",`Theme: ${t} (click to change)`)}a(o());document.getElementById("theme-toggle")?.addEventListener("click",()=>{const t=n[(n.indexOf(o())+1)%n.length];localStorage.setItem(r,t),a(t)});s.addEventListener("change",()=>{o()==="auto"&&a("auto")});</script> </div> </header> <div class="layout"> <aside class="sidebar-col"> <nav class="sidebar" aria-label="Documentation"> <div class="nav-group"> <p class="nav-group-title">Guides</p> <ul> <li> <a href="/" class="nav-link"> Overview </a> </li><li> <a href="/getting-started/" class="nav-link"> Getting started </a> </li><li> <a href="/configuration/" class="nav-link"> Configuration </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">Crates</p> <ul> <li> <a href="/crates/" class="nav-link"> Overview </a> </li><li> <a href="/crates/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/crates/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/crates/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/crates/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/crates/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/crates/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/crates/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/crates/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/crates/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/crates/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/crates/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/crates/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/crates/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/crates/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">API Reference</p> <ul> <li> <a href="/api/" class="nav-link"> Overview </a> </li><li> <a href="/api/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/api/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/api/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/api/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/api/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/api/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/api/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/api/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/api/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/api/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/api/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/api/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/api/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/api/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div> </nav> </aside> <main class="content"> <article class="prose"> <h1>autotune-score</h1> <p class="lead">API reference for the autotune-score crate, generated from rustdoc.</p>  <blockquote>
+<p>Generated from rustdoc. Run <code>pnpm api:rustdoc</code> to refresh after changing the crate.</p>
+</blockquote>
+<h2 id="structs">Structs</h2>
+<h3 id="guardrailmetricdef">GuardrailMetricDef</h3>
+<p><code>autotune_score::weighted_sum::GuardrailMetricDef</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> GuardrailMetricDef</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>direction: Direction</code></li>
+<li><code>max_regression: f64</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="primarymetricdef">PrimaryMetricDef</h3>
+<p><code>autotune_score::weighted_sum::PrimaryMetricDef</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PrimaryMetricDef</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-1">Fields</h4>
+<ul>
+<li><code>name: String</code></li>
+<li><code>direction: Direction</code></li>
+<li><code>weight: f64</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="scoreinput">ScoreInput</h3>
+<p><code>autotune_score::ScoreInput</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScoreInput</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-2">Fields</h4>
+<ul>
+<li><code>baseline: Metrics</code></li>
+<li><code>candidate: Metrics</code></li>
+<li><code>best: Metrics</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="scoreoutput">ScoreOutput</h3>
+<p><code>autotune_score::ScoreOutput</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScoreOutput</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-3">Fields</h4>
+<ul>
+<li><code>rank: f64</code></li>
+<li><code>decision: String</code></li>
+<li><code>reason: String</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Deserialize&#x3C;'de></code>, <code>Serialize</code></p>
+<h3 id="scriptscorer">ScriptScorer</h3>
+<p><code>autotune_score::script::ScriptScorer</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScriptScorer</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p><em>All fields are private.</em></p>
+<h4 id="methods">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(command</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">String</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>ScoreCalculator</code></p>
+<h3 id="thresholdconditiondef">ThresholdConditionDef</h3>
+<p><code>autotune_score::threshold::ThresholdConditionDef</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ThresholdConditionDef</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-4">Fields</h4>
+<ul>
+<li><code>metric: String</code></li>
+<li><code>direction: Direction</code></li>
+<li><code>threshold: f64</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="thresholdscorer">ThresholdScorer</h3>
+<p><code>autotune_score::threshold::ThresholdScorer</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ThresholdScorer</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p><em>All fields are private.</em></p>
+<h4 id="methods-1">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(conditions</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">ThresholdConditionDef</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>ScoreCalculator</code></p>
+<h3 id="weightedsumscorer">WeightedSumScorer</h3>
+<p><code>autotune_score::weighted_sum::WeightedSumScorer</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> WeightedSumScorer</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p><em>All fields are private.</em></p>
+<h4 id="methods-2">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(primary</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">PrimaryMetricDef</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>, guardrails</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">GuardrailMetricDef</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>ScoreCalculator</code></p>
+<h2 id="enums">Enums</h2>
+<h3 id="direction">Direction</h3>
+<p><code>autotune_score::threshold::Direction</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Direction</span></span></code></pre>
+<h4 id="variants">Variants</h4>
+<ul>
+<li><code>Minimize</code></li>
+<li><code>Maximize</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Copy</code>, <code>Debug</code>, <code>Eq</code>, <code>PartialEq</code></p>
+<h3 id="direction-1">Direction</h3>
+<p><code>autotune_score::weighted_sum::Direction</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Direction</span></span></code></pre>
+<h4 id="variants-1">Variants</h4>
+<ul>
+<li><code>Minimize</code></li>
+<li><code>Maximize</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Copy</code>, <code>Debug</code>, <code>Eq</code>, <code>PartialEq</code></p>
+<h3 id="scoreerror">ScoreError</h3>
+<p><code>autotune_score::ScoreError</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScoreError</span></span></code></pre>
+<h4 id="variants-2">Variants</h4>
+<ul>
+<li><code>MissingMetric { name }</code></li>
+<li><code>GuardrailFailed { name, regression, max_regression }</code></li>
+<li><code>ScriptFailed { code, stderr }</code></li>
+<li><code>ScriptOutputParse { source }</code></li>
+<li><code>Io { source }</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Debug</code>, <code>Display</code>, <code>Error</code>, <code>From&#x3C;Error></code></p>
+<h2 id="traits">Traits</h2>
+<h3 id="scorecalculator">ScoreCalculator</h3>
+<p><code>autotune_score::ScoreCalculator</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">trait</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ScoreCalculator</span></span></code></pre>
+<h4 id="required--provided-methods">Required / provided methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> calculate</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, input</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">ScoreInput</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">ScoreOutput</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">ScoreError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<h2 id="functions">Functions</h2>
+<h3 id="check_guardrail">check_guardrail</h3>
+<p><code>autotune_score::weighted_sum::check_guardrail</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> check_guardrail</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(best</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, candidate</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, direction</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Direction</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, max_regression</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Option</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<h3 id="get_metric">get_metric</h3>
+<p><code>autotune_score::weighted_sum::get_metric</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> get_metric</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(metrics</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Metrics</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, name</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">ScoreError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<h3 id="improvement">improvement</h3>
+<p><code>autotune_score::weighted_sum::improvement</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> improvement</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(best</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, candidate</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, direction</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Direction</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> f64</span></span></code></pre>
+<h2 id="type-aliases">Type aliases</h2>
+<h3 id="metrics">Metrics</h3>
+<p><code>autotune_score::Metrics</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Metrics</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> std</span><span style="color:#D73A49;--shiki-dark:#F97583">::</span><span style="color:#6F42C1;--shiki-dark:#B392F0">collections</span><span style="color:#D73A49;--shiki-dark:#F97583">::</span><span style="color:#6F42C1;--shiki-dark:#B392F0">HashMap</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">String</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">f64</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>;</span></span></code></pre>  </article> <footer class="content-footer"> <p>Autotune documentation · built with Astro</p> </footer> </main> <aside class="toc-col"> <nav class="toc" aria-label="On this page"> <p class="toc-title">On this page</p> <ul> <li class="toc-depth-2"> <a href="#structs">Structs</a> </li><li class="toc-depth-3"> <a href="#guardrailmetricdef">GuardrailMetricDef</a> </li><li class="toc-depth-3"> <a href="#primarymetricdef">PrimaryMetricDef</a> </li><li class="toc-depth-3"> <a href="#scoreinput">ScoreInput</a> </li><li class="toc-depth-3"> <a href="#scoreoutput">ScoreOutput</a> </li><li class="toc-depth-3"> <a href="#scriptscorer">ScriptScorer</a> </li><li class="toc-depth-3"> <a href="#thresholdconditiondef">ThresholdConditionDef</a> </li><li class="toc-depth-3"> <a href="#thresholdscorer">ThresholdScorer</a> </li><li class="toc-depth-3"> <a href="#weightedsumscorer">WeightedSumScorer</a> </li><li class="toc-depth-2"> <a href="#enums">Enums</a> </li><li class="toc-depth-3"> <a href="#direction">Direction</a> </li><li class="toc-depth-3"> <a href="#direction-1">Direction</a> </li><li class="toc-depth-3"> <a href="#scoreerror">ScoreError</a> </li><li class="toc-depth-2"> <a href="#traits">Traits</a> </li><li class="toc-depth-3"> <a href="#scorecalculator">ScoreCalculator</a> </li><li class="toc-depth-2"> <a href="#functions">Functions</a> </li><li class="toc-depth-3"> <a href="#check_guardrail">check_guardrail</a> </li><li class="toc-depth-3"> <a href="#get_metric">get_metric</a> </li><li class="toc-depth-3"> <a href="#improvement">improvement</a> </li><li class="toc-depth-2"> <a href="#type-aliases">Type aliases</a> </li><li class="toc-depth-3"> <a href="#metrics">Metrics</a> </li> </ul> </nav> </aside> </div> </body></html>

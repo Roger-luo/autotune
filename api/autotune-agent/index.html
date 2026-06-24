@@ -1,0 +1,331 @@
+<!DOCTYPE html><html lang="en" data-theme="light" data-theme-mode="auto"> <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>autotune-agent · Autotune</title><meta name="description" content="API reference for the autotune-agent crate, generated from rustdoc."><script>
+      (function () {
+        try {
+          var v = localStorage.getItem('theme');
+          var mode = v === 'light' || v === 'dark' || v === 'auto' ? v : 'auto';
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var resolved = mode === 'auto' ? (prefersDark ? 'dark' : 'light') : mode;
+          var root = document.documentElement;
+          root.dataset.theme = resolved;
+          root.dataset.themeMode = mode;
+        } catch (e) {}
+      })();
+    </script><link rel="stylesheet" href="/autotune/_astro/_slug_.CsS9INMh.css"></head> <body> <header class="site-header"> <div class="header-inner"> <a class="brand" href="/"> <img src="/favicon.svg" alt="" width="22" height="22"> <span>Autotune</span> </a> <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch color theme"> <span class="theme-icon" data-icon="auto" aria-hidden="true">◐</span> <span class="theme-icon" data-icon="light" aria-hidden="true">☀</span> <span class="theme-icon" data-icon="dark" aria-hidden="true">☾</span> <span class="theme-label"></span> </button> <script type="module">const r="theme",n=["auto","light","dark"],s=window.matchMedia("(prefers-color-scheme: dark)");function o(){const t=localStorage.getItem(r);return t==="light"||t==="dark"||t==="auto"?t:"auto"}function i(t){return t==="auto"?s.matches?"dark":"light":t}function a(t){const c=document.documentElement;c.dataset.theme=i(t),c.dataset.themeMode=t;const e=document.getElementById("theme-toggle");if(!e)return;e.dataset.mode=t;const l=e.querySelector(".theme-label");l&&(l.textContent=t.charAt(0).toUpperCase()+t.slice(1)),e.setAttribute("title",`Theme: ${t} (click to change)`)}a(o());document.getElementById("theme-toggle")?.addEventListener("click",()=>{const t=n[(n.indexOf(o())+1)%n.length];localStorage.setItem(r,t),a(t)});s.addEventListener("change",()=>{o()==="auto"&&a("auto")});</script> </div> </header> <div class="layout"> <aside class="sidebar-col"> <nav class="sidebar" aria-label="Documentation"> <div class="nav-group"> <p class="nav-group-title">Guides</p> <ul> <li> <a href="/" class="nav-link"> Overview </a> </li><li> <a href="/getting-started/" class="nav-link"> Getting started </a> </li><li> <a href="/configuration/" class="nav-link"> Configuration </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">Crates</p> <ul> <li> <a href="/crates/" class="nav-link"> Overview </a> </li><li> <a href="/crates/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/crates/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/crates/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/crates/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/crates/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/crates/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/crates/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/crates/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/crates/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/crates/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/crates/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/crates/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/crates/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/crates/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div><div class="nav-group"> <p class="nav-group-title">API Reference</p> <ul> <li> <a href="/api/" class="nav-link"> Overview </a> </li><li> <a href="/api/autotune/" class="nav-link"> autotune </a> </li><li> <a href="/api/autotune-adaptor/" class="nav-link"> autotune-adaptor </a> </li><li> <a href="/api/autotune-agent/" class="nav-link"> autotune-agent </a> </li><li> <a href="/api/autotune-benchmark/" class="nav-link"> autotune-benchmark </a> </li><li> <a href="/api/autotune-config/" class="nav-link"> autotune-config </a> </li><li> <a href="/api/autotune-git/" class="nav-link"> autotune-git </a> </li><li> <a href="/api/autotune-implement/" class="nav-link"> autotune-implement </a> </li><li> <a href="/api/autotune-init/" class="nav-link"> autotune-init </a> </li><li> <a href="/api/autotune-judge/" class="nav-link"> autotune-judge </a> </li><li> <a href="/api/autotune-mock/" class="nav-link"> autotune-mock </a> </li><li> <a href="/api/autotune-plan/" class="nav-link"> autotune-plan </a> </li><li> <a href="/api/autotune-score/" class="nav-link"> autotune-score </a> </li><li> <a href="/api/autotune-state/" class="nav-link"> autotune-state </a> </li><li> <a href="/api/autotune-test/" class="nav-link"> autotune-test </a> </li> </ul> </div> </nav> </aside> <main class="content"> <article class="prose"> <h1>autotune-agent</h1> <p class="lead">API reference for the autotune-agent crate, generated from rustdoc.</p>  <blockquote>
+<p>Generated from rustdoc. Run <code>pnpm api:rustdoc</code> to refresh after changing the crate.</p>
+</blockquote>
+<h2 id="structs">Structs</h2>
+<h3 id="agentconfig">AgentConfig</h3>
+<p><code>autotune_agent::AgentConfig</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields">Fields</h4>
+<ul>
+<li><code>prompt: String</code></li>
+<li><code>allowed_tools: Vec&#x3C;ToolPermission></code></li>
+<li><code>working_directory: std::path::PathBuf</code></li>
+<li><code>model: Option&#x3C;String></code></li>
+<li><code>max_turns: Option&#x3C;u64></code></li>
+<li><code>reasoning_effort: Option&#x3C;String></code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="agentconfigwithevents">AgentConfigWithEvents</h3>
+<p><code>autotune_agent::AgentConfigWithEvents</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentConfigWithEvents</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>Extended config with optional event streaming. Used internally
+by agent implementations — callers set the handler via <code>with_event_handler</code>.</p>
+<h4 id="fields-1">Fields</h4>
+<ul>
+<li><code>config: AgentConfig</code></li>
+<li><code>event_handler: Option&#x3C;EventHandler></code></li>
+</ul>
+<h4 id="methods">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(config</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> with_event_handler</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, handler</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> EventHandler</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<h3 id="agentresponse">AgentResponse</h3>
+<p><code>autotune_agent::AgentResponse</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentResponse</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-2">Fields</h4>
+<ul>
+<li><code>text: String</code></li>
+<li><code>session_id: String</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="agentsession">AgentSession</h3>
+<p><code>autotune_agent::AgentSession</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentSession</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<h4 id="fields-3">Fields</h4>
+<ul>
+<li><code>session_id: String</code></li>
+<li><code>backend: String</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="claudeagent">ClaudeAgent</h3>
+<p><code>autotune_agent::claude::ClaudeAgent</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ClaudeAgent</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p><em>All fields are private.</em></p>
+<h4 id="methods-1">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> with_command</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(command</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PathBuf</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p>Create with a custom binary path (useful for testing with mock binaries).</p>
+<p><strong>Implements:</strong> <code>Agent</code>, <code>Default</code></p>
+<h3 id="codexagent">CodexAgent</h3>
+<p><code>autotune_agent::codex::CodexAgent</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> CodexAgent</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p><em>All fields are private.</em></p>
+<h4 id="methods-2">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> with_command</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(command</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PathBuf</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> with_command_and_codex_home</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(command</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PathBuf</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, codex_home</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Option</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">PathBuf</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>Agent</code>, <code>Default</code></p>
+<h3 id="guard">Guard</h3>
+<p><code>autotune_agent::terminal::Guard</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Guard</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(_);</span></span></code></pre>
+<p>RAII guard that calls [<code>restore</code>] on drop.</p>
+<p>Hold one in scope for the duration of any code that may alter terminal
+state — spawning the Claude CLI, a <code>dialoguer</code> prompt, or a crossterm
+raw-mode block. The guard fires on every way the scope can exit: normal
+return, <code>?</code> propagation, and unwinding panics.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>let _guard = autotune_agent::terminal::Guard::new();</span></span>
+<span class="line"><span>run_some_interactive_subprocess()?;</span></span>
+<span class="line"><span>// terminal is restored here when _guard drops</span></span></code></pre>
+<h4 id="methods-3">Methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> new</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#005CC5;--shiki-dark:#79B8FF"> Self</span></span></code></pre>
+<p><strong>Implements:</strong> <code>Default</code>, <code>Drop</code></p>
+<h3 id="questionoption">QuestionOption</h3>
+<p><code>autotune_agent::protocol::QuestionOption</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> QuestionOption</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>A question option rendered as a selection menu item.</p>
+<h4 id="fields-4">Fields</h4>
+<ul>
+<li><code>key: String</code></li>
+<li><code>label: String</code></li>
+<li><code>description: Option&#x3C;String></code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Eq</code>, <code>PartialEq</code></p>
+<h3 id="rubricproposal">RubricProposal</h3>
+<p><code>autotune_agent::protocol::RubricProposal</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> RubricProposal</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>A rubric proposed by the agent during the judge measure interview.</p>
+<h4 id="fields-5">Fields</h4>
+<ul>
+<li><code>id: String</code></li>
+<li><code>title: String</code></li>
+<li><code>instruction: String</code></li>
+<li><code>score_min: i32</code></li>
+<li><code>score_max: i32</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>PartialEq</code></p>
+<h3 id="tagmatch">TagMatch</h3>
+<p><code>autotune_agent::protocol::TagMatch</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> TagMatch</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;'</span><span style="color:#6F42C1;--shiki-dark:#B392F0">a</span><span style="color:#24292E;--shiki-dark:#E1E4E8">> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>A substring match found by [<code>lenient_find_all</code>].</p>
+<h4 id="fields-6">Fields</h4>
+<ul>
+<li><code>start: usize</code> — Byte offset of the opening <code>&#x3C;tag></code> in the source string.</li>
+<li><code>inner: &#x26;'a str</code> — Content between <code>&#x3C;tag></code> and <code>&#x3C;/tag></code>, not including the tags themselves.</li>
+<li><code>outer: &#x26;'a str</code> — Full <code>&#x3C;tag>…&#x3C;/tag></code> substring including both tags.</li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Copy</code>, <code>Debug</code></p>
+<h3 id="toolrequest">ToolRequest</h3>
+<p><code>autotune_agent::protocol::ToolRequest</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ToolRequest</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#6A737D;--shiki-dark:#6A737D">/* fields */</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> }</span></span></code></pre>
+<p>A request from an agent to be granted additional tool access for its session.
+Emitted as a <code>&#x3C;request-tool></code> XML fragment in the agent response.</p>
+<h4 id="fields-7">Fields</h4>
+<ul>
+<li><code>tool: String</code> — Tool name, e.g. “Bash”, “WebFetch”.</li>
+<li><code>scope: Option&#x3C;String></code> — Optional scope (e.g. “cargo tree:*” for Bash). When None, unscoped Allow.</li>
+<li><code>reason: String</code> — Why the agent wants this tool — shown verbatim to the user.</li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code>, <code>Eq</code>, <code>PartialEq</code></p>
+<h2 id="enums">Enums</h2>
+<h3 id="agenterror">AgentError</h3>
+<p><code>autotune_agent::AgentError</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentError</span></span></code></pre>
+<h4 id="variants">Variants</h4>
+<ul>
+<li><code>CommandFailed { message }</code></li>
+<li><code>ParseFailed { message }</code></li>
+<li><code>Timeout { seconds }</code></li>
+<li><code>Interrupted</code></li>
+<li><code>Io { source }</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Debug</code>, <code>Display</code>, <code>Error</code>, <code>From&#x3C;Error></code></p>
+<h3 id="agentevent">AgentEvent</h3>
+<p><code>autotune_agent::AgentEvent</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentEvent</span></span></code></pre>
+<p>Events emitted by the agent during execution.</p>
+<h4 id="variants-1">Variants</h4>
+<ul>
+<li><code>ToolUse { tool, input_summary }</code> — Agent is using a tool (e.g., Read, Glob, Grep).</li>
+<li><code>Text(String)</code> — Agent produced intermediate text output.</li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="agentfragment">AgentFragment</h3>
+<p><code>autotune_agent::protocol::AgentFragment</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentFragment</span></span></code></pre>
+<p>One top-level fragment emitted by the agent during a single turn.
+A turn may produce zero or more of these.</p>
+<h4 id="variants-2">Variants</h4>
+<ul>
+<li><code>Message(String)</code> — Free-form prose to show the user; user types a reply.</li>
+<li><code>Question { text, options, allow_free_response }</code> — Structured question with selectable options.</li>
+<li><code>Task(autotune_config::TaskConfig)</code> — A proposed <code>[task]</code> section.</li>
+<li><code>Paths(autotune_config::PathsConfig)</code> — A proposed <code>[paths]</code> section.</li>
+<li><code>Test(autotune_config::TestConfig)</code> — A proposed <code>[[test]]</code> entry.</li>
+<li><code>Measure(autotune_config::MeasureConfig)</code> — A proposed <code>[[measure]]</code> entry.</li>
+<li><code>Score(autotune_config::ScoreConfig)</code> — A proposed <code>[score]</code> section.</li>
+<li><code>Agent(Box&#x3C;autotune_config::AgentConfig>)</code> — A proposed <code>[agent]</code> section.</li>
+<li><code>Rubric(RubricProposal)</code> — A proposed rubric for the pending judge measure, shown to the user for approval.</li>
+<li><code>RubricsDone</code> — Signals the agent has finished proposing rubrics for the current judge measure.</li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="toolpermission">ToolPermission</h3>
+<p><code>autotune_agent::ToolPermission</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ToolPermission</span></span></code></pre>
+<h4 id="variants-3">Variants</h4>
+<ul>
+<li><code>Allow(String)</code></li>
+<li><code>AllowScoped(String, String)</code></li>
+<li><code>Deny(String)</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Clone</code>, <code>Debug</code></p>
+<h3 id="traceiniterror">TraceInitError</h3>
+<p><code>autotune_agent::trace::TraceInitError</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> TraceInitError</span></span></code></pre>
+<p>Error returned when <code>init()</code> cannot set up the trace file.</p>
+<h4 id="variants-4">Variants</h4>
+<ul>
+<li><code>AlreadyExists { path }</code></li>
+<li><code>Create { path, source }</code></li>
+<li><code>AlreadyInitialized</code></li>
+</ul>
+<p><strong>Implements:</strong> <code>Debug</code>, <code>Display</code>, <code>Error</code></p>
+<h2 id="traits">Traits</h2>
+<h3 id="agent">Agent</h3>
+<p><code>autotune_agent::Agent</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">trait</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Agent</span></span></code></pre>
+<h4 id="required--provided-methods">Required / provided methods</h4>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> spawn</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, config</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentResponse</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> send</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, session</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentSession</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, message</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentResponse</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> spawn_streaming</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, config_with_events</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> AgentConfigWithEvents</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentResponse</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Spawn with event streaming. Default falls back to non-streaming spawn.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> send_streaming</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, session</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentSession</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, message</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, event_handler</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Option</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">EventHandler</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentResponse</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Send with event streaming. Default falls back to non-streaming send.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> backend_name</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> handover_command</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, session</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentSession</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> String</span></span></code></pre>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> hydrate_session</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, session</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentSession</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, config</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentConfig</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;(), </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Seed backend-specific session context for a resumed session when the
+process no longer has the original in-memory state from <code>spawn()</code>.</p>
+<p>Backends that require remembered working directory / model / permission
+config across <code>send()</code> calls should override this. Backends that can
+resume from session id alone may ignore it.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> grant_session_permission</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#005CC5;--shiki-dark:#79B8FF">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, session</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentSession</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, permission</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> ToolPermission</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;(), </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Add a tool permission to an existing session so subsequent <code>send_streaming</code>
+calls will include it in the allowed tools list. Used to approve runtime
+tool requests from an agent. Default impl errors — backends that keep
+per-session context should override.</p>
+<h2 id="functions">Functions</h2>
+<h3 id="init">init</h3>
+<p><code>autotune_agent::trace::init</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> init</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;(), </span><span style="color:#6F42C1;--shiki-dark:#B392F0">TraceInitError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Explicitly initialize tracing from <code>AUTOTUNE_TRACE_FILE</code>.</p>
+<p>Must be called once, before any <code>record()</code> call. Returns an error if:</p>
+<ul>
+<li>the file already exists (<code>AlreadyExists</code>) — delete it or use a new path,</li>
+<li>the path is unwritable / the parent directory is missing (<code>Create</code>),</li>
+<li><code>init()</code> was called after <code>record()</code> already lazily initialized the
+writer (<code>AlreadyInitialized</code>).</li>
+</ul>
+<p>When <code>AUTOTUNE_TRACE_FILE</code> is not set, <code>init()</code> is a no-op and returns <code>Ok</code>.</p>
+<h3 id="install_panic_hook">install_panic_hook</h3>
+<p><code>autotune_agent::terminal::install_panic_hook</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> install_panic_hook</span><span style="color:#24292E;--shiki-dark:#E1E4E8">()</span></span></code></pre>
+<p>Install a panic hook that calls [<code>restore</code>] before delegating to the
+previous hook. Idempotent: safe to call multiple times.</p>
+<p>Call this once early in <code>main()</code>. Combined with per-operation [<code>Guard</code>]
+instances, the terminal is restored on every exit path <em>except</em> direct
+<code>std::process::exit</code> — which neither runs Drop nor triggers the panic
+hook. Signal handlers should call [<code>restore</code>] explicitly before exiting.</p>
+<h3 id="is_enabled">is_enabled</h3>
+<p><code>autotune_agent::trace::is_enabled</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> is_enabled</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> bool</span></span></code></pre>
+<p>True when <code>AUTOTUNE_TRACE_FILE</code> was set and the file opened successfully.
+Callers can use this to skip building an expensive payload that would be
+discarded anyway.</p>
+<h3 id="lenient_find_all">lenient_find_all</h3>
+<p><code>autotune_agent::protocol::lenient_find_all</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> lenient_find_all</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;'</span><span style="color:#6F42C1;--shiki-dark:#B392F0">a</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>(text</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#24292E;--shiki-dark:#E1E4E8">'</span><span style="color:#6F42C1;--shiki-dark:#B392F0">a</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, tag</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">TagMatch</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;'</span><span style="color:#6F42C1;--shiki-dark:#B392F0">a</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>></span></span></code></pre>
+<p>Find all <code>&#x3C;tag>…&#x3C;/tag></code> occurrences by literal substring matching.</p>
+<p>Returns one [<code>TagMatch</code>] per pair found, in document order. Does not attempt
+XML parsing — <code>inner</code> may contain any characters, including unescaped <code>&#x3C;</code>,
+<code>></code>, and <code>&#x26;</code>. Unterminated opens (no matching <code>&#x3C;/tag></code>) are silently
+skipped rather than treated as errors.</p>
+<p>Only matches literal <code>&#x3C;tag></code> opens; attribute-bearing opens like
+<code>&#x3C;tag foo="bar"></code> are not recognized (none of our protocol tags use
+attributes).</p>
+<h3 id="parse_agent_response">parse_agent_response</h3>
+<p><code>autotune_agent::protocol::parse_agent_response</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> parse_agent_response</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(response</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentFragment</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Parse an agent response into zero or more fragments.</p>
+<p>Uses lenient substring extraction at the top level: each known tag
+(<code>&#x3C;message></code>, <code>&#x3C;question></code>, <code>&#x3C;task></code>, <code>&#x3C;paths></code>, <code>&#x3C;test></code>, <code>&#x3C;measure></code>,
+<code>&#x3C;score></code>, <code>&#x3C;agent></code>) is found by literal string matching. The strict XML
+parser runs only on each matched fragment’s content, so garbage prose
+between fragments (unescaped <code>&#x3C;</code>, <code>&#x26;</code>, Rust generics, markdown tables)
+is harmlessly ignored.</p>
+<p>Fragments are returned in document order (sorted by byte offset).
+Unknown tags and unmatched text are silently skipped.</p>
+<h3 id="parse_tool_requests">parse_tool_requests</h3>
+<p><code>autotune_agent::protocol::parse_tool_requests</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> parse_tool_requests</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(response</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Vec</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">ToolRequest</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>, </span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentError</span><span style="color:#24292E;--shiki-dark:#E1E4E8">></span></span></code></pre>
+<p>Parse any <code>&#x3C;request-tool></code> top-level fragments in an agent response.</p>
+<p>Only <code>&#x3C;request-tool></code> blocks matter here — everything else is prose, plans,
+or fragments handled by a different parser. In practice the rest of the
+response is full of things that aren’t well-formed XML: agents routinely
+embed Rust type signatures (<code>&#x26;Value</code>, <code>Vec&#x3C;T></code>), code snippets with <code>&#x3C;</code> and
+<code>&#x26;</code>, and markdown tables. Walking the whole document with strict quick-xml
+blows up on the first such occurrence and takes down the tune loop.</p>
+<p>So we do a lenient string scan: find each literal <code>&#x3C;request-tool></code> …
+<code>&#x3C;/request-tool></code> pair and run the strict parser only on that substring.
+Whatever sits between pairs is ignored verbatim, regardless of whether it
+parses as XML.</p>
+<p>Matches that sit inside another known wrapper fragment (see
+[<code>WRAPPER_TAGS</code>]) are skipped: the research agent legitimately writes
+literal <code>&#x3C;request-tool></code> examples inside a <code>&#x3C;plan></code>’s <code>&#x3C;hypothesis></code> when
+describing tests, and those must not be parsed as real requests.</p>
+<p>Attribute-bearing opens (<code>&#x3C;request-tool foo="bar"></code>) are not supported —
+the schema doesn’t use attributes on this tag, and accepting them here
+would force us back onto the strict walker.</p>
+<h3 id="record">record</h3>
+<p><code>autotune_agent::trace::record</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> record</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(category</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#6F42C1;--shiki-dark:#B392F0">str</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, payload</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> serde_json</span><span style="color:#D73A49;--shiki-dark:#F97583">::</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Value</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span></code></pre>
+<p>Append one trace record. Safe to call from any thread; no-op when tracing
+is disabled. Errors (poisoned mutex, IO failure) are swallowed — a broken
+trace must not take down the tune loop.</p>
+<h3 id="restore">restore</h3>
+<p><code>autotune_agent::terminal::restore</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> restore</span><span style="color:#24292E;--shiki-dark:#E1E4E8">()</span></span></code></pre>
+<p>Write terminal-restore CSI sequences to stderr, if stderr is a TTY.</p>
+<p>No-op in non-interactive contexts (piped, redirected, test runner).</p>
+<h2 id="macros">Macros</h2>
+<h3 id="aeprintln">aeprintln</h3>
+<p><code>autotune_agent::aeprintln</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">macro_rules!</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> aeprintln</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    (</span><span style="color:#D73A49;--shiki-dark:#F97583">$</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">$</span><span style="color:#24292E;--shiki-dark:#E1E4E8">arg</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#24292E;--shiki-dark:#E1E4E8">tt)</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">=></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#D73A49;--shiki-dark:#F97583">...</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> };</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">}</span></span></code></pre>
+<p>Like [<code>eprintln!</code>], but renders the line in Autotune’s accent color when
+stderr is a TTY. Use for <code>[autotune]</code>-tagged status lines on stderr.</p>
+<h3 id="aprintln">aprintln</h3>
+<p><code>autotune_agent::aprintln</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">macro_rules!</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> aprintln</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    (</span><span style="color:#D73A49;--shiki-dark:#F97583">$</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">$</span><span style="color:#24292E;--shiki-dark:#E1E4E8">arg</span><span style="color:#D73A49;--shiki-dark:#F97583">:</span><span style="color:#24292E;--shiki-dark:#E1E4E8">tt)</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">=></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#D73A49;--shiki-dark:#F97583">...</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> };</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">}</span></span></code></pre>
+<p>Like [<code>println!</code>], but renders the line in Autotune’s accent color when
+stdout is a TTY. Use for <code>[autotune]</code>-tagged status lines on stdout.</p>
+<h2 id="type-aliases">Type aliases</h2>
+<h3 id="eventhandler">EventHandler</h3>
+<p><code>autotune_agent::EventHandler</code></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="rust"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> EventHandler</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Box</span><span style="color:#24292E;--shiki-dark:#E1E4E8">&#x3C;</span><span style="color:#D73A49;--shiki-dark:#F97583">dyn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#6F42C1;--shiki-dark:#B392F0">AgentEvent</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Send</span><span style="color:#D73A49;--shiki-dark:#F97583"> +</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Sync</span><span style="color:#24292E;--shiki-dark:#E1E4E8">>;</span></span></code></pre>
+<p>Callback for receiving agent events during execution.
+The agent calls this for each streaming event. Implementations
+should be cheap (e.g., print to stderr) since they block the read loop.</p>  </article> <footer class="content-footer"> <p>Autotune documentation · built with Astro</p> </footer> </main> <aside class="toc-col"> <nav class="toc" aria-label="On this page"> <p class="toc-title">On this page</p> <ul> <li class="toc-depth-2"> <a href="#structs">Structs</a> </li><li class="toc-depth-3"> <a href="#agentconfig">AgentConfig</a> </li><li class="toc-depth-3"> <a href="#agentconfigwithevents">AgentConfigWithEvents</a> </li><li class="toc-depth-3"> <a href="#agentresponse">AgentResponse</a> </li><li class="toc-depth-3"> <a href="#agentsession">AgentSession</a> </li><li class="toc-depth-3"> <a href="#claudeagent">ClaudeAgent</a> </li><li class="toc-depth-3"> <a href="#codexagent">CodexAgent</a> </li><li class="toc-depth-3"> <a href="#guard">Guard</a> </li><li class="toc-depth-3"> <a href="#questionoption">QuestionOption</a> </li><li class="toc-depth-3"> <a href="#rubricproposal">RubricProposal</a> </li><li class="toc-depth-3"> <a href="#tagmatch">TagMatch</a> </li><li class="toc-depth-3"> <a href="#toolrequest">ToolRequest</a> </li><li class="toc-depth-2"> <a href="#enums">Enums</a> </li><li class="toc-depth-3"> <a href="#agenterror">AgentError</a> </li><li class="toc-depth-3"> <a href="#agentevent">AgentEvent</a> </li><li class="toc-depth-3"> <a href="#agentfragment">AgentFragment</a> </li><li class="toc-depth-3"> <a href="#toolpermission">ToolPermission</a> </li><li class="toc-depth-3"> <a href="#traceiniterror">TraceInitError</a> </li><li class="toc-depth-2"> <a href="#traits">Traits</a> </li><li class="toc-depth-3"> <a href="#agent">Agent</a> </li><li class="toc-depth-2"> <a href="#functions">Functions</a> </li><li class="toc-depth-3"> <a href="#init">init</a> </li><li class="toc-depth-3"> <a href="#install_panic_hook">install_panic_hook</a> </li><li class="toc-depth-3"> <a href="#is_enabled">is_enabled</a> </li><li class="toc-depth-3"> <a href="#lenient_find_all">lenient_find_all</a> </li><li class="toc-depth-3"> <a href="#parse_agent_response">parse_agent_response</a> </li><li class="toc-depth-3"> <a href="#parse_tool_requests">parse_tool_requests</a> </li><li class="toc-depth-3"> <a href="#record">record</a> </li><li class="toc-depth-3"> <a href="#restore">restore</a> </li><li class="toc-depth-2"> <a href="#macros">Macros</a> </li><li class="toc-depth-3"> <a href="#aeprintln">aeprintln</a> </li><li class="toc-depth-3"> <a href="#aprintln">aprintln</a> </li><li class="toc-depth-2"> <a href="#type-aliases">Type aliases</a> </li><li class="toc-depth-3"> <a href="#eventhandler">EventHandler</a> </li> </ul> </nav> </aside> </div> </body></html>
