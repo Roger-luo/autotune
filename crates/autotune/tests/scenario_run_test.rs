@@ -1651,3 +1651,394 @@ fn scenario_run_preflight_skips_branch_guard_hook() {
         "run should proceed past the preflight to baseline, got:\n{combined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Shared per-task CARGO_TARGET_DIR
+// ---------------------------------------------------------------------------
+
+/// Config whose measure command (a) fails when `$CARGO_TARGET_DIR` is unset and
+/// (b) writes a marker file into `$CARGO_TARGET_DIR` when set. The marker proves
+/// the measure — which runs in the per-iteration worktree — saw the task's
+/// shared target dir, so every sub-worktree reuses one compiled `target/`.
+const SHARED_TARGET_CONFIG_TOML: &str = r#"
+[task]
+name = "scenario-task"
+description = "shared target scenario"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "target-set"
+command = ["sh", "-c", "test -n \"$CARGO_TARGET_DIR\""]
+timeout = 10
+
+[[measure]]
+name = "shared-target-probe"
+command = ["sh", "-c", "test -n \"$CARGO_TARGET_DIR\" || exit 3; mkdir -p \"$CARGO_TARGET_DIR\"; printf '%s' \"$CARGO_TARGET_DIR\" > \"$CARGO_TARGET_DIR/share-proof.marker\"; echo 'metric_value: 42.0'"]
+timeout = 10
+adaptor = { type = "regex", patterns = [{ name = "metric_value", pattern = "metric_value: ([0-9.]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric_value", direction = "Minimize", weight = 1.0 }]
+guardrail_metrics = []
+"#;
+
+fn shared_target_project() -> Project {
+    let project = Project::empty()
+        .file(".autotune.toml", SHARED_TARGET_CONFIG_TOML)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+    project
+}
+
+/// During a run, the test/measure commands must observe `CARGO_TARGET_DIR`
+/// pointing at the task's shared target dir. The measure writes a marker into
+/// `$CARGO_TARGET_DIR`; afterward the marker must exist at the shared path
+/// `.autotune/tasks/<task>/target/`, proving sub-worktrees share one target.
+#[test]
+fn scenario_run_measure_sees_shared_cargo_target_dir() {
+    let project = shared_target_project();
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>touch-src</approach>\
+               <hypothesis>verify the measure observes the shared CARGO_TARGET_DIR</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        // Ensure no ambient CARGO_TARGET_DIR leaks in — the value the child sees
+        // must come from autotune's per-task injection, not the test harness.
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "run should complete with the shared target injected.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // The shared target dir lives under the task dir; the marker must be there.
+    let shared_target = project.path().join(".autotune/tasks/scenario-task/target");
+    let marker = shared_target.join("share-proof.marker");
+    assert!(
+        marker.exists(),
+        "measure must write its marker into the shared CARGO_TARGET_DIR \
+         ({}); contents listing:\n{:?}",
+        marker.display(),
+        std::fs::read_dir(&shared_target)
+            .map(|rd| rd
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+
+    // The marker's content is the absolute path the child saw — it must point at
+    // the task's shared target, proving cargo wasn't given a per-worktree path.
+    let seen = std::fs::read_to_string(&marker).unwrap();
+    let seen_canon = std::fs::canonicalize(&seen).unwrap();
+    let shared_canon = std::fs::canonicalize(&shared_target).unwrap();
+    assert_eq!(
+        seen_canon, shared_canon,
+        "CARGO_TARGET_DIR the measure saw must equal the task's shared target dir"
+    );
+    assert!(
+        Path::new(&seen).is_absolute(),
+        "CARGO_TARGET_DIR must be absolute (cargo resolves relative paths against \
+         per-worktree cwd): {seen}"
+    );
+}
+
+/// `autotune ff` (integrate + clean up) must remove the task's shared target
+/// dir along with the advancing worktree/branch it's tied to.
+#[test]
+fn scenario_ff_removes_shared_target_dir() {
+    let project = shared_target_project();
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>touch-src</approach>\
+               <hypothesis>produce one kept iteration then fast-forward</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let run = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "run should complete.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let shared_target = project.path().join(".autotune/tasks/scenario-task/target");
+    assert!(
+        shared_target.exists(),
+        "the run should have created the shared target dir"
+    );
+
+    let ff = Command::cargo_bin("autotune")
+        .unwrap()
+        .args(["ff", "--task", "scenario-task"])
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+    assert!(
+        ff.status.success(),
+        "ff should succeed.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&ff.stdout),
+        String::from_utf8_lossy(&ff.stderr)
+    );
+
+    assert!(
+        !shared_target.exists(),
+        "ff must remove the shared target dir at {}",
+        shared_target.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ENOSPC graceful abort
+// ---------------------------------------------------------------------------
+
+/// Config whose measure command emits "No space left on device" and exits
+/// nonzero — simulating the disk filling mid-build.
+const ENOSPC_MEASURE_CONFIG_TOML: &str = r#"
+[task]
+name = "scenario-task"
+description = "enospc measure scenario"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[[test]]
+name = "always-pass"
+command = ["true"]
+timeout = 10
+
+[[measure]]
+name = "disk-full-bench"
+command = ["sh", "-c", "echo 'error: failed to write bytes: No space left on device (os error 28)' >&2; exit 1"]
+timeout = 10
+adaptor = { type = "regex", patterns = [{ name = "metric_value", pattern = "metric_value: ([0-9.]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric_value", direction = "Minimize", weight = 1.0 }]
+guardrail_metrics = []
+"#;
+
+/// A measure that reports ENOSPC must abort the run CLEANLY: a clear,
+/// actionable error, no fix-retry loop, no panic / exit-101. The baseline
+/// measure runs first (in repo_root), so the abort happens before any iteration
+/// — which is exactly the "disk full, free space and resume" contract.
+#[test]
+fn scenario_run_enospc_measure_aborts_cleanly() {
+    let project = Project::empty()
+        .file(".autotune.toml", ENOSPC_MEASURE_CONFIG_TOML)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let script = write_script(
+        &project,
+        &[
+            "Ready to plan.",
+            "<plan>\
+               <approach>noop</approach>\
+               <hypothesis>should never get here — baseline measure hits ENOSPC</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &script)
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    // Non-zero exit (it's still a failed run) but NOT a panic / exit-101.
+    assert!(
+        !output.status.success(),
+        "an ENOSPC run must not report success.\n{combined}"
+    );
+    assert_ne!(
+        output.status.code(),
+        Some(101),
+        "ENOSPC must abort cleanly, not crash with a panic (exit 101).\n{combined}"
+    );
+    assert!(
+        !combined.contains("panicked"),
+        "ENOSPC must not panic.\n{combined}"
+    );
+    assert!(
+        combined.contains("No space left on device"),
+        "the abort message must surface the disk-full cause.\n{combined}"
+    );
+    assert!(
+        combined.contains("free space and resume"),
+        "the abort message must be actionable (free space and resume).\n{combined}"
+    );
+}
+
+/// When a per-iteration TEST command (not the baseline measure) reports ENOSPC
+/// while failing, the run must abort cleanly rather than route the failure into
+/// the implementer fix-retry loop (which can't fix "no space left").
+#[test]
+fn scenario_run_enospc_test_aborts_without_fix_retry() {
+    const ENOSPC_TEST_CONFIG: &str = r#"
+[task]
+name = "scenario-task"
+description = "enospc test scenario"
+canonical_branch = "main"
+max_iterations = "1"
+
+[paths]
+tunable = ["src/**"]
+
+[agent]
+
+[agent.implementation]
+max_fix_attempts = 10
+max_fresh_spawns = 1
+
+[[test]]
+name = "marker-test"
+command = ["sh", "-c", "if grep -q 'TRIGGER_ENOSPC' src/lib.rs; then echo 'No space left on device' >&2; exit 1; else true; fi"]
+timeout = 10
+
+[[measure]]
+name = "echo-bench"
+command = ["sh", "-c", "echo 'metric_value: 1.0'"]
+timeout = 10
+adaptor = { type = "regex", patterns = [{ name = "metric_value", pattern = "metric_value: ([0-9.]+)" }] }
+
+[score]
+type = "weighted_sum"
+primary_metrics = [{ name = "metric_value", direction = "Minimize", weight = 1.0 }]
+guardrail_metrics = []
+"#;
+
+    // Baseline (src/lib.rs without the trigger) passes sanity tests; the mock
+    // implementer then writes the trigger token so the per-iteration test emits
+    // ENOSPC and fails.
+    let project = Project::empty()
+        .file(".autotune.toml", ENOSPC_TEST_CONFIG)
+        .file("src/lib.rs", "pub fn hello() -> &'static str { \"hi\" }\n")
+        .build()
+        .unwrap();
+    git_init(project.path());
+
+    let research_script = write_script(
+        &project,
+        &[
+            "Ready.",
+            "<plan>\
+               <approach>trigger-enospc</approach>\
+               <hypothesis>implementer edit makes the test hit a (simulated) full disk</hypothesis>\
+               <files-to-modify><file>src/lib.rs</file></files-to-modify>\
+             </plan>",
+        ],
+    );
+    let impl_script = write_impl_script(
+        &project,
+        &["cat > src/lib.rs <<'EOF'\n\
+           pub fn hello() -> &'static str { \"TRIGGER_ENOSPC\" }\n\
+           EOF"],
+    );
+
+    let output = Command::cargo_bin("autotune")
+        .unwrap()
+        .arg("run")
+        .env("AUTOTUNE_MOCK", "1")
+        .env("AUTOTUNE_MOCK_RESEARCH_SCRIPT", &research_script)
+        .env("AUTOTUNE_MOCK_IMPL_SCRIPT", &impl_script)
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(project.path())
+        .timeout(Duration::from_secs(60))
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+
+    assert!(
+        !output.status.success(),
+        "an ENOSPC test failure must not report success.\n{combined}"
+    );
+    assert_ne!(
+        output.status.code(),
+        Some(101),
+        "ENOSPC must abort cleanly, not crash (exit 101).\n{combined}"
+    );
+    assert!(
+        !combined.contains("panicked"),
+        "ENOSPC must not panic.\n{combined}"
+    );
+    assert!(
+        combined.contains("free space and resume"),
+        "the abort must be the actionable disk-full error.\n{combined}"
+    );
+    // It must NOT have entered the fix-retry loop on a non-code failure.
+    assert!(
+        !combined.contains("entering Fixing"),
+        "ENOSPC test failure must NOT be routed into the fix-retry loop.\n{combined}"
+    );
+
+    // The ledger must not record a discard from an exhausted fix budget — the
+    // run aborted before any keep/discard decision.
+    let ledger_path = project
+        .path()
+        .join(".autotune/tasks/scenario-task/ledger.json");
+    if let Ok(ledger) = std::fs::read_to_string(&ledger_path) {
+        assert!(
+            !ledger.contains("budget exhausted"),
+            "ENOSPC must not be treated as a fixable code failure.\nledger:\n{ledger}"
+        );
+    }
+}

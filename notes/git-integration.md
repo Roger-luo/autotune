@@ -146,6 +146,58 @@ main (canonical — read once at task start, then NEVER touched)
   created from the advancing branch. Namespaced under the task so worktree
   branches from different task forks don't collide on matching approach names.
 
+## Shared Cargo target dir (`.autotune/tasks/<task>/target/`)
+
+Each iteration runs `cargo test`/`cargo bench` in a *fresh* sub-worktree. By
+default cargo gives each worktree its **own** `target/` — ~1.6 GB for a mid-size
+project — so N iterations ⇒ N full targets and the disk fills mid-build with
+*"No space left on device"* (exit 101 + a fix-retry agent uselessly spinning on
+a non-code error; surfaced dogfooding a large project).
+
+The fix: **one shared target dir per task**, a sibling of `advancing/` and
+`worktrees/` under the task dir, owned by (and torn down with) the advancing
+worktree.
+
+- `machine::shared_target_dir(task_dir)` returns the **absolute** path
+  `<task_dir>/target`. It *must* be absolute: cargo resolves a relative
+  `CARGO_TARGET_DIR` against the process cwd, which differs per sub-worktree, so
+  a relative value would scatter targets back into each worktree and defeat the
+  sharing. `machine::shared_target_env(task_dir)` returns the
+  `CARGO_TARGET_DIR=<abs path>` pair for injection.
+- **Every cargo invocation for the task sets `CARGO_TARGET_DIR`** to that path —
+  injected per-`Command` (never process-globally, so autotune's own build is
+  unaffected): the sanity tests + baseline measure + baseline replicates in
+  `cmd_run`, each iteration's `run_testing`/`run_measuring`, the confirmation
+  re-measure in `run_confirmation_pass`, and the post-revert re-measure in
+  `cmd_revert`. Sites that already inject a per-invocation `RUSTFLAGS` (replicate
+  rebuild, confirmation pass) **merge** the target env with it rather than
+  clobber.
+- **Sequential-only caveat:** Cargo holds an exclusive lock on a `target/`, so
+  the shared dir is safe precisely because iterations run **one at a time**. If
+  iterations are ever parallelized, they cannot share one target dir as-is.
+- **Lifecycle = the advancing worktree's.** `machine::remove_shared_target`
+  (rm -rf, no-op if absent) is called wherever the advancing branch/worktree is
+  torn down: `cmd_ff` (after removing the advancing worktree + deleting the
+  branch) and `cleanup_leftover_task_git_state` (re-run cleanup). It's **never**
+  removed mid-run — sub-worktrees reuse it across iterations.
+
+### ENOSPC graceful abort
+
+A build/test/measure command whose captured output contains *"No space left on
+device"* is classified as an **infrastructure** failure, not a code problem:
+
+- `machine::is_enospc_output` detects the marker; `classify_phase_failure` routes
+  an ENOSPC error in the run loop to a distinct `PhaseFailure::DiskFull` that
+  saves state and aborts with an actionable *"disk full … free space and
+  resume"* error — never `PhaseFailure::Fatal` (no panic/exit-101).
+- `run_testing` checks the marker in the failed test output **before** routing to
+  the fix-retry loop, so a disk-full test failure aborts cleanly instead of
+  burning the implementer's fix budget on something it can't fix.
+- Paths that bypass the loop (notably the baseline measure in `cmd_run`, which
+  `?`-propagates straight up) are caught by `annotate_disk_full` in `main()`,
+  which adds the same actionable context (idempotently — it won't double-wrap a
+  chain the loop already annotated).
+
 ## Integration flow
 
 `run_integrating` in `crates/autotune/src/machine.rs`:

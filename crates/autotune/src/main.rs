@@ -34,7 +34,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Run { task } => cmd_run(task),
         Commands::Resume {
             task,
@@ -61,6 +61,31 @@ fn main() -> Result<()> {
             reason,
             no_measure,
         } => cmd_revert(iteration, task, reason, no_measure),
+    };
+
+    result.map_err(annotate_disk_full)
+}
+
+/// If a command failed because a build/test/measure reported ENOSPC ("No space
+/// left on device"), surface a single, actionable disk-full error. Catches the
+/// paths that bypass the run loop's `DiskFull` classification — notably the
+/// baseline measure in `cmd_run`, which propagates straight up via `?`. A no-op
+/// for unrelated errors and for chains the loop already annotated (the marker
+/// substring guard makes the wrap idempotent).
+fn annotate_disk_full(err: anyhow::Error) -> anyhow::Error {
+    let already_actionable = err
+        .chain()
+        .any(|c| c.to_string().contains("free space and resume"));
+    let is_disk_full = err
+        .chain()
+        .any(|c| machine::is_enospc_output(&c.to_string()));
+    if is_disk_full && !already_actionable {
+        err.context(
+            "build/measure failed: disk full (No space left on device) — \
+             free space and resume",
+        )
+    } else {
+        err
     }
 }
 
@@ -176,6 +201,12 @@ fn next_available_task_name(repo_root: &Path, base: &str) -> Result<String> {
 fn cleanup_leftover_task_git_state(repo_root: &Path, task_name: &str, canonical_branch: &str) {
     let advancing = format!("autotune/{task_name}-main");
     let worktree_prefix = format!("autotune/{task_name}/");
+
+    // The shared Cargo target dir is tied to the advancing worktree's lifecycle;
+    // tearing down a prior incomplete run's git state also reclaims its target
+    // (no-op if the task dir was already removed).
+    let task_dir = repo_root.join(".autotune").join("tasks").join(task_name);
+    machine::remove_shared_target(&task_dir);
 
     // A now-deleted worktree may still pin its branch; prune so it can be deleted.
     let _ = autotune_git::prune_worktrees(repo_root);
@@ -755,6 +786,7 @@ fn collect_baseline_replicate_envelope(
     repo_root: &Path,
     baseline_metrics: &std::collections::HashMap<String, f64>,
     judge_ctx: Option<&autotune_benchmark::JudgeContext>,
+    target_env: &[(String, String)],
 ) -> Result<std::collections::HashMap<String, f64>> {
     let replicates = config.score.baseline_replicates();
     // Gate strictly: deterministic (non-criterion) tasks pay ZERO cost, and
@@ -778,15 +810,15 @@ fn collect_baseline_replicate_envelope(
         // Force a rebuild by perturbing Cargo's build fingerprint with a benign,
         // never-referenced cfg unique to this replicate. The cfg is inert (no
         // code reads it) but distinct values make Cargo recompile, so codegen
-        // and binary layout actually change between replicates.
-        let extra_env: Vec<(String, String)> = if rebuild {
-            vec![(
+        // and binary layout actually change between replicates. Always share the
+        // task's target dir; the per-replicate RUSTFLAGS merges on top.
+        let mut extra_env: Vec<(String, String)> = target_env.to_vec();
+        if rebuild {
+            extra_env.push((
                 "RUSTFLAGS".to_string(),
                 format!("--cfg autotune_baseline_replicate=\"{replicate}\""),
-            )]
-        } else {
-            Vec::new()
-        };
+            ));
+        }
 
         aprintln!("[autotune] baseline replicate {replicate}/{replicates}");
         let (metrics, _reports) = autotune_benchmark::run_all_measures_with_output_env(
@@ -922,11 +954,18 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
             })),
         });
 
+    // The task's shared Cargo target dir: every cargo invocation for this task
+    // (sanity tests, baseline + replicates, per-iteration test/measure, the
+    // post-integration/revert re-measure) sets `CARGO_TARGET_DIR` to it so
+    // dependencies compile once and all sub-worktrees reuse them.
+    let target_env = machine::shared_target_env(&task_dir);
+
     // Run sanity tests
     if !config.test.is_empty() {
         aprintln!("[autotune] running sanity tests...");
-        let test_results = autotune_test::run_all_tests(&config.test, &repo_root)
-            .context("sanity tests failed to execute")?;
+        let test_results =
+            autotune_test::run_all_tests_with_env(&config.test, &repo_root, &target_env)
+                .context("sanity tests failed to execute")?;
         if !autotune_test::all_passed(&test_results) {
             let failed: Vec<_> = test_results
                 .iter()
@@ -949,14 +988,16 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
 
     // Take baseline measurements
     aprintln!("[autotune] collecting baseline metrics...");
-    let (baseline_metrics, baseline_reports) = autotune_benchmark::run_all_measures_with_output(
-        &config.measure,
-        &repo_root,
-        "baseline",
-        0,
-        judge_ctx.as_ref(),
-    )
-    .context("baseline measures failed")?;
+    let (baseline_metrics, baseline_reports) =
+        autotune_benchmark::run_all_measures_with_output_env(
+            &config.measure,
+            &repo_root,
+            "baseline",
+            0,
+            judge_ctx.as_ref(),
+            &target_env,
+        )
+        .context("baseline measures failed")?;
     aprintln!("[autotune] baseline metrics: {:?}", baseline_metrics);
 
     // Persist raw baseline stdout/stderr per measure so the research agent
@@ -1003,6 +1044,7 @@ fn cmd_run(task_name_override: Option<String>) -> Result<()> {
         &repo_root,
         &baseline_metrics,
         judge_ctx.as_ref(),
+        &target_env,
     )?;
     store
         .save_empirical_envelope(&empirical_envelope)
@@ -2635,12 +2677,13 @@ fn cmd_revert(
         );
         (Default::default(), Default::default())
     } else {
-        match autotune_benchmark::run_all_measures_with_output(
+        match autotune_benchmark::run_all_measures_with_output_env(
             &config.measure,
             &advancing_wt,
             &format!("revert-{iteration}"),
             new_index as u32,
             judge_ctx.as_ref(),
+            &machine::shared_target_env(store.root()),
         ) {
             Ok((metrics, reports)) => (
                 metrics,
@@ -2739,6 +2782,10 @@ fn cmd_ff(task_name_override: Option<String>) -> Result<()> {
             e
         );
     }
+
+    // The shared Cargo target dir lives and dies with the advancing worktree —
+    // now that the latter is gone, reclaim the (potentially multi-GB) target.
+    machine::remove_shared_target(&task_dir);
 
     // FF merge advancing branch into canonical.
     autotune_git::checkout(&repo_root, canonical_branch)
