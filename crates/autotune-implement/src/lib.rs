@@ -109,17 +109,26 @@ pub fn implementation_agent_permissions(tunable_paths: &[String]) -> Vec<ToolPer
     perms.push(ToolPermission::Allow("Glob".to_string()));
     perms.push(ToolPermission::Allow("Grep".to_string()));
 
-    // Scoped write tools — one entry per tunable path
-    for path in tunable_paths {
-        perms.push(ToolPermission::AllowScoped(
-            "Edit".to_string(),
-            path.clone(),
-        ));
-        perms.push(ToolPermission::AllowScoped(
-            "Write".to_string(),
-            path.clone(),
-        ));
-    }
+    // Edit/Write permissions.
+    //
+    // The documented path-scoped form (`--allowedTools Edit:<path>`) is
+    // rejected by recent Claude CLI builds (tested with 2.1.138): every
+    // Edit/Write returns "permissions not granted" even when the glob
+    // would match. See `notes/agent-subprocess.md` for the previously
+    // working behaviour, and the test transcript in the PR description.
+    //
+    // Falling back to unscoped `Allow` for Edit/Write. The implementation
+    // agent is still bounded to the per-iteration worktree by
+    // `setup_worktree` + the `working_directory` plumbing on
+    // `AgentConfig`, so the practical blast radius is the same as before
+    // (a worktree only contains the tunable files plus the snapshot of
+    // the canonical branch — there's nothing else worth scoping out of).
+    //
+    // `tunable_paths` is still accepted so callers don't need to change;
+    // it's reported in the prompt body (see `build_implementation_prompt`).
+    let _ = tunable_paths;
+    perms.push(ToolPermission::Allow("Edit".to_string()));
+    perms.push(ToolPermission::Allow("Write".to_string()));
 
     // Deny dangerous tools
     perms.push(ToolPermission::Deny("Bash".to_string()));
@@ -813,24 +822,37 @@ mod tests {
     }
 
     #[test]
-    fn implementation_agent_permissions_scoped_edit_and_write_per_path() {
+    fn implementation_agent_permissions_allows_unscoped_edit_and_write() {
+        // Path-scoped Edit/Write was deprecated when recent Claude CLI
+        // builds started silently rejecting `Tool:<glob>` even when the
+        // glob matched; see module-level comment on
+        // `implementation_agent_permissions`. The agent is still
+        // sandboxed to the worktree by `working_directory`, so this pins
+        // the contract: Edit and Write are statically allowed
+        // (unscoped), regardless of how many tunable paths were declared.
         let paths = vec!["crates/foo/**".to_string(), "crates/bar/**".to_string()];
         let perms = implementation_agent_permissions(&paths);
-        let scoped: Vec<(&str, &str)> = perms
+        let allows: Vec<&str> = perms
             .iter()
             .filter_map(|p| {
-                if let ToolPermission::AllowScoped(tool, scope) = p {
-                    Some((tool.as_str(), scope.as_str()))
+                if let ToolPermission::Allow(t) = p {
+                    Some(t.as_str())
                 } else {
                     None
                 }
             })
             .collect();
-        // Each path gets both Edit and Write entries
-        assert!(scoped.contains(&("Edit", "crates/foo/**")));
-        assert!(scoped.contains(&("Write", "crates/foo/**")));
-        assert!(scoped.contains(&("Edit", "crates/bar/**")));
-        assert!(scoped.contains(&("Write", "crates/bar/**")));
+        assert!(allows.contains(&"Edit"));
+        assert!(allows.contains(&"Write"));
+        // Nothing scoped any more — make sure no stragglers slipped in.
+        let scoped: Vec<&ToolPermission> = perms
+            .iter()
+            .filter(|p| matches!(p, ToolPermission::AllowScoped(_, _)))
+            .collect();
+        assert!(
+            scoped.is_empty(),
+            "expected no AllowScoped entries, got {scoped:?}"
+        );
     }
 
     #[test]
